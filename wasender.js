@@ -474,6 +474,7 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS first_error_code INT;   -- كود فشل المحاولة الأولى
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS first_wamid TEXT;       -- wamid المحاولة الأولى (عشان نتأكد إنها ماوصلتش قبل الإعادة)
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS tried_at TIMESTAMPTZ;   -- (ج) آخر محاولة على Cloud — نافذة فرامل الفشل بتعدّ بيه
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS hold_until TIMESTAMPTZ; -- CJ1a: العميل لسه واصلته رسالة (burst_hold) ⇒ الصف يستنى لحد الوقت ده
       ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS fail_brake_at TIMESTAMPTZ;  -- (ج) آخر مرة فرامل الفشل وقّفت الحملة
       ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS fail_base_at TIMESTAMPTZ;   -- (ج) «كمّل» بعد فرملة فشل ⇒ نسبة الفشل بتتحسب من هنا
       CREATE INDEX IF NOT EXISTS wa_send_queue_retry_idx ON wa_send_queue(retry_at) WHERE retry_at IS NOT NULL;
@@ -1567,6 +1568,13 @@ export function register(app, ctx, deps = {}) {
       if (r.skipped === "no_optin" || r.skipped === "opted_out") { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, r.skipped]); return { skipped: r.skipped }; }
       // QP1: العميل وصل سقفه (قالب تسويقي واحد في ٧ أيام / ٣ في ٣٠ يوم — من أي حملة أو أتمتة) ⇒ الصف يتخطّى والباقي يكمل
       if (r.skipped === "marketing_cap_7d" || r.skipped === "marketing_cap_30d") { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, r.skipped]); return { skipped: r.skipped }; }
+      /* CJ1a (١٧/١٠): العميل ده واصلته رسالة من أي نظام من أقل من burstHoldMin (تحديث طلب، رد موظف، SMS…) ⇒ الصف يرجع pending بميعاد (hold_until)
+         والدورة تكمّل على اللي بعده — مش إلغاء ولا قفل قناة. الدورة الجاية بتاخده لما الهدوء يخلص. */
+      if (r.skipped === "burst_hold") {
+        const until = r.until && Number.isFinite(Date.parse(r.until)) ? new Date(r.until).toISOString() : new Date(now() + 5 * 60_000).toISOString();
+        await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0), hold_until=$2, reason='burst_hold' WHERE id=$1", [q.id, until]);
+        return { skipped: "burst_hold" };
+      }
       // البوابة اتقفلت في النص ⇒ يرجع للطابور ونقف الدورة
       await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]);
       return { halt: r.skipped };
@@ -1980,6 +1988,7 @@ export function register(app, ctx, deps = {}) {
             WHERE id = (SELECT q.id FROM wa_send_queue q JOIN wa_send_jobs j ON j.id=q.job_id
                          WHERE q.status='pending' AND j.status='running'
                            AND COALESCE(q.channel, j.channel, 'wa_web') = 'wa_cloud'
+                           AND (q.hold_until IS NULL OR q.hold_until <= NOW())      -- CJ1a: الصف المحجوز بالهدوء (burst_hold) يستنى ميعاده
                            -- مراجعة SX2: صف للحملة دي فشل لأن ميتا ماقدرتش تنزّل صورتها/الفيديو (131053) ومستني إعادة ⇒ مفيش صفوف جديدة للحملة دي
                            -- لحد ما الإعادة دي تتبعت (فحصنا للرابط مابيشوفش لو المشكلة عند ميتا بس). نجحت ⇒ الحملة تكمّل؛ فشلت تاني ⇒ mediaPause.
                            AND NOT EXISTS (SELECT 1 FROM wa_send_queue m WHERE m.job_id = j.id AND m.status = 'failed' AND m.retry_at IS NOT NULL

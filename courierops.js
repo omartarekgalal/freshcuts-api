@@ -39,6 +39,7 @@ import { fitOneSms, makeStaffNotifier } from "./staffalerts.js";
 import { emitOrder } from "./order-events.js";
 import { sendSms as sendStaffSms } from "./accounts.js";
 import { externalTooSoon } from "./prepstatus.js";
+import { journeyCfg, WA_COVERS_ORDER_SQL } from "./wajourney.js";      // CJ1a (١٧/١٠): SMS المندوب مش مع تحديث واتساب لنفس الطلب
 
 /* ── الإعدادات (settings.delivery.courierSla — بتتعدّل من «مطابقة لاجلك») ── */
 export const DEFAULT_COURIER_SLA = Object.freeze({
@@ -967,7 +968,18 @@ export function register(app, ctx, deps = {}) {
       const r = await pool.query("SELECT phone_norm, is_test FROM shop_orders WHERE order_no=$1", [orderNo]);
       const o = r.rows[0];
       if (!o || !/^5\d{8}$/.test(o.phone_norm || "")) return false;
-      const ok = await n.sendSmsTo(o.phone_norm, customerText(await getSettingsData().catch(() => ({})), kind, orderNo), { kind: "order_status", ref: `${orderNo}:courier_${kind}` });
+      const settings = await getSettingsData().catch(() => ({}));
+      /* CJ1a (١٧/١٠): نافذة واتساب العميل مفتوحة ووصله تحديث واتساب عن الطلب ده خلال courierSmsWaMin ⇒ تحديثات الطلب بتوصله هناك ببلاش («مع المندوب» بيطلع من notify)،
+         فـSMS «مندوب بديل» تكرار بفلوس (١٣ من ١٣ يوم ١٦/١٠). بيتسجّل في notify_sent بسبب wa_covered. ماقدرناش نتأكد ⇒ الـSMS زي الأول. */
+      const jc = journeyCfg((settings || {}).waBot);
+      if (jc.journeyBursts && jc.courierSmsWaMin > 0) {
+        const covered = await pool.query(WA_COVERS_ORDER_SQL, [String(orderNo), o.phone_norm, jc.courierSmsWaMin]).then((x) => x.rowCount > 0).catch(() => false);
+        if (covered) {
+          try { emit("notify_sent", { orderNo, source: "notify", channel: "sms", ok: false, data: { stage: `courier_${kind}`, channel: "sms", ok: false, reason: "wa_covered" } }); } catch {}
+          return false;
+        }
+      }
+      const ok = await n.sendSmsTo(o.phone_norm, customerText(settings, kind, orderNo), { kind: "order_status", ref: `${orderNo}:courier_${kind}` });
       try { emit("notify_sent", { orderNo, source: "notify", channel: "sms", ok: Boolean(ok), data: { stage: `courier_${kind}`, channel: "sms", ok: Boolean(ok) } }); } catch {}
       return ok;
     } catch (e) {

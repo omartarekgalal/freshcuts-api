@@ -28,6 +28,7 @@ import { renderTemplate } from "./smstemplates.js";
 import * as cartPresets from "./cartpresets.js";
 import { couponQueries, firstEligibility } from "./couponrules.js";
 const sendAdSms = (pn, body, meta) => smsRules.sendAdSms(pn, body, meta);
+import { holdUntil as journeyHoldUntil } from "./wajourney.js";      // CJ1a (١٧/١٠): SMS السلة مابتيجيش ورا رسالة تانية للعميل بدقايق
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const STAGES = ["cart", "checkout", "address", "payment", "ordered"];
@@ -349,6 +350,10 @@ export function register(app, ctx, deps = {}) {
        بنتحاسب على رسالة ماتوصلش. الإشعار فوق عدّى عادي. */
     const blocked = await pool.query("SELECT 1 FROM sms_ad_blocked WHERE phone_norm=$1", [pn]).then((r) => r.rowCount > 0).catch(() => false);
     if (blocked) return { channel: null, reason: "ad_blocked" };
+    /* CJ1a: العميل واصلته رسالة (واتساب أو SMS، من أي نظام) من أقل من waBot.burstHoldMin ⇒ مش دلوقتي. مفيش صف بيتحرق:
+       recoveryTick بيمسح صف cart_recovery لما مفيش قناة اتبعتت، فالسلة بتتعاد في الدورة الجاية طول ما هي جوّه نافذتها. */
+    const hold = await journeyHoldUntil((sql, p) => pool.query(sql, p).then((r) => r.rows), { phone: pn, cfg: (s || {}).waBot });
+    if (hold) return { channel: null, reason: "burst_hold" };
     const body = cartSmsBody(step, eligibleFirst, link,
       { cfg: (s.cms || {}).campaigns, code: oc.optout_code, host: storeHost(), sender: process.env.TAQNYAT_SENDER_AD }, s);
     const parts = smsRules.smsParts(body);

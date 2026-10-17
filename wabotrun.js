@@ -63,6 +63,7 @@ import { declineMemory } from "./wapersonal.js";      // S1: ذاكرة الرف
 import { FU_KIND, FU_GROUP, FU_GROUP_AR, FU_DEFAULTS, FU_NUMS, FU_BOOLS, FU_SCHEMA, FU_TAP_KEYS, FU_CLOSING_KEYS, FU_PROACTIVE_KEYS, FU_OTHER_JOBS, FU_SQL, FU_DDL,
   fuConfig, inFollowHours, nextFollowStart, bizDayStart, brakeVerdict, followTrigger, convFacts, pickLooked, offerPhrase } from "./wafollow.js";      // FU1 (١٥/١٠): متابعة اللي ردّ وماطلبش
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
+import { JOURNEY_GROUP, JOURNEY_GROUP_AR, JOURNEY_DEFAULTS, JOURNEY_NUMS, JOURNEY_BOOLS, JOURNEY_SCHEMA, journeyCfg, holdUntil, deferDecision, PROACTIVE_KEYS, PROACTIVE_JOB_KINDS, PAID_CONFIRM_SQL } from "./wajourney.js";      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض
 import { COURIER_JOB_DEFAULTS, COURIER_JOB_SCHEMA, COURIER_JOB_SCHEMA_GROUP, courierJobConfig, courierJobFromBody } from "./courierwa-cfg.js";      // CW1
 import { REVIEW_FLOW_DEFAULTS, REVIEW_FLOW_SCHEMA, REVIEW_SCHEMA_GROUP, REVIEW_TEXTS, reviewFlowConfig, reviewFlowFromBody, starOfListId, starOfQr, typedStar, reasonOfListId, reviewsCfgOf,
   starsAskReply, starsSubject, starReply, applyStar, applyReason, captureLowComment, pendingStars, markGoogleSent, reviewCtaOk, reviewsDaily, WEB_KINDS, VISIT_KINDS } from "./wareviews.js";      // RV1: النجوم جوّه واتساب
@@ -102,6 +103,7 @@ export const DEFAULTS = Object.freeze({
   paidNoteEnabled: true,       // EX6: العميل دفع طلب بعد ما كلّم البوت/المساعد والنافذة مفتوحة ⇒ سطر تأكيد برقم الطلب
   leadFollowUpMin: 20,         // EX6: «متابعة المحادثة» — رسالة عميل ماخدتش رد مفيد (سكوت، بره النطاق، «ما فهمت») ومحدش رد ⇒ متابعة واحدة بعد الدقايق دي. صفر = مقفول. مرة في اليوم للمحادثة
   ...FU_DEFAULTS,              // FU1 (١٥/١٠): متابعة واحدة جوّه النافذة للي ردّ على حملة أو ضغط زر وماطلبش (wafollow.js)
+  ...JOURNEY_DEFAULTS,         // CJ1a (١٧/١٠): مفيش رسايل ورا بعض — هدوء بعد آخر رسالة، تأكيد مرة واحدة، SMS المندوب مش مع واتساب، سقف رسايل الطلب (wajourney.js)
   autoInboundPatterns: true,   // EX5: رسالة واردة شكلها رد آلي من نشاط تجاري («شكراً لتواصلك»، «لسنا متوفرين»، thank you for contacting…) ⇒ auto_inbound: لا رد ولا مساعد ولا تحويل
   autoInboundSec: 15,          // EX5: نص ٢٥ حرف+ وصل خلال الثواني دي من **قالب** إحنا بعتناه للرقم ⇒ auto_inbound (محدش بيقرا ويكتب بالسرعة دي). صفر = مقفول
   loopGuardCount: 3,           // EX5: حارس الحلقات — العدد ده من الرسايل «السريعة» ورا بعض (كل واحدة وصلت خلال loopGuardFastSec من ردّنا، ونصها ٢٥ حرف+ أو مكرر) ⇒ كتم. صفر = مقفول
@@ -732,6 +734,7 @@ export function botConfig(settings) {
     windowKeeperHour: num(x.windowKeeperHour, 12, 23, DEFAULTS.windowKeeperHour), windowKeeperDailyCap: num(x.windowKeeperDailyCap, 0, 500, DEFAULTS.windowKeeperDailyCap), windowKeeperWeekly: num(x.windowKeeperWeekly, 0, 7, DEFAULTS.windowKeeperWeekly),
     windowKeeperQuietStart: num(x.windowKeeperQuietStart, 0, 23, DEFAULTS.windowKeeperQuietStart), windowKeeperQuietEnd: num(x.windowKeeperQuietEnd, 0, 23, DEFAULTS.windowKeeperQuietEnd), leadFollowUpMin: num(x.leadFollowUpMin, 0, 180, DEFAULTS.leadFollowUpMin),
     ...fuConfig(x),      // FU1
+    ...journeyCfg(x),    // CJ1a
     autoInboundPatterns: x.autoInboundPatterns !== false, autoInboundSec: num(x.autoInboundSec, 0, 120, DEFAULTS.autoInboundSec),
     loopGuardCount: num(x.loopGuardCount, 0, 20, DEFAULTS.loopGuardCount), loopGuardFastSec: num(x.loopGuardFastSec, 1, 30, DEFAULTS.loopGuardFastSec),
     loopGuardSeconds: num(x.loopGuardSeconds, 10, 600, DEFAULTS.loopGuardSeconds), loopGuardMuteHours: num(x.loopGuardMuteHours, 1, 168, DEFAULTS.loopGuardMuteHours),
@@ -809,10 +812,10 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback", "campaignReplyHours",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "followBannerSkipHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "activeOrderHours", "activeOrderMergeSec", "handoverBurstSec", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS)]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "followBannerSkipHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "activeOrderHours", "activeOrderMergeSec", "handoverBurstSec", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS), ...Object.keys(JOURNEY_NUMS)]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "followBanner", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", "campaignReply", "activeOrderFirst", ...FU_BOOLS]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "followBanner", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", "campaignReply", "activeOrderFirst", ...FU_BOOLS, ...JOURNEY_BOOLS]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -1123,11 +1126,12 @@ export const SCHEMA = Object.freeze({
   replyRateSar: S("cost", "number", "سعر الرد بعد المجاني", "", { min: 0, max: 5, unit: "ر.س", step: 0.0001 }),
   waRates: S("cost", "rates", "بطاقة أسعار قوالب واتساب", "تسويقي / خدمي / رمز تحقق + تاريخ البطاقة."),
   ...FU_SCHEMA,      // FU1 (١٥/١٠): متابعة اللي ردّ وماطلبش — مجموعتها لوحدها في اللوحة
+  ...JOURNEY_SCHEMA, // CJ1a (١٧/١٠): «رحلة العميل في النافذة: مفيش رسايل ورا بعض» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...ASSIST_SCHEMA,
   ...COURIER_JOB_SCHEMA,      // CW1: «🛵 المندوب الخارجي: الأزرار على واتساب» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...REVIEW_FLOW_SCHEMA,      // RV1: «التقييمات على واتساب» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
 });
-export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", orderMsgs: "رسايل الطلب: توفير القوالب وزر «تابع طلبك»", [FU_GROUP]: FU_GROUP_AR, greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
+export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", orderMsgs: "رسايل الطلب: توفير القوالب وزر «تابع طلبك»", [FU_GROUP]: FU_GROUP_AR, [JOURNEY_GROUP]: JOURNEY_GROUP_AR, greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
   faq: "الأسئلة الشائعة", texts: "النصوص", optin: "موافقة التحديثات", ai: "الذكاء الاصطناعي", cost: "التكلفة", assist: "مساعد الطلبات", ...REVIEW_SCHEMA_GROUP, ...COURIER_JOB_SCHEMA_GROUP });
 const getPath = (o, p) => p.split(".").reduce((a, k) => (a && typeof a === "object" ? a[k] : undefined), o);
 /* للّوحة: كل إعداد بقيمته الحالية والافتراضية وحدوده وشرحه. */
@@ -3280,9 +3284,12 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     try { pl = toPayload(rep, { cfg, lang, interactive: cfg.interactive, footer: false }); plain = toPayload(rep, { cfg, lang, interactive: false, footer: false }); } catch { return { err: "text_invalid", wamid: null }; }
     if (payloadProblem(pl) || payloadProblem(plain)) return { err: "payload_invalid", wamid: null };
     const allow = cfg.mode === "test" ? cfg.testPhones : null;
-    let r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: allow });
-    if (!r.ok && !r.skipped && pl.type === "interactive") { pl = plain; r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: allow }); }
+    const proactive = PROACTIVE_KEYS.has(String(key || ""));      // CJ1a: الرسالة المبادِرة بتستنى الهدوء بعد آخر رسالة للعميل (guardSend burst_hold) — سطر التحويل وسطر السيل مش منها
+    let r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: allow, proactive });
+    if (!r.ok && !r.skipped && pl.type === "interactive") { pl = plain; r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: allow, proactive }); }
     const err = r.ok ? null : (r.skipped ? `skipped:${r.skipped}` : String(r.error || "send_failed"));
+    /* CJ1a: الهدوء مش فشل — مفيش صف «failed» في السجل؛ المنادي بيأجّل (until) ويتسجّل لما يتبعت فعلاً */
+    if (r.skipped === "burst_hold") return { err, wamid: null, until: r.until || null };
     const lg = await q(
       `INSERT INTO wa_bot_log(wamid, msg_at, phone_norm, mode, msg_type, text, intent, reply_key, score, lang, decision, referral)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
@@ -3345,7 +3352,8 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
           rep = flow.enabled ? starsAskReply({ T, F, kind: k, orderNo: shown, code })
             : { body: fill("rv_ask", textOf(cfg, "rv_ask", lang), { order_no: orderNo }), buttons: [{ id: `rv:ok:${code}`, title: textOf(cfg, "btn_rv_ok", lang) }, { id: `rv:note:${code}:${String(orderNo).slice(0, 30)}`, title: textOf(cfg, "btn_rv_note", lang) }] };
         } catch { rep = null; }
-        if (rep) { const err = await sendOwn(phone, cfg, now, rep, lang, flow.enabled ? "review_stars_ask" : "review_ask", `order ${orderNo}`); if (!err) { await mark(flow.enabled); return { ok: true, channel: flow.enabled ? "wa_list" : "wa" }; } if (/opted_out|stopped/.test(err)) return { ok: false, skipped: err, final: true }; }
+        if (rep) { const sx = await sendOwnX(phone, cfg, now, rep, lang, flow.enabled ? "review_stars_ask" : "review_ask", `order ${orderNo}`), err = sx.err; if (!err) { await mark(flow.enabled); return { ok: true, channel: flow.enabled ? "wa_list" : "wa" }; } if (/opted_out|stopped/.test(err)) return { ok: false, skipped: err, final: true };
+          if (/burst_hold/.test(err)) return { ok: false, skipped: "burst_hold", defer: true, until: sx.until || new Date(now.getTime() + 5 * 60_000).toISOString() }; }      // CJ1a: العميل لسه واصلته رسالة ⇒ reviews.js بيأجّل due_at
       }
       /* ١٤/١٠ — النافذة مقفولة ⇒ سياسة القوالب (wapolicy.reviewDecision): التوصيل اتبعت بزرّين «تمام / عندي ملاحظة» (v2 أو حر) ⇒ ده نفس سؤال التقييم، مفيش قالب تاني
          (الدعوة بتتعلّم اتبعتت، و«تمام» المكتوبة بتتحسب رد). قالب بفلوس لنفس الطلب من أقل من reviewPaidGapMin ⇒ تأجيل (reviews.js بيأخّر due_at). القاعدة ماردّتش ⇒ زي الأول.
@@ -3357,6 +3365,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         const r = await wa.sendTemplate({ phoneNorm: phone, template: "fc_review_stars", params: { body: [subj] }, orderNo: String(orderNo), stage: "review", source: "review", allowList: cfg.mode === "test" ? cfg.testPhones : null });
         if (r && r.ok) { await mark(true); return { ok: true, channel: "wa_stars", wamid: r.wamid || null }; }
         if (r && r.skipped === "opted_out") return { ok: false, skipped: "opted_out", final: true };
+        if (r && r.skipped === "burst_hold") return { ok: false, skipped: "burst_hold", defer: true, until: r.until || new Date(now.getTime() + 5 * 60_000).toISOString() };      // CJ1a
         if (r && r.skipped) return { ok: false, skipped: String(r.skipped).slice(0, 60) };
         return null;
       };
@@ -3376,6 +3385,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       const r = await wa.sendTemplate({ phoneNorm: phone, template: cfg.windowV2Stages.includes("review") ? "fc_review_request_v2" : "fc_review_request", params: { body: [String(orderNo)], button: [String(code)] }, orderNo: String(orderNo), stage: "review", source: "review", allowList: cfg.mode === "test" ? cfg.testPhones : null });
       if (r && r.ok) { await mark(); return { ok: true, channel: "wa_template" }; }
       if (r && r.skipped === "opted_out") return { ok: false, skipped: "opted_out", final: true };
+      if (r && r.skipped === "burst_hold") return { ok: false, skipped: "burst_hold", defer: true, until: r.until || new Date(now.getTime() + 5 * 60_000).toISOString() };      // CJ1a
       return { ok: false, skipped: String((r && (r.skipped || r.error)) || "template_failed").slice(0, 60) };
     } catch (e) { return { ok: false, skipped: `error:${String(e.message || e).slice(0, 40)}` }; }
   }
@@ -3445,6 +3455,12 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (!cfg.paidNoteEnabled) return no("off"); if (!ev.orderNo) return no("bad_job");
     const [why] = await ownGate(phone, settings, cfg, now, now.toISOString());
     if (why) return no(why);
+    /* CJ1a (٢): قالب الاستلام (fc_order_received / _v2 أو رسالة pos_created الحرة) طلع لنفس الطلب خلال paidNoteDedupeMin ⇒ «وصلنا طلبك» تأكيد تاني — مايتبعتش (٨ من ٢٢ يوم ١٦/١٠) */
+    if (cfg.journeyBursts && cfg.paidNoteDedupeMin > 0) {
+      const dup = await q(PAID_CONFIRM_SQL, [String(ev.orderNo), Math.round(cfg.paidNoteDedupeMin)]);
+      if (dup === null) return no("confirm_check_failed");
+      if (dup.length) return no("already_confirmed");
+    }
     const lang = "ar";
     let rep; try { rep = { body: fill("paid_note", textOf(cfg, "paid_note", lang), { order_no: ev.orderNo }), cta: { title: textOf(cfg, "cta_track", lang), url: `${STORE}/track/${encodeURIComponent(ev.orderNo)}` } }; } catch { return no("text_invalid"); }
     const err = await sendOwn(phone, cfg, now, rep, lang, "paid_note", `order ${ev.orderNo}`);
@@ -3721,6 +3737,18 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         const ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
         const now = clock();
         if (cfg.mode === "off") { await cancel("mode_off"); continue; }
+        /* CJ1a (١٧/١٠): الشغلة المبادِرة والعميل لسه واصلته رسالة من أقل من burstHoldMin (من أي نظام) ⇒ ترجع pending لحد ما الهدوء يخلص («ندمج بدل ما نكدّس»)،
+           وشروطها كلها بتتراجع وقتها زي ما هي. لو فضلت مستنية أكتر من burstHoldMaxMin من أول تأجيل ⇒ بتتلغي (العميل بيتكلّم معانا طول الوقت = مش محتاجها). */
+        if (PROACTIVE_JOB_KINDS.includes(j.kind)) {
+          const until = await holdUntil(q, { phone: String(j.phone_norm || ""), cfg: settings.waBot, now: now.getTime() });
+          if (until) {
+            const dd = deferDecision({ until, firstHold: ev.holdSince || null, now: now.getTime(), maxMin: cfg.burstHoldMaxMin });
+            if (dd.expired) { await end("cancelled", "burst_hold_expired"); continue; }
+            await q(`UPDATE wa_bot_jobs SET status='pending', due_at=$2, reason='burst_hold', ev=$3 WHERE id=$1`,
+              [j.id, dd.until.toISOString(), jb({ ...ev, holdSince: dd.firstHold.toISOString(), holds: (Number(ev.holds) || 0) + 1 })]);
+            continue;
+          }
+        }
         if (j.kind === "assist_followup") { await runFollowUp(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "paid_note") { await runPaidNote(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "window_keep") { await runWindowKeep(j, settings, cfg, now, end); ran++; continue; }

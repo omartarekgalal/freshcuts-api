@@ -45,6 +45,7 @@ import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS, POS_REVIEW_CONSENT, pos
 import { custCapOf, custCapReason } from "./waquality.js";
 import { waStageOn } from "./waswitches.js";
 import { staffRoleOf } from "./wateam.js";
+import { journeyCfg, holdUntil, orderCapDecision, ORDER_SENT_SQL, CAP_EXEMPT_SOURCES } from "./wajourney.js";      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض + سقف رسايل الطلب
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const GRAPH_VERSION = "v23.0";
@@ -791,7 +792,7 @@ export function register(app, ctx, deps = {}) {
   }
   const TICKETS = new WeakSet();
   const TICKET_TTL_MS = 60_000;
-  async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null, orderNo = null, staff = false, courier = false } = {}) {
+  async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null, orderNo = null, staff = false, courier = false, proactive = false, stage = null } = {}) {
     const no = (reason) => ({ ok: false, reason });
     await ready;
     const pn = String(phoneNorm || "");
@@ -819,6 +820,31 @@ export function register(app, ctx, deps = {}) {
     const staffTpl = (staff === true || courier === true) && kind === "template";      // CW1: قالب المندوب الخارجي زي قالب الفريق — أقفال الرد الحر
     const blocked = channelBlock(s, staffTpl ? "session" : kind);      // SW1: الرد الحر مابيقفش على مفتاح تحديثات الطلب
     if (blocked) return no(blocked);
+    /* CJ1a (١٧/١٠ — عمر: «ليه ٣ رسايل في دقيقتين»): رحلة العميل في النافذة (wajourney.js)
+         (١) proactive:true (حملة / متابعة / حارس النافذة / «أنا معك» / تأكيد المحادثة / طلب التقييم) والعميل وصلته رسالة من أي نظام من أقل من burstHoldMin
+             ⇒ burst_hold + until: المنادي بيأجّل لحد الوقت ده (مش بيلغي). تحديثات الطلب والرد على كلام العميل مش proactive فمابيتلمسوش.
+         (٤) رسالة عن طلب (orderNo + stage) من غير ما تكون رد على العميل / فريق / تجربة: سقف رسايل الطلب الواحد ⇒ order_cap / order_cap_low (policy:true =
+             مفيش SMS بدلها، وبيتسجّل في wa_policy_skips للتقرير). ماقدرناش نعدّ ⇒ تحديث الطلب بيعدّي (السقف مش موافقة). */
+    if (!staff && !courier) {
+      if (proactive === true) {
+        const until = await holdUntil((sql, p) => pool.query(sql, p).then((r) => (r && r.rows) || []), { phone: pn, cfg: s && s.waBot });
+        if (until) return { ok: false, reason: "burst_hold", until: until.toISOString() };
+      }
+      if (orderNo && stage && !CAP_EXEMPT_SOURCES.has(String(source || ""))) {
+        const jc = journeyCfg(s && s.waBot);
+        if (jc.journeyBursts && jc.orderMsgCap > 0) {
+          let sent = null;
+          try { const r = await pool.query(ORDER_SENT_SQL, [String(orderNo)]); sent = r && r.rows && r.rows[0] ? Number(r.rows[0].n) || 0 : 0; } catch { sent = null; }
+          if (sent !== null) {
+            const dec = orderCapDecision({ sent, stage, cap: jc.orderMsgCap, tail: jc.orderMsgTail });
+            if (!dec.ok) {
+              pool.query("INSERT INTO wa_policy_skips(order_no, phone_norm, stage, reason) VALUES ($1,$2,$3,$4)", [String(orderNo).slice(0, 30), pn, String(stage).slice(0, 30), dec.reason]).catch(() => {});
+              return { ok: false, reason: dec.reason, policy: true };
+            }
+          }
+        }
+      }
+    }
     if (kind === "session") {
       // رد حر: العميل لازم يكون كلّمنا في آخر ٢٤ ساعة (رسالة حقيقية وصلت على الويب هوك، مش تاريخ مستورد)
       if (!(await windowOpen(pn))) return no("window_closed");
@@ -997,7 +1023,7 @@ export function register(app, ctx, deps = {}) {
      source/body اختياريين: الحملات بتبعت نص القالب بعد التعويض عشان يظهر في
      المحادثة زي ما العميل شافه (مش «[قالب: …]»). */
   async function sendTemplate({ phoneNorm, template, params = {}, orderNo = null, stage = null, fallbackSms = null,
-    requireOptIn = true, source = null, body = null, lang = null, allowList = null, test = false, staff = false, courier = false }) {
+    requireOptIn = true, source = null, body = null, lang = null, allowList = null, test = false, staff = false, courier = false, proactive = false }) {
     await ready;
     const t = TEMPLATES[template];
     if (!t) return { ok: false, error: "unknown_template" };
@@ -1007,8 +1033,8 @@ export function register(app, ctx, deps = {}) {
        مطلوبة)؛ الاستثناء الوحيد = أرقام التجربة اللي في اللوحة (test / allowList). */
     void requireOptIn;
     const g = await guardSend({ phoneNorm, kind: "template", template, source, purpose: source === "campaign" ? "marketing" : null,
-      test, allowList, orderNo, staff, courier });
-    if (!g.ok) return { ok: false, skipped: g.reason };
+      test, allowList, orderNo, staff, courier, proactive: proactive === true || source === "campaign" || source === "review", stage });      // CJ1a: الحملة وطلب التقييم مبادِرين دايماً
+    if (!g.ok) return { ok: false, skipped: g.reason, ...(g.until ? { until: g.until } : {}), ...(g.policy ? { policy: true } : {}) };
     const language = lang || t.language || "ar";
     const bad = paramProblem(template, params, language);
     if (bad) {
@@ -1042,13 +1068,13 @@ export function register(app, ctx, deps = {}) {
   /* رسالة حرة بجسم Cloud API جاهز (نص / interactive) — للبوت. جوّه نافذة الـ٢٤ ساعة بس (المنادي مسؤول عنها).
      allowList = وضع التجربة: للأرقام دي بس ومن غير مفاتيح العملاء. من غيرها = البوابة الكاملة (gate).
      محاولة واحدة، مفيش إعادة. بيرجّع {ok, wamid?} أو {ok:false, skipped|error, code?, message?}. */
-  async function sendFreeform({ phoneNorm, payload, source = "bot", allowList = null, preview = null, test = false, orderNo = null, stage = null, fallbackSms = null, media = null }) {
+  async function sendFreeform({ phoneNorm, payload, source = "bot", allowList = null, preview = null, test = false, orderNo = null, stage = null, fallbackSms = null, media = null, proactive = false }) {
     await ready;
     const to = toWaId(phoneNorm);
     if (!to) return { ok: false, skipped: "invalid_phone" };
     if (!payload || !payload.type || payload.type === "template") return { ok: false, skipped: "bad_payload" };
-    const g = await guardSend({ phoneNorm, kind: "session", source, test, allowList });
-    if (!g.ok) return { ok: false, skipped: g.reason };
+    const g = await guardSend({ phoneNorm, kind: "session", source, test, allowList, proactive: proactive === true, orderNo, stage });      // CJ1a: الهدوء بعد آخر رسالة + سقف رسايل الطلب
+    if (!g.ok) return { ok: false, skipped: g.reason, ...(g.until ? { until: g.until } : {}), ...(g.policy ? { policy: true } : {}) };
     const text = String(preview || payload.text?.body || payload.interactive?.body?.text || `[${payload.type}]`).slice(0, 500);
     try {
       const data = await deliver(g.ticket, { ...payload, messaging_product: "whatsapp", recipient_type: "individual", to });
