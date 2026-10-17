@@ -41,8 +41,7 @@ export function journeyCfg(x = {}) {
   const out = {};
   for (const k of JOURNEY_BOOLS) out[k] = src[k] !== false;
   for (const [k, lim] of Object.entries(JOURNEY_NUMS)) out[k] = Math.round(clamp(src[k], lim, JOURNEY_DEFAULTS[k]));
-  if (out.orderMsgTail > out.orderMsgCap) out.orderMsgTail = out.orderMsgCap;
-  return out;
+  return out;      // المحجوز (orderMsgTail) بيتقصّ على السقف وقت القرار (orderCapDecision) مش هنا — الإعداد بيتخزّن ويتقري زي ما المالك كتبه
 }
 const S = (type, ar, help, extra = {}) => Object.freeze({ group: JOURNEY_GROUP, type, ar, help, ...extra });
 const N = (k, ar, help, unit) => S("number", ar, help, { min: JOURNEY_NUMS[k][0], max: JOURNEY_NUMS[k][1], unit });
@@ -90,19 +89,19 @@ export const ORDER_LOW_STAGES = Object.freeze(new Set(["accepted", "paid_note", 
 export function orderCapDecision({ sent, stage, cap, tail }) {
   const c = Number(cap) || 0;
   if (!(c > 0)) return { ok: true };
-  const n = Math.max(0, Number(sent) || 0), st = String(stage || "");
+  const n = Math.max(0, Number(sent) || 0), st = String(stage || ""), t = Math.min(c, Math.max(0, Number(tail) || 0));      // المحجوز مايزيدش عن السقف
   if (ORDER_ALWAYS_STAGES.has(st)) return { ok: true };
-  if (ORDER_LOW_STAGES.has(st) && n >= Math.max(0, c - (Number(tail) || 0))) return { ok: false, reason: "order_cap_low" };
+  if (ORDER_LOW_STAGES.has(st) && n >= c - t) return { ok: false, reason: "order_cap_low" };
   if (n >= c) return { ok: false, reason: "order_cap" };
   return { ok: true };
 }
 
 /* ── SQL (المنفّذين بيمرّروها لـpool.query / q) ──────────────────────────── */
-/* آخر رسالة طالعة للعميل من أي نظام (واتساب اتقبلت + SMS اتبعتت) في آخر ٦ ساعات. $1 = الجوال */
-export const LAST_OUT_SQL = `SELECT max(t) AS last_out FROM (
-    SELECT max(created_at) AS t FROM wa_messages WHERE phone_norm=$1 AND direction='out' AND COALESCE(status,'') NOT IN ('failed','skipped') AND COALESCE(source,'api') <> 'history' AND created_at > NOW() - INTERVAL '6 hours'
-    UNION ALL
-    SELECT max(at) FROM sms_log WHERE phone_norm=$1 AND status='sent' AND at > NOW() - INTERVAL '6 hours') x`;
+/* آخر رسالة طالعة للعميل في آخر ٦ ساعات — استعلامين منفصلين: واتساب (أساسي — ماقدرناش نقراه ⇒ هدوء دقيقة) وSMS (اختياري — الجدول ممكن مايكونش موجود
+   في بيئة من غير SMS ⇒ بنكمّل على واتساب بس). $1 = الجوال */
+export const LAST_OUT_WA_SQL = `SELECT max(created_at) AS last_out FROM wa_messages WHERE phone_norm=$1 AND direction='out' AND COALESCE(status,'') NOT IN ('failed','skipped')
+    AND COALESCE(source,'api') <> 'history' AND created_at > NOW() - INTERVAL '6 hours'`;
+export const LAST_OUT_SMS_SQL = `SELECT max(at) AS last_out FROM sms_log WHERE phone_norm=$1 AND status='sent' AND at > NOW() - INTERVAL '6 hours'`;
 /* (٤) رسايل واتساب الطالعة عن الطلب ده (قوالب + حرة، اللي ميتا قبلتها). $1 = رقم الطلب */
 export const ORDER_SENT_SQL = `SELECT count(*)::int AS n FROM wa_messages WHERE order_no=$1 AND direction='out' AND COALESCE(status,'') NOT IN ('failed','skipped')`;
 /* (٢) قالب الاستلام (أو رسالته الحرة) طلع لنفس الطلب خلال $2 دقيقة؟ $1 = رقم الطلب */
@@ -114,13 +113,18 @@ export const WA_COVERS_ORDER_SQL = `SELECT 1 WHERE EXISTS (SELECT 1 FROM wa_mess
 /* عمود الطابور: الصف المحجوز بالهدوء (wasender.js) */
 export const QUEUE_HOLD_DDL = "ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS hold_until TIMESTAMPTZ";
 
-/* قراءة واحدة مشتركة: ⇒ Date (لحد إمتى) أو null. query = (sql, params) ⇒ rows[] | null. قراءة فشلت ⇒ hold دقيقة واحدة (الرسالة المبادِرة مش مستعجلة). */
+/* قراءة واحدة مشتركة: ⇒ Date (لحد إمتى) أو null. query = (sql, params) ⇒ rows[] | null.
+   قراءة واتساب فشلت ⇒ hold دقيقة واحدة (الرسالة المبادِرة مش مستعجلة)؛ قراءة SMS فشلت ⇒ بنكمّل على واتساب بس. */
 export async function holdUntil(query, { phone, cfg, now = Date.now() }) {
   const jc = journeyCfg(cfg);
   if (!jc.journeyBursts || !(jc.burstHoldMin > 0)) return null;
-  let rows = null;
-  try { rows = await query(LAST_OUT_SQL, [String(phone || "")]); } catch { rows = null; }
-  if (rows === null) return new Date(now + 60_000);
-  const d = holdDecision({ lastOut: rows && rows[0] ? rows[0].last_out : null, now, holdMin: jc.burstHoldMin });
+  const pn = String(phone || "");
+  let wa = null, sms = null;
+  try { wa = await query(LAST_OUT_WA_SQL, [pn]); } catch { wa = null; }
+  if (wa === null) return new Date(now + 60_000);
+  try { sms = await query(LAST_OUT_SMS_SQL, [pn]); } catch { sms = null; }
+  const ts = [wa && wa[0] ? wa[0].last_out : null, sms && sms[0] ? sms[0].last_out : null]
+    .map((v) => (v instanceof Date ? v.getTime() : Date.parse(String(v || "")))).filter((t) => Number.isFinite(t));
+  const d = holdDecision({ lastOut: ts.length ? new Date(Math.max(...ts)) : null, now, holdMin: jc.burstHoldMin });
   return d.hold ? d.until : null;
 }

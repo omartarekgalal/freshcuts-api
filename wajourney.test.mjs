@@ -13,7 +13,9 @@ test("الإعدادات: كل افتراضي له صف في المخطط (نف�
   assert.deepEqual(d, { journeyBursts: true, burstHoldMin: 10, burstHoldMaxMin: 120, paidNoteDedupeMin: 30, courierSmsWaMin: 30, orderMsgCap: 4, orderMsgTail: 3 });
   const c = J.journeyCfg({ journeyBursts: false, burstHoldMin: "abc", burstHoldMaxMin: 99999, paidNoteDedupeMin: -5, orderMsgCap: 2, orderMsgTail: 5 });
   assert.equal(c.journeyBursts, false); assert.equal(c.burstHoldMin, 10); assert.equal(c.burstHoldMaxMin, 720); assert.equal(c.paidNoteDedupeMin, 0);
-  assert.equal(c.orderMsgCap, 2); assert.equal(c.orderMsgTail, 2, "المحجوز للمراحل الأساسية مايزيدش عن السقف");
+  assert.equal(c.orderMsgCap, 2); assert.equal(c.orderMsgTail, 5, "الإعداد بيتخزّن زي ما اتكتب (الحد ٦)؛ القصّ على السقف وقت القرار");
+  assert.equal(J.orderCapDecision({ sent: 0, stage: "accepted", cap: 2, tail: 5 }).ok, false, "محجوز أكبر من السقف = كل الباقي محجوز ⇒ الخفيفة بتتشال من الأول");
+  assert.equal(J.orderCapDecision({ sent: 0, stage: "on_the_way", cap: 2, tail: 5 }).ok, true);
   assert.equal(J.journeyCfg(null).burstHoldMin, 10);
 });
 
@@ -59,16 +61,22 @@ test("(٤) سقف الطلب ٤ ومحجوز ٣: استلمنا ✓ ⇒ «بنج
   assert.equal(J.orderCapDecision({ sent: 4, stage: "accepted", cap: 4, tail: 0 }).ok, false);
 });
 
-test("holdUntil: بيقرا آخر رسالة طالعة بالـSQL المشترك؛ القراءة فشلت ⇒ هدوء دقيقة (الرسالة المبادِرة مش مستعجلة)؛ المفتاح مقفول ⇒ مفيش هدوء ومفيش قراءة", async () => {
+test("holdUntil: واتساب + SMS استعلامين، الأحدث فيهم هو اللي بيحكم؛ واتساب مش مقروء ⇒ هدوء دقيقة؛ SMS مش مقروء (جدول ناقص) ⇒ واتساب بس؛ المفتاح مقفول ⇒ ولا قراءة", async () => {
   const calls = [];
-  const q = (sql, p) => { calls.push([sql, p]); return [{ last_out: new Date(T0 - 2 * MIN).toISOString() }]; };
+  const q = (sql, p) => { calls.push([sql, p]); return [{ last_out: sql === J.LAST_OUT_WA_SQL ? new Date(T0 - 2 * MIN).toISOString() : new Date(T0 - 9 * MIN) }]; };
   const u = await J.holdUntil(q, { phone: "512345678", cfg: {}, now: T0 });
-  assert.equal(u.getTime(), T0 + 8 * MIN);
-  assert.equal(calls.length, 1); assert.equal(calls[0][0], J.LAST_OUT_SQL); assert.deepEqual(calls[0][1], ["512345678"]);
+  assert.equal(u.getTime(), T0 + 8 * MIN, "واتساب من دقيقتين هو الأحدث");
+  assert.equal(calls.length, 2); assert.equal(calls[0][0], J.LAST_OUT_WA_SQL); assert.equal(calls[1][0], J.LAST_OUT_SMS_SQL); assert.deepEqual(calls[0][1], ["512345678"]);
+  const smsNewer = (sql) => [{ last_out: sql === J.LAST_OUT_SMS_SQL ? new Date(T0 - 1 * MIN) : new Date(T0 - 30 * MIN) }];
+  assert.equal((await J.holdUntil(smsNewer, { phone: "512345678", cfg: {}, now: T0 })).getTime(), T0 + 9 * MIN, "SMS من دقيقة هي الأحدث");
   assert.equal(await J.holdUntil(() => [{ last_out: null }], { phone: "512345678", cfg: {}, now: T0 }), null);
   assert.equal(await J.holdUntil(() => [], { phone: "512345678", cfg: {}, now: T0 }), null);
-  assert.equal((await J.holdUntil(() => { throw new Error("db"); }, { phone: "512345678", cfg: {}, now: T0 })).getTime(), T0 + MIN);
+  assert.equal((await J.holdUntil(() => { throw new Error("db"); }, { phone: "512345678", cfg: {}, now: T0 })).getTime(), T0 + MIN, "واتساب مش مقروء ⇒ دقيقة");
   assert.equal((await J.holdUntil(() => null, { phone: "512345678", cfg: {}, now: T0 })).getTime(), T0 + MIN);
+  const noSmsTable = (sql) => { if (sql === J.LAST_OUT_SMS_SQL) throw Object.assign(new Error("missing"), { code: "42P01" }); return [{ last_out: new Date(T0 - 30 * MIN) }]; };
+  assert.equal(await J.holdUntil(noSmsTable, { phone: "512345678", cfg: {}, now: T0 }), null, "جدول SMS ناقص ⇒ القرار على واتساب بس (مفيش هدوء وهمي)");
+  const noSmsRecent = (sql) => { if (sql === J.LAST_OUT_SMS_SQL) return null; return [{ last_out: new Date(T0 - 3 * MIN) }]; };
+  assert.equal((await J.holdUntil(noSmsRecent, { phone: "512345678", cfg: {}, now: T0 })).getTime(), T0 + 7 * MIN);
   let n = 0;
   assert.equal(await J.holdUntil(() => { n++; return []; }, { phone: "512345678", cfg: { journeyBursts: false }, now: T0 }), null);
   assert.equal(await J.holdUntil(() => { n++; return []; }, { phone: "512345678", cfg: { burstHoldMin: 0 }, now: T0 }), null);
@@ -86,8 +94,9 @@ test("مين مبادِر: رسايل البوت المبادِرة بس (مش �
 });
 
 test("الـSQL: آخر رسالة طالعة بتجمع واتساب (من غير الفاشل/المتخطّى/المستورد) + SMS المتبعتة؛ تأكيد الاستلام = القالب أو مرحلة pos_created/paid؛ تغطية واتساب = نافذة مفتوحة + تحديث للطلب", () => {
-  assert.match(J.LAST_OUT_SQL, /wa_messages[\s\S]*direction='out'[\s\S]*NOT IN \('failed','skipped'\)[\s\S]*<> 'history'/);
-  assert.match(J.LAST_OUT_SQL, /sms_log[\s\S]*status='sent'/);
+  assert.match(J.LAST_OUT_WA_SQL, /wa_messages[\s\S]*direction='out'[\s\S]*NOT IN \('failed','skipped'\)[\s\S]*<> 'history'/);
+  assert.match(J.LAST_OUT_SMS_SQL, /sms_log[\s\S]*status='sent'/);
+  assert.ok(!/sms_log/.test(J.LAST_OUT_WA_SQL), "استعلام واتساب مابيلمسش جدول SMS (ممكن مايكونش موجود)");
   assert.match(J.PAID_CONFIRM_SQL, /template LIKE 'fc_order_received%' OR stage IN \('pos_created','paid'\)/);
   assert.match(J.PAID_CONFIRM_SQL, /make_interval\(mins => \$2::int\)/);
   assert.match(J.WA_COVERS_ORDER_SQL, /direction='in'[\s\S]*24 hours/);
