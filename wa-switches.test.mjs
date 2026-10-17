@@ -51,7 +51,8 @@ test("صفوف المراحل: حالة قالب كل مرحلة عند ميتا
   const rows = SW.stageRows({ stageTemplates: W.STAGE_TEMPLATES, notifications: { whatsappStages: ["accepted", "delivered"], whatsappReplacesSmsStages: ["delivered"] },
     metaList: META({ pickup_ready: { status: "REJECTED" }, on_the_way: { category: "MARKETING" } }).filter((t) => t.name !== "fc_refund_in_progress"), metaOk: true, mandatorySms: SW.MANDATORY_SMS_STAGES });
   const by = Object.fromEntries(rows.map((r) => [r.stage, r]));
-  assert.deepEqual(rows.map((r) => r.stage), STAGES);
+  assert.deepEqual(rows.map((r) => r.stage), [...STAGES, "collected"]);      // RT2: + صف المرحلة الحرة «اتسلّم من الفرع»
+  assert.deepEqual([by.collected.free, by.collected.template, by.collected.canEnable, by.collected.enabled, by.collected.smsOnly], [true, null, true, false, false]);
   assert.deepEqual([by.accepted.enabled, by.accepted.replacesSms, by.accepted.smsOnly, by.accepted.canEnable, by.accepted.metaStatus, by.accepted.template], [true, false, false, true, "APPROVED", "fc_order_preparing"]);
   assert.deepEqual([by.delivered.enabled, by.delivered.replacesSms], [true, true]);
   assert.deepEqual([by.pickup_ready.canEnable, by.pickup_ready.blockedBy, by.pickup_ready.metaStatus, by.pickup_ready.smsOnly], [false, "template_not_approved", "REJECTED", true]);
@@ -60,7 +61,8 @@ test("صفوف المراحل: حالة قالب كل مرحلة عند ميتا
   assert.deepEqual([by.refund_failed.metaStatus, by.refund_failed.blockedBy, by.refund_failed.mandatorySms], ["NOT_SUBMITTED", "template_not_approved", true]);
   // ماقدرناش نقرا ميتا ⇒ مانعرفش، ومايتشغّلش جديد
   const blind = SW.stageRows({ stageTemplates: W.STAGE_TEMPLATES, notifications: {}, metaOk: false });
-  assert.ok(blind.every((r) => r.metaStatus === null && r.canEnable === false && r.blockedBy === "meta_unreadable" && r.enabled === false));
+  assert.ok(blind.filter((r) => !r.free).every((r) => r.metaStatus === null && r.canEnable === false && r.blockedBy === "meta_unreadable" && r.enabled === false));
+  assert.ok(blind.filter((r) => r.free).every((r) => r.canEnable === true && r.blockedBy === null && r.template === null), "RT2: المرحلة الحرة من غير قالب مابتقفش على ميتا");
 });
 
 test("حفظ المراحل: إضافة مرحلة محتاجة قالب معتمد وخدمي؛ الشيل مسموح دايماً؛ و«يغني عن الـSMS» لازم لمرحلة مشغّلة", () => {
@@ -78,7 +80,7 @@ test("حفظ المراحل: إضافة مرحلة محتاجة قالب معت�
   assert.equal(P({ want: ["accepted"], replaces: "accepted" }), "bad_replaces");
   assert.equal(P({ want: ["accepted"], replaces: ["accepted"] }), null);
   const msg = SW.stagesProblem({ want: ["pickup_ready"], stageTemplates: W.STAGE_TEMPLATES, metaList: META({ pickup_ready: { status: "REJECTED" } }), metaOk: true });
-  assert.deepEqual([msg.stage, msg.template], ["pickup_ready", "fc_order_ready_pickup"]); assert.match(msg.message, /جاهز للاستلام: القالب لسه مش معتمد عند ميتا/);
+  assert.deepEqual([msg.stage, msg.template], ["pickup_ready", "fc_order_ready_pickup"]); assert.match(msg.message, /جاهز للاستلام \(استلام من الفرع\): القالب لسه مش معتمد عند ميتا/);      // RT2: التسمية الجديدة
 });
 
 test("القالبين الجداد: في الكتالوج، موقوفين (HOLD)، مش في أي دفعة تقديم، ومش مربوطين بمرحلة", withEnv({ ...ALLOW, WHATSAPP_TEMPLATES_WRITE: "1" }, async () => {
@@ -90,8 +92,9 @@ test("القالبين الجداد: في الكتالوج، موقوفين (HOL
     assert.equal(C.campaignSpec(name), null);
   }
   assert.equal(W.STAGE_TEMPLATES.pickup_ready, "fc_order_ready_pickup", "المرحلة لسه على القالب القديم — الجديد مايتبعتش");
-  assert.equal(CAT.bodyOf(CAT.findTemplate("fc_order_pickup_ready", "ar")), "طلبك رقم {{1}} جاهز للاستلام من فرع فريش كاتس في حي السلامة بجدة.");
-  assert.equal(CAT.bodyOf(CAT.findTemplate("fc_order_pickup_ready", "en")), "Your order {{1}} is ready for pickup at the Fresh Cuts branch in As Salamah, Jeddah.");
+  // RT2 (١٧/١٠): صياغة المالك — نفس النص بيطلع رسالة حرة جوّه النافذة لحد ما ميتا تعتمده
+  assert.equal(CAT.bodyOf(CAT.findTemplate("fc_order_pickup_ready", "ar")), "طلبك رقم {{1}} جاهز للاستلام من فريش كاتس 📍 تفضّل إلى الفرع واذكر رقم طلبك.");
+  assert.equal(CAT.bodyOf(CAT.findTemplate("fc_order_pickup_ready", "en")), "Your order {{1}} is ready for pickup from Fresh Cuts 📍 Please come to the branch and mention your order number.");
   // مسار التقديم بيرفضهم
   const app = fakeApp(); const calls = [];
   W.register(app, { pool: { query: async () => ({ rows: [], rowCount: 0 }) }, requireAdmin: async () => null, getSettingsData: async () => ({}), jb: JSON.stringify, normPhone: String },
@@ -247,7 +250,7 @@ test("شاشة «قبل ما تشغّل»: الأقفال الأربعة وحا�
   assert.deepEqual(b.locks.map((l) => [l.id, l.ok]), [["env", false], ["configured", true], ["master", false], ["orderUpdates", true]]);
   assert.deepEqual([b.envState, b.locks[0].state, b.locks[3].appliesTo], ["unset", "unset", "templates"]);
   assert.deepEqual([b.paths.session.blockedBy, b.paths.template.blockedBy, b.paths.session.needs, b.paths.template.needs], ["disabled", "disabled", ["env", "configured", "master"], ["env", "configured", "master", "orderUpdates"]]);
-  assert.deepEqual(b.stages.map((s) => s.stage), STAGES);
+  assert.deepEqual(b.stages.map((s) => s.stage), [...STAGES, "collected"]);      // RT2
   const pick = b.stages.find((s) => s.stage === "pickup_ready");
   assert.deepEqual([pick.enabled, pick.smsOnly, pick.canEnable, pick.metaStatus], [false, true, false, "REJECTED"]);
   const m = b.masterOnWouldStart;

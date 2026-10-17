@@ -27,8 +27,9 @@ import webpush from "web-push";
 import { sendSms } from "./accounts.js";
 import { emitOrder } from "./order-events.js";
 import { renderTemplate } from "./smstemplates.js";
-import { READY_TEXT, orderKind } from "./prepstatus.js";
-import { waStageOn, waReplacesSms } from "./waswitches.js";
+import { READY_TEXT, orderKind, reviewDueAt } from "./prepstatus.js";
+import { waStageOn, waReplacesSms, pickupReadyMigration, PICKUP_READY_MIGRATION_ID } from "./waswitches.js";
+import { waPolicyCfg } from "./wapolicy.js";      // 📍 RT2: reviewPaidGapMin — هل دعوة التقييم جاية قريب؟
 import { loyaltyCfgOf, loyaltyStatusFor, LOYALTY_COUNTED_SQL } from "./loyalty.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
@@ -40,6 +41,9 @@ const MESSAGES = {
   pos_created: (o) => `فريش كاتس: استلمنا طلبك ${o.order_no} وتم الدفع بنجاح ✅`,
   accepted: (o) => `فريش كاتس: المطعم بدأ تجهيز طلبك ${o.order_no} 👨‍🍳`,
   courier_assigned: () => `فريش كاتس: رتّبنا لك مندوب توصيل 🛵`,
+  /* 📍 RT2 (١٧/١٠ — عمر: «موصلتش رسايل واتس اب ان الطلب جاهز»): «جاهز للاستلام» بقت مرحلة أصلية. ده نص الـSMS البديل (نفس fallbackSms بتاع الكتالوج)
+     لما واتساب مايقدرش (النافذة مقفولة والقالب لسه مش معتمد) — جزء UCS-2 واحد. واتساب نفسه بياخد صياغة المالك من fc_order_pickup_ready. */
+  pickup_ready: (o) => `فريش كاتس: طلبك ${o.order_no} جاهز للاستلام من الفرع`,
   /* ١٧/٩ (عمر): «المندوب في الطريق» هي رسالة الحالة الوحيدة بالـSMS — فبرابط
      التتبع، وجزء UCS-2 واحد (≤٧٠) — رقم الطلب ١٤ حرف فالإيموجي بيتشال لو هيعدّي. */
   on_the_way: (o) => {
@@ -58,7 +62,8 @@ const MESSAGES = {
      بيفضل ولّع لحد ما حد يسترجع فعلاً. */
   refund_failed: (o) => `فريش كاتس: نعتذر عن طلبك ${o.order_no}. استرجاع المبلغ جارٍ وفريقنا يتابعه، وسنتواصل معك للتأكيد 🙏`,
 };
-const DEFAULT_SMS_STAGES = ["pos_created", "rejected_refunded", "refund_failed"];
+/* RT2 (١٧/١٠): + pickup_ready في الافتراضي (التركيب الجديد بس — القايمة الحيّة اللي المالك ضبطها من شاشة SMS مابتتلمسش) */
+const DEFAULT_SMS_STAGES = ["pos_created", "pickup_ready", "rejected_refunded", "refund_failed"];
 /* رسايل الاسترجاع مش اختيارية: العميل دفع ولازم يعرف إن فلوسه راجعة. بتتبعت
    طول ما SMS مفعّل، حتى لو smsStages في الإعدادات ماذكرتهاش. */
 export const MANDATORY_SMS_STAGES = ["rejected_refunded", "refund_failed"];
@@ -166,10 +171,43 @@ export function register(app, ctx, deps = {}) {
       console.log("[notify] generated new VAPID key pair");
     }
     push.setVapidDetails("mailto:otg1194@gmail.com", vapid.publicKey, vapid.privateKey);
+    /* 📍 RT2 (١٧/١٠ — عمر: «موصلتش رسايل واتس اب ان الطلب جاهز»): «جاهز للاستلام» تتضاف لمصفوفات اللوحة الحيّة لو ناقصة — مرة واحدة على مستوى القاعدة */
+    await migratePickupReady();
   }
   ensureSchema()
     .then(() => console.log("[notify] ready"))
     .catch((e) => console.error("[notify] init failed:", e.message));
+
+  /* 📍 RT2 (١٧/١٠): ترحيل مرة واحدة — cms_migrations بتقفله (حاوية واحدة بس بتكتب حتى لو الإقلاع اتكرر أو فيه حاويتين)، والتغيير بيتكتب في cms_audit زي أي تعديل
+     إعدادات من اللوحة (actor «النظام — ترحيل RT2»). القيم من waswitches.pickupReadyMigration (دالة صافية — الاختبار بيتأكد إنها idempotent).
+     لو القايمتين فيهم المرحلة أصلاً مفيش كتابة ولا صف تدقيق. أي خطأ = نحاول الإقلاع الجاي (الصف في cms_migrations بيتشال عشان مانقفلش على فشل). */
+  async function migratePickupReady() {
+    let claimed = false;
+    try {
+      await pool.query("CREATE TABLE IF NOT EXISTS cms_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
+      const claim = await pool.query("INSERT INTO cms_migrations(id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING id", [PICKUP_READY_MIGRATION_ID]);
+      if (!(claim && claim.rowCount)) return { skipped: "already" };
+      claimed = true;
+      const m = pickupReadyMigration(await getSettingsData());
+      if (!m.changed.length) { console.log("[notify] RT2: pickup_ready already in the live lists"); return m; }
+      await pool.query(
+        `UPDATE settings SET data = jsonb_set(jsonb_set(COALESCE(data,'{}'::jsonb), '{notifications}', COALESCE(data->'notifications','{}'::jsonb) || $1::jsonb, true),
+                                              '{waBot}', COALESCE(data->'waBot','{}'::jsonb) || $2::jsonb, true), updated_at=NOW() WHERE id=1`,
+        [jb(m.notifications), jb(m.waBot)]);
+      await pool.query(`CREATE TABLE IF NOT EXISTS cms_audit (id BIGSERIAL PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW(), actor_id INT, actor_name TEXT, role TEXT,
+                          method TEXT, path TEXT, section TEXT, note TEXT)`).catch(() => {});
+      await pool.query(
+        `INSERT INTO cms_audit(actor_id, actor_name, role, method, path, section, note) VALUES (NULL,$1,'system','MIGRATE',$2,'notifications',$3)`,
+        ["النظام — ترحيل RT2", `settings.${m.changed[0]}`,
+          `📍 RT2 (${PICKUP_READY_MIGRATION_ID}): «جاهز للاستلام» اتضافت لـ ${m.changed.join("، ")} — طلب المالك ١٧/١٠ (رسايل «الطلب جاهز» على واتساب). smsStages ماتلمستش.`]);
+      console.log(`[notify] RT2 migration: pickup_ready added to ${m.changed.join(", ")}`);
+      return m;
+    } catch (e) {
+      console.error("[notify] RT2 migration:", e.message);
+      if (claimed) pool.query("DELETE FROM cms_migrations WHERE id=$1", [PICKUP_READY_MIGRATION_ID]).catch(() => {});
+      return { error: String(e.message || e) };
+    }
+  }
 
   /* ── channel senders ── */
 
@@ -347,11 +385,11 @@ export function register(app, ctx, deps = {}) {
     const make = MESSAGES[status];
     if (!make) return; // internal stage — customers never hear about it
     const r = await pool.query(
-      "SELECT order_no, phone_norm, option, total, NULLIF(to_jsonb(shop_orders)->>'table_no','')::int AS table_no FROM shop_orders WHERE order_no=$1", [orderNo]);
+      "SELECT order_no, phone_norm, option, total, created_at, is_test, NULLIF(to_jsonb(shop_orders)->>'table_no','')::int AS table_no FROM shop_orders WHERE order_no=$1", [orderNo]);
     const order = r.rows[0];
     if (!order) return;
-    let cfg, text;
-    try { const all = await getSettingsData(); cfg = all.notifications || {}; text = statusTextFor(status, order, all); }
+    let all, cfg, text;
+    try { all = await getSettingsData(); cfg = all.notifications || {}; text = statusTextFor(status, order, all); }
     catch (e) {
       emitNotify(orderNo, status, "none", false, { reason: "settings_failed" });
       throw e;
@@ -388,7 +426,11 @@ export function register(app, ctx, deps = {}) {
     /* SW1 (M6-2): لكل مرحلة مفتاحها (notifications.whatsappStages، الافتراضي فاضي ⇒ مفيش قالب) و«يغني عن الـSMS» بتاعها. */
     let waResult = null;
     const waReplaces = waReplacesSms(cfg, status);
-    if (wa && cfg.whatsappEnabled === true && waStageOn(cfg, status)) {
+    /* 📍 RT2 (١٧/١٠): «اتسلّم» لطلب الاستلام (الكاشير سلّم ⇒ delivered) — قالب التوصيل مش بتاعه (كان بيتسجّل stage_not_applicable لكل طلب استلام)؛ ليه مساره: collectedWa */
+    if (status === "delivered" && orderKind(order) === "pickup") {
+      waResult = await collectedWa(order, all, cfg);
+      attempts.push(Promise.resolve());
+    } else if (wa && cfg.whatsappEnabled === true && waStageOn(cfg, status)) {
       const replaces = waReplaces;
       try {
         waResult = await wa.sendOrderUpdate(order, status, {
@@ -436,6 +478,53 @@ export function register(app, ctx, deps = {}) {
     // القنوات شغالة مع بعض (زي الأول)؛ بنستنى نتايجها بس عشان الحدث يتطلق.
     // shop.js أصلاً مابيستناش orderStatusChanged — بيعمل .catch بس.
     await Promise.allSettled(attempts);
+  }
+
+  /* 📍 RT2 (١٧/١٠): دعوة التقييم جاية خلال كام دقيقة لطلب الاستلام ده؟ نفس حساب reviews.js queueInvite: reviews.askAfterDelivery، نوع pickup مفتوح في
+     waBot.reviewFlow، والميعاد من wareviews.dueFor (pickupMin ٤٥ افتراضياً + مش قبل ساعة من الطلب + ساعات الهدوء) — أو reviewDueAt القديم لو المسار الجديد مقفول.
+     covered = الدعوة جاية خلال «أقل مدة بين قالبين بفلوس» (waBot.reviewPaidGapMin، ٣٠ د) ⇒ رسالة شكر دلوقتي = رسالتين عن نفس الحاجة. ماقدرناش نحسب ⇒ مش covered. */
+  async function reviewCovers(order, all) {
+    const rv = (all && all.reviews) || {};
+    if (rv.askAfterDelivery === false) return { covered: false, reason: "review_disabled" };
+    if (order.is_test) return { covered: false, reason: "test_order" };
+    if (!/^5\d{8}$/.test(String(order.phone_norm || ""))) return { covered: false, reason: "no_phone" };
+    const now = Date.now();
+    let due = null;
+    try {
+      const WR = await import("./wareviews.js");      // ديناميكي: wareviews بيجرّ wabot.js — مش عايزينه وقت تحميل notify
+      const flow = WR.reviewFlowConfig(((all || {}).waBot || {}).reviewFlow);
+      if (flow.enabled) {
+        if (!WR.kindOn("pickup", flow)) return { covered: false, reason: "kind_off" };
+        due = WR.dueFor("pickup", { orderAt: order.created_at, deliveredAt: new Date(now), createdAt: order.created_at }, flow, now).getTime();
+      }
+    } catch { due = null; }
+    if (due == null) {
+      const mins = Math.min(720, Math.max(1, Number(rv.askAfterMinutes) || 30));
+      due = reviewDueAt({ deliveredAt: now, askAfterMin: mins, option: "pickup", createdAt: order.created_at }).getTime();
+    }
+    const gapMin = waPolicyCfg(all || {}).reviewPaidGapMin;
+    const inMin = Math.max(0, Math.round((due - now) / 60000));
+    return { covered: inMin <= gapMin, inMin, gapMin };
+  }
+
+  /* 📍 RT2 (١٧/١٠): لحظة «اتسلّم» لطلب الاستلام. القرار من الكود (README الشريحة): reviews.js بيحجز دعوة تقييم لكل طلب استلام أول ما يبقى delivered وبيبعتها بعد
+     reviewFlow.pickupMin — فلو جاية خلال reviewPaidGapMin ⇒ covered_by_review ومفيش إرسال (مش stage_not_applicable). غير كده، ولو المالك شغّل مرحلة collected:
+     رسالة حرة «بالهنا والشفا 🌟 تقييمك يهمنا» جوّه نافذة الـ٢٤ ساعة بس (ببلاش، سقف CJ1a بيحكمها، ومفيش قالب ولا SMS). كل نتيجة بتتسجّل notify_sent بسببها. */
+  async function collectedWa(order, all, cfg) {
+    const stage = "collected";
+    const log = (ok, extra) => emitNotify(order.order_no, stage, "whatsapp", ok, extra);
+    let cov = null;
+    try { cov = await reviewCovers(order, all); } catch { cov = null; }
+    const due = cov && cov.inMin != null ? { reviewInMin: cov.inMin } : {};
+    if (cov && cov.covered) { log(false, { error: "covered_by_review", ...due, gapMin: cov.gapMin }); return { ok: false, skipped: "covered_by_review" }; }
+    if (!wa || typeof wa.sendOrderUpdate !== "function") { log(false, { error: "whatsapp_unavailable", ...due }); return { ok: false, skipped: "whatsapp_unavailable" }; }
+    if (cfg.whatsappEnabled !== true) { log(false, { error: "whatsapp_off", ...due }); return { ok: false, skipped: "whatsapp_off" }; }
+    if (!waStageOn(cfg, stage)) { log(false, { error: "stage_off", ...due }); return { ok: false, skipped: "stage_off" }; }
+    let w;
+    try { w = await wa.sendOrderUpdate(order, stage); }
+    catch (e) { console.error(`[notify] WA collected failed for ${order.order_no}:`, e?.message); w = { ok: false, error: "send_failed" }; }
+    log(w.ok === true, w.ok ? { free: true, ...due } : { error: String(w.skipped || w.error || "send_failed").slice(0, 60), ...due });
+    return w;
   }
 
   /* ── routes ── */
@@ -700,27 +789,51 @@ export function register(app, ctx, deps = {}) {
     if (!o) return 0;
     const kind = orderKind(o);
     if (!READY_TEXT[kind]) return 0;
-    /* ١٢/١٠: قالب واتساب «جاهز للاستلام» (fc_order_ready_pickup) كان معرَّف ومالوش حد يبعته — «جاهز» بتيجي من هنا مش من
-       orderStatusChanged. لطلب الاستلام بس (حارس القالب بيرفض الطاولة والتوصيل)، وبنفس أقفال واتساب الأربعة. */
-    if (kind === "pickup" && wa && typeof wa.sendOrderUpdate === "function") {
-      try {
-        const cfg = (await getSettingsData()).notifications || {};
-        if (cfg.whatsappEnabled === true && waStageOn(cfg, "pickup_ready")) {      // SW1: المرحلة لازم تكون مشغّلة
-          const w = await wa.sendOrderUpdate(o, "pickup_ready");
-          if (w.skipped !== "no_template_for_stage") emitNotify(o.order_no, "pickup_ready", "whatsapp", w.ok === true,
-            w.ok ? {} : { error: String(w.skipped || w.error || "send_failed").slice(0, 60) });
-        } else if (cfg.whatsappEnabled === true) {
-          /* ⚡ RT1 مراجعة (١٧/١٠): «موصلتش رسايل واتساب إن الطلب جاهز» — السبب الحي إن مرحلة pickup_ready
-             مش مشغّلة في اللوحة (واتساب ← المراحل)، مش الكود. بنسجّلها في أحداث الطلب بنفس شكل
-             sendOrderUpdate (stage_off) عشان السبب يبان على كل طلب استلام بدل ما يفضل لغز. */
-          emitNotify(o.order_no, "pickup_ready", "whatsapp", false, { error: "stage_off" });
-        }
-      } catch (e) { console.error(`[notify] WA ready failed for ${o.order_no}:`, e?.message); }
-    }
+    /* ١٢/١٠: قالب واتساب «جاهز للاستلام» (fc_order_ready_pickup) كان معرَّف ومالوش حد يبعته — «جاهز» بتيجي من هنا مش من orderStatusChanged.
+       📍 RT2 (١٧/١٠ — عمر: «موصلتش رسايل واتس اب ان الطلب جاهز»): ٧ أيام من طلبات الاستلام من غير ولا رسالة «جاهز» — المرحلة ماكانتش في whatsappStages،
+       ولما القالب مش موجود كان السبب بيتبلع من غير سجل. دلوقتي لطلب الاستلام: واتساب (رسالة حرة ببلاش بصياغة المالك جوّه النافذة، أو القالب لو ميتا معتمداه)،
+       وإلا SMS البديل لو المرحلة في smsStages — **وكل نتيجة بتتسجّل** notify_sent بسببها الحقيقي عشان اللوحة تقول ليه. */
+    if (kind === "pickup") await pickupReadyWa(o);
     return sendOrderPush(o.order_no, { stage: "ready", title: "فريش كاتس 🍔", body: READY_TEXT[kind](o),
       url: `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa").split(",")[0]}/track/${o.order_no}` });
   }
+  async function pickupReadyWa(o) {
+    const stage = "pickup_ready";
+    let all = {}, cfg = {}, text = null;
+    try { all = (await getSettingsData()) || {}; cfg = all.notifications || {}; text = statusTextFor(stage, o, all); }
+    catch (e) { emitNotify(o.order_no, stage, "none", false, { reason: "settings_failed" }); return null; }
+    const smsStages = smsStagesOf(cfg);
+    const smsOn = cfg.smsEnabled === true && smsStages.includes(stage);
+    const replaces = waReplacesSms(cfg, stage);
+    let w = null;
+    const logWa = (ok, extra) => emitNotify(o.order_no, stage, "whatsapp", ok, extra);
+    if (!wa || typeof wa.sendOrderUpdate !== "function") logWa(false, { error: "whatsapp_unavailable" });
+    else if (cfg.whatsappEnabled !== true) logWa(false, { error: "whatsapp_off" });
+    else if (!waStageOn(cfg, stage)) logWa(false, { error: "stage_off" });      // SW1: المرحلة لازم تكون مشغّلة (RT2: الترحيل بيشغّلها)
+    else {
+      try { w = await wa.sendOrderUpdate(o, stage, { fallbackSms: replaces && smsOn ? text : null }); }
+      catch (e) { console.error(`[notify] WA ready failed for ${o.order_no}:`, e?.message); w = { ok: false, error: "send_failed" }; }
+      // no_template_for_stage كان بيتبلع — دلوقتي كل سبب بيتسجّل زي ما هو (مع اسم القالب وحالته عند ميتا لو السبب إنه مش معتمد)
+      logWa(w.ok === true, w.ok ? (w.free ? { free: true } : {}) : { error: String(w.skipped || w.error || "send_failed").slice(0, 60),
+        ...(w.template ? { template: w.template, status: w.status || null } : {}) });
+    }
+    /* نفس قاعدة orderStatusChanged: واتساب وصل (أو السياسة شالته) والمرحلة «تغني عن الـSMS» ⇒ مفيش SMS */
+    const smsSkippedForWa = Boolean(((w && w.ok) || (w && w.policy === true)) && replaces);
+    if (smsOn && text && !smsSkippedForWa) {
+      try {
+        await smsSend({ phoneNorm: o.phone_norm, body: text, kind: "order_status", ref: `${o.order_no}:${stage}` });
+        emitNotify(o.order_no, stage, "sms", true);
+      } catch (e) {
+        console.error(`[notify] SMS ready failed for ${o.order_no}:`, e?.message);
+        emitNotify(o.order_no, stage, "sms", false, { error: String(e?.code || "send_failed").slice(0, 60) });
+      }
+    } else if (!(w && w.ok) && cfg.smsEnabled === true && !smsStages.includes(stage)) {
+      // واتساب ماوصّلش وSMS شغّال بس المرحلة مش متعلّمة في رسايل SMS — اللوحة لازم تعرف ليه مفيش بديل
+      emitNotify(o.order_no, stage, "sms", false, { error: "stage_not_in_sms_stages" });
+    }
+    return w;
+  }
 
   return { orderStatusChanged, orderReady, sendToAudience, sendSmsTo, sendPushTo, sendOrderPush,
-    campaignPushStats, pushedSince, fcmReady };
+    campaignPushStats, pushedSince, fcmReady, migratePickupReady, reviewCovers };
 }

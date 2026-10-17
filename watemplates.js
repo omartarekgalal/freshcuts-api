@@ -214,17 +214,23 @@ export const TEMPLATES = [
       stage: "pickup_ready", send: "auto", fallbackSms: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع", existing: "whatsapp.js fc_order_ready_pickup",
       notes: "١٢/١٠: النسخة الأولى (زر «موقع الفرع» → خرائط جوجل + «تقدر تستلمه من…») رفضتها ميتا INCORRECT_CATEGORY — القالب الخدمي الوحيد اللي زره مش رابط الطلب نفسه. الزر بقى رابط تتبّع الطلب زي باقي قوالب الطلب المعتمدة، والنص عن الطلب بس. ١٢/١٠ (تاني): التعديل اترفض برضه INCORRECT_CATEGORY والزر كان رابط الطلب ⇒ الباقي المختلف عن القوالب المعتمدة هو جملة الفرع والحي والمدينة — اتشالت، والنص بقى حالة الطلب + تعليمة الاستلام بس." } }),
 
-  /* SW1 (١٣/١٠ — M6-3): fc_order_ready_pickup مرفوض عند ميتا. ده اسم جديد بصياغة خدمية بحتة: رقم الطلب + «جاهز للاستلام» + الفرع.
-     **موقوف (HOLD)** لحد ما المالك يوافق على النص — مش مربوط بمرحلة ولا بيتقدّم. المرحلة pickup_ready بتفضل SMS بس. */
+  /* SW1 (١٣/١٠ — M6-3): fc_order_ready_pickup مرفوض عند ميتا. ده اسم جديد بصياغة خدمية بحتة: رقم الطلب + «جاهز للاستلام».
+     **موقوف (HOLD)** لحد ما المالك يوافق على النص — مش مربوط بمرحلة ولا بيتقدّم.
+     📍 RT2 (١٧/١٠ — عمر: «موصلتش رسايل واتس اب ان الطلب جاهز»): النص بقى الصياغة اللي المالك اقترحها (فريش كاتس + تفضّل إلى الفرع + اذكر رقم طلبك)،
+     بالعربي والإنجليزي — ده جسم التقديم لميتا زي ما هو (submissionBody). لحد ما ميتا تعتمده: نفس النص بيطلع **رسالة حرة ببلاش** جوّه نافذة الـ٢٤ ساعة
+     (whatsapp.js sendOrderUpdate لمرحلة pickup_ready لما المرحلة في waBot.windowV2Stages)، وبره النافذة ⇒ SMS البديل لو المرحلة في smsStages.
+     لسه مانتبهش: النسختين اللي قبله اترفضوا INCORRECT_CATEGORY (جملة الفرع/الحي/زر الخرايط) — النص ده عن الطلب وتعليمة الاستلام بس، من غير حي ولا مدينة. */
   T({ name: "fc_order_pickup_ready", category: "UTILITY", group: "order",
-    body: "طلبك رقم {{1}} جاهز للاستلام من فرع فريش كاتس في حي السلامة بجدة.",
+    body: "طلبك رقم {{1}} جاهز للاستلام من فريش كاتس 📍 تفضّل إلى الفرع واذكر رقم طلبك.",
     vars: [ORDER_NO], buttons: [TRACK("تفاصيل الطلب")],
-    meta: { purpose: "طلب استلام صار جاهز — صياغة جديدة باسم جديد", trigger: "pos_ready_at لطلب option=pickup", send: "auto-candidate", replaces: "fc_order_ready_pickup",
-      fallbackSms: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع" } }),
+    meta: { purpose: "طلب استلام صار جاهز — صياغة المالك (١٧/١٠) باسم جديد", trigger: "notify.orderReady ⇒ pos_ready_at لطلب option=pickup (RT2: حر جوّه النافذة الآن، قالب بعد اعتماد ميتا)",
+      send: "auto-candidate", replaces: "fc_order_ready_pickup", stageWhenApproved: "pickup_ready",
+      fallbackSms: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع",
+      notes: "RT2 ١٧/١٠: مربوط بالمرحلة pickup_ready عن طريق waBot.windowV2Stages (الاسم البديل بدل _v2) — بره النافذة مايتبعتش إلا لو ميتا بتقول APPROVED." } }),
   T({ name: "fc_order_pickup_ready", category: "UTILITY", group: "order", language: "en",
-    body: "Your order {{1}} is ready for pickup at the Fresh Cuts branch in As Salamah, Jeddah.",
+    body: "Your order {{1}} is ready for pickup from Fresh Cuts 📍 Please come to the branch and mention your order number.",
     vars: [ORDER_NO], buttons: [TRACK("Order details")],
-    meta: { purpose: "Pickup order is ready — new wording under a new name", trigger: "pos_ready_at, option=pickup", send: "auto-candidate", replaces: "fc_order_ready_pickup", fallbackSms: null } }),
+    meta: { purpose: "Pickup order is ready — the owner's wording (17/10) under a new name", trigger: "notify.orderReady, option=pickup", send: "auto-candidate", replaces: "fc_order_ready_pickup", stageWhenApproved: "pickup_ready", fallbackSms: null } }),
 
   T({ name: "fc_courier_assigned", category: "UTILITY", group: "order",
     body: "رتّبنا مندوب لطلبك رقم {{1}} 🛵\nيستلم الطلب أول ما يجهز من المطبخ، وتقدر تتابع من الرابط.",
@@ -743,7 +749,7 @@ export const HOLD = Object.freeze({
   fc_welcome_account: "غير مربوط بمُرسل (الزر اتشال ١٢/١٠ فالنص خدمي؛ يتقدّم لما يتقرّر إرساله)",
   fc_ad_lead_last_call: "يحتاج عرضاً له تاريخ انتهاء؛ البوكسات بلا تاريخ انتهاء — لا شيء صادق يُكتب في المتغيّرين",
   /* SW1 (١٣/١٠): صياغتان جديدتان باسمين جديدين — بانتظار موافقة المالك على النص (العربي والإنجليزي في README الشريحة SW1) */
-  fc_order_pickup_ready: "بانتظار موافقة المالك على النص (بديل fc_order_ready_pickup المرفوض) — غير مربوط بمرحلة",
+  fc_order_pickup_ready: "بانتظار موافقة المالك النهائية على النص (صياغته هو، ١٧/١٠ — RT2) — بديل fc_order_ready_pickup المرفوض. لحد الاعتماد: نفس النص رسالة حرة جوّه النافذة، وبره النافذة SMS. ماتتقدّمش من غير force:true",
   fc_staff_checkout_notice: "بانتظار موافقة المالك على النص (بديل fc_staff_checkout_watchdog المصنَّف تسويق؛ fc_staff_payment_alert موجود لنفس الغرض)",
   /* RV1 (١٥/١٠): قالب النجوم — النص في docs/designs-2026-10/whatsapp/reviews-workflow.md */
   fc_review_stars: "النص اتوافق عليه (عمر ١٥/١٠ ١٤:١٥: «موافق على كل حاجة») — بيتقدّم لميتا بعد النشر بـ force:true (RV1 — التقييم بالنجوم بره النافذة)، وبعد الاعتماد يتفتح مفتاح «قالب النجوم». ١٦/١٠: التقديم الأول اترفض (2388060 — إيموجي النجوم في الأزرار)؛ RV4 شال الإيموجي ⇒ تقديم جديد (مش edit — القالب مااتعملش عند ميتا)",

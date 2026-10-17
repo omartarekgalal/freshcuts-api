@@ -50,6 +50,10 @@ export const CATALOGUE = [
   { id: "order.accepted", group: "order", stage: "accepted", sender: "tx", label: "المطعم بدأ التجهيز",
     when: "الكاشير يقبل الطلب", vars: [V.order_no],
     def: "فريش كاتس: المطعم بدأ تجهيز طلبك {order_no} 👨‍🍳" },
+  /* 📍 RT2 (١٧/١٠): «جاهز للاستلام» — SMS البديل لما واتساب مايقدرش (النافذة مقفولة والقالب لسه مش معتمد). بيتبعت بس لو المرحلة متعلّمة في smsStages. جزء واحد. */
+  { id: "order.pickup_ready", group: "order", stage: "pickup_ready", sender: "tx", label: "جاهز للاستلام (استلام من الفرع)",
+    when: "الكاشير يسجّل «جاهز» لطلب استلام — بديل واتساب لو النافذة مقفولة والقالب لسه مش معتمد", vars: [V.order_no],
+    def: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع" },
   { id: "order.courier_assigned", group: "order", stage: "courier_assigned", sender: "tx", label: "اترتّب مندوب",
     when: "شركة التوصيل تعيّن مندوب", vars: [],
     def: "فريش كاتس: رتّبنا لك مندوب توصيل 🛵" },

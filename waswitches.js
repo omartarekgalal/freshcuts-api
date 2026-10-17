@@ -28,9 +28,37 @@ export const MANDATORY_SMS_STAGES = Object.freeze(["rejected_refunded", "refund_
 
 /* اسم كل مرحلة للمالك */
 export const STAGE_LABELS = Object.freeze({
-  pos_created: "استلمنا الطلب (بعد الدفع)", accepted: "الطلب دخل المطبخ", on_the_way: "المندوب في الطريق", pickup_ready: "جاهز للاستلام",
+  pos_created: "استلمنا الطلب (بعد الدفع)", accepted: "الطلب دخل المطبخ", on_the_way: "المندوب في الطريق",
+  pickup_ready: "جاهز للاستلام (استلام من الفرع)",      // 📍 RT2 (١٧/١٠ — عمر: «موصلتش رسايل واتس اب ان الطلب جاهز»): مرحلة أصلية زي باقي المراحل
+  collected: "اتسلّم من الفرع (شكر + «تقييمك يهمنا»)",   // 📍 RT2: لحظة تسليم طلب الاستلام — رسالة حرة بس (شوف FREE_STAGES)
   delivered: "الطلب اتوصّل", rejected_refunded: "الطلب اترفض والمبلغ رجع", refund_failed: "الاسترجاع تحت المراجعة",
 });
+
+/* 📍 RT2 (١٧/١٠): مراحل «رسالة حرة بس» — مالهاش قالب عند ميتا ولا SMS بديل: بتطلع جوّه نافذة الـ٢٤ ساعة بس (ببلاش)، وبره النافذة بتتسجّل window_closed.
+   collected = الكاشير سلّم طلب الاستلام (delivered لطلب pickup). notify.js مابيبعتهاش لو دعوة التقييم جاية خلال «أقل مدة بين قالبين» (covered_by_review). */
+export const FREE_STAGES = Object.freeze({
+  collected: Object.freeze({ label: STAGE_LABELS.collected, only: "pickup",
+    note: "رسالة حرة جوّه نافذة الـ٢٤ ساعة بس (ببلاش) — مفيش قالب ولا SMS. مابتتبعتش لو دعوة التقييم جاية خلال «أقل مدة بين قالبين بفلوس» (covered_by_review)." }),
+});
+export const isFreeStage = (stage) => Object.prototype.hasOwnProperty.call(FREE_STAGES, String(stage));
+
+/* 📍 RT2 (١٧/١٠ — طلب المالك): «جاهز للاستلام» تتضاف للمصفوفات الحيّة لو ناقصة — مرة واحدة (notify.js بيقفلها بـcms_migrations وبيكتبها في cms_audit).
+   smsStages مابتتلمسش (SMS بفلوس — قرار المالك من شاشة SMS). whatsappReplacesSmsStages لو مش قايمة (المفتاح القديم العام) بتفضل زي ما هي.
+   دالة صافية: بترجّع إيه اللي اتغيّر وقيمه بس — الكتابة عند المنادي. */
+export const PICKUP_READY_MIGRATION_ID = "rt2_pickup_ready_stage_v1";
+export function pickupReadyMigration(settings = {}) {
+  const s = settings || {};
+  const n = s.notifications && typeof s.notifications === "object" ? s.notifications : {};
+  const wb = s.waBot && typeof s.waBot === "object" ? s.waBot : {};
+  const changed = [], notifications = {}, waBot = {};
+  const add = (list) => [...uniq(list), "pickup_ready"];
+  if (!waStagesOf(n).includes("pickup_ready")) { notifications.whatsappStages = add(n.whatsappStages); changed.push("notifications.whatsappStages"); }
+  if (Array.isArray(n.whatsappReplacesSmsStages) && !uniq(n.whatsappReplacesSmsStages).includes("pickup_ready")) {
+    notifications.whatsappReplacesSmsStages = add(n.whatsappReplacesSmsStages); changed.push("notifications.whatsappReplacesSmsStages");
+  }
+  if (!uniq(wb.windowV2Stages).includes("pickup_ready")) { waBot.windowV2Stages = add(wb.windowV2Stages); changed.push("waBot.windowV2Stages"); }
+  return { changed, notifications, waBot };
+}
 
 /* حالة قالب المرحلة عند ميتا (النسخة العربي). metaOk=false ⇒ مانعرفش (null). */
 function metaOf(template, metaList, metaOk) {
@@ -52,12 +80,19 @@ const BLOCK_AR = { meta_unreadable: "ماقدرناش نقرا حالة القا
 /* صف لكل مرحلة ليها قالب: للشاشة (خانة لكل مرحلة + حالة ميتا + «يغني عن الـSMS»). */
 export function stageRows({ stageTemplates = {}, notifications = {}, metaList = [], metaOk = false, mandatorySms = [] } = {}) {
   const on = waStagesOf(notifications);
-  return Object.entries(stageTemplates).map(([stage, template]) => {
+  const rows = Object.entries(stageTemplates).map(([stage, template]) => {
     const meta = metaOf(template, metaList, metaOk), block = blockOf(meta);
     return { stage, label: STAGE_LABELS[stage] || stage, template, metaStatus: meta.status, metaCategory: meta.category, canEnable: !block,
       blockedBy: block, note: block ? BLOCK_AR[block] : null, enabled: on.includes(stage), replacesSms: on.includes(stage) && waReplacesSms(notifications, stage),
       smsOnly: !on.includes(stage), mandatorySms: mandatorySms.includes(stage) };
   });
+  /* 📍 RT2: صفوف مراحل «رسالة حرة بس» — من غير قالب فمفيش حالة ميتا، وتتشغّل على طول (جوّه النافذة بس) */
+  for (const [stage, f] of Object.entries(FREE_STAGES)) {
+    if (stageTemplates[stage]) continue;
+    rows.push({ stage, label: f.label, template: null, free: true, metaStatus: null, metaCategory: null, canEnable: true, blockedBy: null, note: f.note,
+      enabled: on.includes(stage), replacesSms: on.includes(stage) && waReplacesSms(notifications, stage), smsOnly: false, mandatorySms: false });
+  }
+  return rows;
 }
 
 /* حفظ المراحل: إيه اللي يمنع؟ القفل والشيل مسموحين دايماً؛ **إضافة** مرحلة محتاجة قالبها معتمد وخدمي عند ميتا.
@@ -67,10 +102,10 @@ export function stagesProblem({ want, replaces, stageTemplates = {}, current = [
   if (replaces !== undefined && !Array.isArray(replaces)) return { error: "bad_replaces", message: "replacesSms لازم قايمة" };
   const w = uniq(want);
   if (w.length !== want.length) return { error: "bad_stages", message: "فيه مرحلة مكتوبة غلط أو متكررة" };
-  for (const s of w) if (!stageTemplates[s]) return { error: "unknown_stage", stage: s, message: `المرحلة «${s}» مالهاش قالب واتساب` };
+  for (const s of w) if (!stageTemplates[s] && !isFreeStage(s)) return { error: "unknown_stage", stage: s, message: `المرحلة «${s}» مالهاش قالب واتساب` };
   for (const s of uniq(replaces || [])) if (!w.includes(s)) return { error: "replaces_needs_stage", stage: s, message: "«يغني عن الـSMS» لمرحلة مش مشغّلة على واتساب" };
   if (replaces && uniq(replaces).length !== replaces.length) return { error: "bad_replaces", message: "فيه مرحلة مكتوبة غلط أو متكررة" };
-  for (const s of w.filter((x) => !current.includes(x))) {
+  for (const s of w.filter((x) => !current.includes(x) && !isFreeStage(x))) {      // RT2: مرحلة حرة مالهاش قالب يتعتمد
     const block = blockOf(metaOf(stageTemplates[s], metaList, metaOk));
     if (block) return { error: block, stage: s, template: stageTemplates[s], message: `${STAGE_LABELS[s] || s}: ${BLOCK_AR[block]}` };
   }

@@ -18,7 +18,7 @@ test("من غير تعديل: كل رسايل الطلب بنفس نص الكو�
 
 test("الافتراضي في الكتالوج = النص الفعلي (مفيش انجراف بين الاتنين)", () => {
   const vars = { order_no: order.order_no, track_url: `freshcuts.sa/track/${order.order_no}`, review_url: "https://g.page/r/CSG0gPAqlvHMEBM/review" };
-  for (const st of ["pos_created", "accepted", "courier_assigned", "rejected_refunded", "refund_failed", "delivered"]) {
+  for (const st of ["pos_created", "accepted", "pickup_ready", "courier_assigned", "rejected_refunded", "refund_failed", "delivered"]) {      // RT2: + pickup_ready
     const def = CATALOGUE.find((t) => t.id === `order.${st}`).def;
     assert.equal(def.replace(/\{([a-z_]+)\}/g, (m, k) => vars[k]), statusSmsText(st, order), st);
   }

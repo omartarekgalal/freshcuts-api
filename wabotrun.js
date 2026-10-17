@@ -90,7 +90,8 @@ export const DEFAULTS = Object.freeze({
   mergeDeliveredReview: WA_POLICY_DEFAULTS.mergeDeliveredReview, // …التوصيل بزرّين التقييم ⇒ مفيش قالب تقييم تاني للطلب
   reviewPaidGapMin: WA_POLICY_DEFAULTS.reviewPaidGapMin,       // …ومفيش قالبين بفلوس لنفس الطلب في أقل من كده (التقييم بيتأجل)
   windowFreeUpdates: true,     // تحديث الطلب والنافذة مفتوحة (العميل كلّمنا آخر ٢٤ ساعة) ⇒ رسالة حرة ببلاش بنفس النص بدل القالب (whatsapp.js sendOrderUpdate)
-  windowV2Stages: [],          // المراحل اللي نسختها v2 (بزر رد سريع يفتح نافذة) اتعتمدت عند ميتا ⇒ تتبعت بدل القديمة. «review» = طلب التقييم
+  windowV2Stages: ["pickup_ready"],   // المراحل اللي نسختها v2 (بزر رد سريع يفتح نافذة) اتعتمدت عند ميتا ⇒ تتبعت بدل القديمة. «review» = طلب التقييم
+                               // 📍 RT2 (١٧/١٠): pickup_ready افتراضياً ⇒ نص «جاهز للاستلام» = صياغة المالك fc_order_pickup_ready (حر جوّه النافذة الآن، قالب بعد اعتماد ميتا)
   windowSell: true,            // ضغطة «تمام 👍» على التوصيل/التقييم ⇒ ردها فيه سطر الولاء (مرة في النافذة، جوّه نفس الرسالة)
   windowKeeper: true,          // قبل ما النافذة تقفل: رسالة حرة واحدة بس لو مفيدة فعلاً (طلب شغّال / مكافأة قربت تنتهي / سلة ماكمّلتش) — وإلا ولا حاجة
   windowKeeperHour: 20,        // …بعد الساعات دي من آخر رسالة للعميل (والنافذة لسه مفتوحة)
@@ -624,7 +625,7 @@ const CAMPAIGN_TAP_IDS = new Set([ORDER_BUTTON, ORDER_BUTTON_EN]);
 /* كود سلة مؤقت في الرد لحد ما السلة تتحفظ فعلاً (بعد القرار) — بيتبدّل بالكود الحقيقي قبل الإرسال، وعمره ما بيطلع لعميل */
 const CAMP_CART_PENDING = "fdpending0";
 const NACK_RE = /^(?:لا|لا شكرا|لا مشكور|no|nope|no thanks|مو لازم)$/;
-export const WINDOW_V2_STAGES = Object.freeze(["pos_created", "accepted", "on_the_way", "delivered", "rejected_refunded", "refund_failed", "review"]);
+export const WINDOW_V2_STAGES = Object.freeze(["pos_created", "accepted", "on_the_way", "pickup_ready", "delivered", "rejected_refunded", "refund_failed", "review"]);      // RT2: + pickup_ready
 /* SB4: الردود السريعة في القوالب (v2) والأزرار في تحديثات الطلب الحرة بتوصل بنصها كمعرّف ⇒ الرد المفيد */
 export const QR_IDS = Object.freeze({ "تابع طلبي": "status", "track my order": "status", "تمام 👍": "review_ok", "تمام": "review_ok", "all good 👍": "review_ok", "عندي ملاحظة": "review_note", "i have a note": "review_note", "عندي سؤال": "human", "نفس الطلب مرة ثانية": "reorder" });
 export const REVIEW_NOTE_RE = /^(?:عندي ملاحظه|عندي ملاحظات|ملاحظه|ملاحظات|فيه ملاحظه|في ملاحظه|i have a note|a note)$/;      // SB2: بعد normalize (ة ⇒ ه)
@@ -730,7 +731,7 @@ export function botConfig(settings) {
     courierContact: x.courierContact !== false, courierTemplate: x.courierTemplate === true,
     windowFreeUpdates: x.windowFreeUpdates !== false, windowSell: x.windowSell !== false, windowKeeper: x.windowKeeper !== false,
     ...(({ followLink, followNumber, closedPolicy, closedSkipPreparing, mergeDeliveredReview, reviewPaidGapMin, followBanner, followBannerSkipHours }) => ({ followLink, followNumber, closedPolicy, closedSkipPreparing, mergeDeliveredReview, reviewPaidGapMin, followBanner, followBannerSkipHours }))(waPolicyCfg({ waBot: x })),
-    windowV2Stages: (Array.isArray(x.windowV2Stages) ? x.windowV2Stages : []).filter((k) => WINDOW_V2_STAGES.includes(k)),
+    windowV2Stages: (Array.isArray(x.windowV2Stages) ? x.windowV2Stages : DEFAULTS.windowV2Stages).filter((k) => WINDOW_V2_STAGES.includes(k)),      // RT2: الافتراضي فيه pickup_ready
     windowKeeperHour: num(x.windowKeeperHour, 12, 23, DEFAULTS.windowKeeperHour), windowKeeperDailyCap: num(x.windowKeeperDailyCap, 0, 500, DEFAULTS.windowKeeperDailyCap), windowKeeperWeekly: num(x.windowKeeperWeekly, 0, 7, DEFAULTS.windowKeeperWeekly),
     windowKeeperQuietStart: num(x.windowKeeperQuietStart, 0, 23, DEFAULTS.windowKeeperQuietStart), windowKeeperQuietEnd: num(x.windowKeeperQuietEnd, 0, 23, DEFAULTS.windowKeeperQuietEnd), leadFollowUpMin: num(x.leadFollowUpMin, 0, 180, DEFAULTS.leadFollowUpMin),
     ...fuConfig(x),      // FU1
@@ -1032,7 +1033,7 @@ export const SCHEMA = Object.freeze({
   mergeDeliveredReview: S("orderMsgs", "boolean", "النافذة مقفولة: التوصيل والتقييم رسالة واحدة", "رسالة التوصيل الجديدة (v2) فيها زرّين «تمام 👍 / عندي ملاحظة» = نفس سؤال التقييم، فمفيش قالب تقييم تاني لنفس الطلب. ضغطة «تمام» بتبعت رابط التقييم ببلاش."),
   reviewPaidGapMin: S("orderMsgs", "number", "النافذة مقفولة: أقل مدة بين قالبين بفلوس لنفس الطلب", "لو التقييم لسه هيطلع قالب (التوصيل اتبعت من غير الزرّين)، بيستنى المدة دي بعد آخر قالب للطلب. صفر = من غير انتظار.", { min: 0, max: 240, unit: "دقيقة" }),
   windowFreeUpdates: S("mode", "boolean", "نوافذ ٢٤ ساعة: تحديث الطلب ببلاش والنافذة مفتوحة", "العميل كلّمنا (أو ضغط زر) في آخر ٢٤ ساعة: تحديث الطلب بيطلع رسالة حرة ببلاش بنفس نص القالب وزر التتبع (والتوصيل بزرّين «تمام 👍 / عندي ملاحظة») بدل القالب المدفوع. نفس الأقفال والموافقة. مقفول = القالب دايماً."),
-  windowV2Stages: S("mode", "keys", "نوافذ ٢٤ ساعة: المراحل اللي نسختها بزر رد سريع اتعتمدت", "بعد ما ميتا تعتمد القالب v2 (نفس النص + زر «تابع طلبي» / «تمام 👍» / «عندي سؤال»)، حط مرحلته هنا فيتبعت بداله. الضغطة على الزر بتفتح نافذة ٢٤ ساعة ببلاش. review = طلب التقييم.", { options: ["pos_created", "accepted", "on_the_way", "delivered", "rejected_refunded", "refund_failed", "review"] }),
+  windowV2Stages: S("mode", "keys", "نوافذ ٢٤ ساعة: المراحل اللي نسختها بزر رد سريع اتعتمدت", "بعد ما ميتا تعتمد القالب v2 (نفس النص + زر «تابع طلبي» / «تمام 👍» / «عندي سؤال»)، حط مرحلته هنا فيتبعت بداله. الضغطة على الزر بتفتح نافذة ٢٤ ساعة ببلاش. review = طلب التقييم. pickup_ready = «جاهز للاستلام» بصياغة المالك (fc_order_pickup_ready): جوّه النافذة رسالة حرة بالنص ده من دلوقتي، وبره النافذة القالب بعد ما ميتا تعتمده (قبلها SMS البديل لو المرحلة في رسايل SMS).", { options: ["pos_created", "accepted", "on_the_way", "pickup_ready", "delivered", "rejected_refunded", "refund_failed", "review"] }),
   windowSell: S("mode", "boolean", "نوافذ ٢٤ ساعة: سطر الولاء في رد «تمام 👍»", "العميل ضغط «تمام 👍» بعد التوصيل أو التقييم: الرد (رابط التقييم) فيه سطر تقدّم الولاء أو المكافأة، مرة في النافذة، في نفس الرسالة — مش رسالة زيادة."),
   windowKeeper: S("mode", "boolean", "نوافذ ٢٤ ساعة: رسالة واحدة قبل ما تقفل لو مفيدة", "بعد الساعات المضبوطة من آخر رسالة للعميل: رسالة حرة واحدة بس لو فيه سبب مفيد له (طلبه شغّال، مكافأته بتنتهي خلال ٣ أيام، سلة ماكمّلهاش) — غير كده ولا حاجة. مش في ساعات الهدوء، ومش لو اتبعتله رسالة من غير ما يطلب في نفس النافذة، وبسقف يومي وأسبوعي. كل إرسال ونتيجته (رد؟ طلب؟) في التقرير اليومي."),
   windowKeeperHour: S("mode", "number", "رسالة قبل قفل النافذة: بعد", "", { min: 12, max: 23, unit: "ساعة من آخر رسالة للعميل" }),

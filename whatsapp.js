@@ -149,6 +149,16 @@ export const TEMPLATES = {
 export const STAGE_TEMPLATES = Object.fromEntries(
   Object.entries(TEMPLATES).filter(([, t]) => t.stage).map(([name, t]) => [t.stage, name]));
 
+/* 📍 RT2 (١٧/١٠ — عمر: «موصلتش رسايل واتس اب ان الطلب جاهز»): القالب البديل لكل مرحلة لما المالك يحطها في waBot.windowV2Stages —
+   الافتراضي <الاسم>_v2 (SB4)، وpickup_ready بديلها اسم تاني: fc_order_pickup_ready (صياغة المالك بدل fc_order_ready_pickup المرفوض عند ميتا).
+   نفس الاسم بيدّي **نص الرسالة الحرة** جوّه النافذة (ببلاش، من غير اعتماد)، وبره النافذة بيتبعت قالب بس لو ميتا بتقول APPROVED. */
+export const V2_TEMPLATE_NAMES = Object.freeze({ pickup_ready: "fc_order_pickup_ready" });
+export const v2TemplateOf = (stage, template) => V2_TEMPLATE_NAMES[stage] || `${template}_v2`;
+/* 📍 RT2: مراحل «رسالة حرة بس» (من غير قالب ولا SMS): collected = الكاشير سلّم طلب الاستلام. جوّه نافذة الـ٢٤ ساعة بس؛ النص بلهجة بيضاء. */
+export const FREE_STAGE_TEXT = Object.freeze({
+  collected: Object.freeze({ guard: (o) => o.option === "pickup" && !o.table_no, text: () => "بالهنا والشفا 🌟 تقييمك يهمنا" }),
+});
+
 /* ── سجل قوالب قابل للتوسيع ─────────────────────────────────────────────
    كتالوج قوالب خارجي (مثلاً watemplates.js) بيتسجّل هنا وقت الإقلاع، والتقديم
    لميتا والإرسال والحملات بيقروا من نفس TEMPLATES (مفيش نسخة تانية).
@@ -541,6 +551,15 @@ export function register(app, ctx, deps = {}) {
      الرسايل الحرة جوّه النافذة مابتتسألش. فاضي = زي الأول. */
   let payHold = null;
   const setPayHold = (fn) => { payHold = typeof fn === "function" ? fn : null; };
+  /* 📍 RT2 (١٧/١٠): حالة القالب عند ميتا — wacloud.js بيحقن دالة بتقرا من كاش قايمة message_templates (١٠ دقايق). قبل أي قالب بفلوس في تحديث طلب:
+     مش APPROVED ⇒ template_not_approved من غير طلب لميتا (fc_order_ready_pickup مرفوض، وfc_order_pickup_ready لسه ماتقدّمش) — notify.js بيبعت SMS البديل
+     وبيسجّل السبب. مانعرفش الحالة (مفيش دالة / ميتا مش مقروءة) ⇒ null ⇒ زي الأول وميتا بتقرر. */
+  let templateStatus = null;
+  const setTemplateStatus = (fn) => { templateStatus = typeof fn === "function" ? fn : null; };
+  async function templateStatusOf(name, lang = "ar") {
+    if (!templateStatus) return null;
+    try { const st = await templateStatus(name, lang); return st ? String(st).toUpperCase() : null; } catch { return null; }
+  }
   async function holdBlocks(ctx) {
     if (!payHold) return false;
     try { return Boolean(await payHold(ctx)); } catch { return false; }
@@ -1125,7 +1144,8 @@ export function register(app, ctx, deps = {}) {
   /* notify.js بينده دي لكل تغيير حالة. order = صف shop_orders. */
   async function sendOrderUpdate(order, stage, { fallbackSms = null } = {}) {
     const template = STAGE_TEMPLATES[stage];
-    if (!template) return { ok: false, skipped: "no_template_for_stage" };
+    const freeDef = !template && FREE_STAGE_TEXT[stage] ? FREE_STAGE_TEXT[stage] : null;      // RT2: مرحلة حرة من غير قالب
+    if (!template && !freeDef) return { ok: false, skipped: "no_template_for_stage" };
     /* SW1 (M6-2): المرحلة لازم تكون متعلّم عليها في notifications.whatsappStages (الافتراضي [] ⇒ ولا تحديث طلب بيطلع على واتساب
        لحد ما المالك يختار). الفحص هنا مش عند المنادي بس، عشان أي منادي جديد يبقى محكوم بنفس القاعدة. */
     const snap = await settingsSnap();
@@ -1140,6 +1160,7 @@ export function register(app, ctx, deps = {}) {
     } catch { /* الاسم اختياري؛ من غير الصف الحارس بيشتغل على اللي جاي من notify */ }
     const o = { ...order, option: row.option ?? order.option, total: row.total ?? order.total, table_no: row.table_no ?? order.table_no ?? null,
       refund_id: row.refund_id ?? order.refund_id ?? null, name: String(row.name || "").trim() };
+    if (freeDef) return sendFreeStage(o, stage, freeDef, snap);      // RT2
     const t = TEMPLATES[template];
     if (typeof t.guard === "function" && !t.guard(o)) return { ok: false, skipped: "stage_not_applicable" };
     const params = t.bind(o);
@@ -1160,9 +1181,14 @@ export function register(app, ctx, deps = {}) {
             let etaLine = null;
             if (stage === "on_the_way") { try { const { etaWaLine } = await import("./smarteta.js"); etaLine = await etaWaLine(order.order_no); } catch { etaLine = null; } }
             const withEta = (txt) => (etaLine ? `${txt}\n⏱ ${etaLine}` : txt);
-            const body = withEta(renderTemplateText(template, params)).slice(0, 1000);
-            const ub = (t.components.find((c) => c.type === "BUTTONS")?.buttons || []).find((b) => b.type === "URL");
-            const url = ub ? String(ub.url).replace("{{1}}", String((params.button || [])[0] || "")) : null;
+            /* RT2 (١٧/١٠): المرحلة في waBot.windowV2Stages ⇒ نص الرسالة الحرة من القالب البديل (لـpickup_ready = صياغة المالك fc_order_pickup_ready؛ لباقي المراحل نص v2 = نفس النص) */
+            const v2n = v2TemplateOf(stage, template);
+            const useV2 = Array.isArray(wb.windowV2Stages) && wb.windowV2Stages.includes(stage) && TEMPLATES[v2n] && typeof TEMPLATES[v2n].bind === "function";
+            const textName = useV2 ? v2n : template;
+            const textParams = useV2 ? TEMPLATES[v2n].bind({ ...orderData(o), ...o }) : params;
+            const body = withEta(renderTemplateText(textName, textParams)).slice(0, 1000);
+            const ub = (TEMPLATES[textName].components.find((c) => c.type === "BUTTONS")?.buttons || []).find((b) => b.type === "URL");
+            const url = ub ? String(ub.url).replace("{{1}}", String((textParams.button || [])[0] || "")) : null;
             const cUrl = courier && courier.wa ? courierChatUrl(order.order_no) : null;
             const cBody = cUrl && courier.first_name && TEMPLATES.fc_order_on_the_way_courier ? withEta(renderTemplateText("fc_order_on_the_way_courier", { body: [order.order_no, courier.first_name] })) : body;
             const payload = cUrl
@@ -1193,17 +1219,43 @@ export function register(app, ctx, deps = {}) {
         }
       }
     }
+    /* 📍 RT2 (١٧/١٠): قبل أي قالب بفلوس — حالة القالب عند ميتا لو نقدر نقراها (setTemplateStatus): مش APPROVED ⇒ template_not_approved من غير طلب لميتا ولا صف فاشل.
+       notify.js بيبعت SMS البديل (لو المرحلة في smsStages) وبيسجّل السبب في notify_sent. مانعرفش الحالة ⇒ زي الأول وميتا بتقرر. */
+    const paid = async (name, p) => {
+      const st = await templateStatusOf(name, "ar");
+      if (st && st !== "APPROVED") return { ok: false, skipped: "template_not_approved", template: name, status: st };
+      return sendTemplate({ phoneNorm: order.phone_norm, template: name, params: p, orderNo: order.order_no, stage, fallbackSms });
+    };
     /* SB4: نسخة v2 (بزر رد سريع يفتح نافذة) بعد ما المالك يحط المرحلة في waBot.windowV2Stages (يعني ميتا اعتمدتها) */
     if (stage === "on_the_way" && wb.courierTemplate === true && courier && courier.first_name && courier.wa && TEMPLATES.fc_order_on_the_way_courier) {      // SB5: بعد اعتماد ميتا
       const cp = TEMPLATES.fc_order_on_the_way_courier.bind({ ...orderData(o), courier });
-      if (!(cp.missing && cp.missing.length)) return sendTemplate({ phoneNorm: order.phone_norm, template: "fc_order_on_the_way_courier", params: cp, orderNo: order.order_no, stage, fallbackSms });
+      if (!(cp.missing && cp.missing.length)) return paid("fc_order_on_the_way_courier", cp);
     }
-    const v2 = `${template}_v2`;
+    const v2 = v2TemplateOf(stage, template);      // RT2: pickup_ready ⇒ fc_order_pickup_ready (الاسم البديل)
     if (Array.isArray(wb.windowV2Stages) && wb.windowV2Stages.includes(stage) && TEMPLATES[v2] && typeof TEMPLATES[v2].bind === "function") {
       const p2 = TEMPLATES[v2].bind({ ...orderData(o), ...o });      // كتالوج: مسارات order.* / customer.*
-      if (!(p2.missing && p2.missing.length)) return sendTemplate({ phoneNorm: order.phone_norm, template: v2, params: p2, orderNo: order.order_no, stage, fallbackSms });
+      if (!(p2.missing && p2.missing.length)) return paid(v2, p2);
     }
-    return sendTemplate({ phoneNorm: order.phone_norm, template, params, orderNo: order.order_no, stage, fallbackSms });
+    return paid(template, params);
+  }
+
+  /* 📍 RT2 (١٧/١٠): مرحلة «رسالة حرة بس» (FREE_STAGE_TEXT) — نفس أقفال القالب (ومنها مفتاح تحديثات الطلب) + نفس موافقة التحديثات + النافذة مفتوحة؛
+     غير كده مفيش قالب يتبعت بداله ⇒ السبب بيرجع للمنادي (window_closed / no_optin / stopped …) ويتسجّل. الحارس الكامل جوّه sendFreeform (سقف CJ1a بيحكمها). */
+  async function sendFreeStage(o, stage, def, snap) {
+    if (typeof def.guard === "function" && !def.guard(o)) return { ok: false, skipped: "stage_not_applicable" };
+    const wb = (snap && snap.waBot) || {};
+    if (wb.windowFreeUpdates === false) return { ok: false, skipped: "window_updates_off" };
+    const blocked = channelBlock(snap, "template");
+    if (blocked) return { ok: false, skipped: blocked };
+    if (!o.phone_norm) return { ok: false, skipped: "invalid_phone" };
+    const pn = String(o.phone_norm), op = await optInOf(pn);
+    const consent = !op.stoppedForUpdates && (op.updates || (!op.saidNoToUpdates && await termsCoverOrder(pool, pn, o.order_no)));
+    if (!consent) return { ok: false, skipped: op.stoppedForUpdates ? "stopped" : "no_optin" };
+    if (!(await windowOpen(pn))) return { ok: false, skipped: "window_closed" };
+    const body = String(def.text(o)).slice(0, 1000);
+    const r = await sendFreeform({ phoneNorm: pn, payload: { type: "text", text: { body, preview_url: false } }, source: "window", preview: body, orderNo: o.order_no, stage });
+    if (r.ok) return { ok: true, wamid: r.wamid, free: true };
+    return { ok: false, skipped: r.skipped || r.error || "send_failed", ...(r.policy ? { policy: true } : {}) };
   }
 
   /* قالب كتالوج مرتبط بطلب محدد، **مرة وحدة للطلب** (١٢/١٠ — رصيد الولاء): نفس أقفال sendTemplate الأربعة وموافقة
@@ -1599,7 +1651,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, results });
   });
 
-  return { fetchMedia, uploadMedia, sendTemplate, sendStaffTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox, setPayHold,
+  return { fetchMedia, uploadMedia, sendTemplate, sendStaffTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox, setPayHold, setTemplateStatus,
     guardSend, deliver, envState, dashMasterOn: async () => dashMasterOf(await settingsSnap()), testPhones: async () => testPhonesOf(await settingsSnap()),
     on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive,
     setActiveIds, idsInUse, setWebhookAccept };
