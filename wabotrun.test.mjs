@@ -415,6 +415,24 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^UPDATE reviews SET comment=\$3 WHERE id=\$1 AND phone_norm=\$2 AND comment IS NULL/i.test(s)) { const r = (db.reviews || []).find((x) => x.id === p[0] && x.phone_norm === p[1] && x.comment == null); if (r) r.comment = p[2]; return { rows: r ? [{ id: r.id }] : [] }; }
       if (/^UPDATE reviews SET categories = CASE/i.test(s)) { const r = (db.reviews || []).find((x) => x.id === p[0] && x.phone_norm === p[1]); if (r && !r.categories.includes(p[2])) r.categories.push(p[2]); return { rows: r ? [{ id: r.id }] : [] }; }
       if (/^UPDATE review_invites SET google_sent_at=/i.test(s)) { const iv = (db.invites || []).find((x) => x.code === p[0]); if (iv) iv.google_sent_at = iv.google_sent_at || iso(); return { rows: [] }; }
+      /* RV6: «قيّم على جوجل ✅» — db.gstate = صف لكل جوال (review_customer_state)؛ الضغطة القديمة وزر جوجل اللي اتبعت من db.invites */
+      if (/^SELECT google_rated_at, google_rated_source, google_asked_at FROM review_customer_state WHERE phone_norm=\$1/i.test(s)) { const g = (db.gstate ||= new Map()).get(p[0]); return { rows: g ? [{ google_rated_at: g.google_rated_at || null, google_rated_source: g.google_rated_source || null, google_asked_at: g.google_asked_at || null }] : [] }; }
+      if (/^SELECT google_asked_at, google_asked_code, google_rated_at FROM review_customer_state WHERE phone_norm=\$1/i.test(s)) { const g = (db.gstate ||= new Map()).get(p[0]); return { rows: g ? [{ google_asked_at: g.google_asked_at || null, google_asked_code: g.google_asked_code || null, google_rated_at: g.google_rated_at || null }] : [] }; }
+      if (/^SELECT min\(google_clicked_at\) AS at FROM review_invites WHERE phone_norm=\$1 AND google_clicked_at IS NOT NULL/i.test(s)) { const cl = (db.invites || []).filter((x) => x.phone_norm === p[0] && x.google_clicked_at && !/^TEST-/.test(x.order_no)).map((x) => x.google_clicked_at).sort(); return { rows: [{ at: cl[0] || null }] }; }
+      if (/^SELECT 1 FROM review_invites WHERE phone_norm=\$1 AND google_sent_at IS NOT NULL/i.test(s)) return { rows: (db.invites || []).filter((x) => x.phone_norm === p[0] && x.google_sent_at && !/^TEST-/.test(x.order_no)).slice(0, 1).map(() => ({})) };
+      if (/^INSERT INTO review_customer_state\(phone_norm, google_rated_at, google_rated_source, google_rated_by, updated_at\) VALUES \(\$1, NOW\(\), \$2, \$3, NOW\(\)\)/i.test(s)) {
+        const m = (db.gstate ||= new Map()), g = m.get(p[0]) || { phone_norm: p[0] };
+        if (p[1] === "click") { g.google_rated_at = g.google_rated_at || iso(); g.google_rated_source = g.google_rated_source || "click"; }
+        else { g.google_rated_at = iso(); g.google_rated_source = p[1]; g.google_rated_by = p[2]; }
+        m.set(p[0], g); return { rows: [{ phone_norm: p[0] }] };
+      }
+      if (/^INSERT INTO review_customer_state\(phone_norm, google_rated_at, google_rated_source, google_rated_by, updated_at\) VALUES \(\$1, NULL, NULL, \$2, NOW\(\)\)/i.test(s)) {
+        const m = (db.gstate ||= new Map()), g = m.get(p[0]) || { phone_norm: p[0] }; Object.assign(g, { google_rated_at: null, google_rated_source: null, google_rated_by: p[1] }); m.set(p[0], g); return { rows: [{ phone_norm: p[0] }] };
+      }
+      if (/^INSERT INTO review_customer_state\(phone_norm, google_asked_at, google_asked_code, updated_at\)/i.test(s)) {
+        const m = (db.gstate ||= new Map()), g = m.get(p[0]) || { phone_norm: p[0] }; g.google_asked_at = g.google_asked_at || iso(); g.google_asked_code = g.google_asked_code || p[1]; m.set(p[0], g); return { rows: [{ phone_norm: p[0] }] };
+      }
+      if (/^SELECT order_no, kind, option, ref, rating FROM review_invites WHERE code=\$1 AND phone_norm=\$2/i.test(s)) return { rows: (db.invites || []).filter((x) => x.code === p[0] && x.phone_norm === p[1]).map((x) => ({ order_no: x.order_no, kind: x.kind || null, option: x.option || null, ref: x.ref || null, rating: x.rating ?? null })) };
       /* SB2: طلب التقييم على واتساب */
       if (/^SELECT review_code, review_order, review_asked_at, review_answered_at FROM wa_bot_chats/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch ? [{ review_code: ch.review_code || null, review_order: ch.review_order || null, review_asked_at: ch.review_asked_at || null, review_answered_at: ch.review_answered_at || null }] : [] }; }
       if (/^INSERT INTO wa_bot_chats\(phone_norm, review_code, review_order, review_asked_at, review_answered_at\)/i.test(s)) { Object.assign(chat(p[0]), { review_code: p[1], review_order: p[2], review_asked_at: iso(), review_answered_at: null }); return { rows: [] }; }
@@ -6298,4 +6316,164 @@ test("MJ1 #٥ سالم وحسام (١٦/١٠): complaint + photo + «عندي م
   const o = world({ waBot: { mode: "live", handoverBurstSec: 0 }, orders: [order({ status: "delivered" })] });
   await o.say("الطلب وصل بارد وناقص"); o.clock.advanceSec(10);
   assert.equal((await o.say("وكمان الرز ناقص")).log.reply_key, "handoff_remind", "burst guard off: the old reminder");
+}));
+
+/* ═══ RV6 (عمر ١٧/١٠ ٢١:٣٠) — «قيّمت على جوجل خلاص»: مانطلبش تقييم جوجل تاني من اللي قيّم ═══
+   «نفتح رسالة «بالهنا والشفا» بعد الاستلام، بس العملاء اللي قيّموا على جوجل مانبعتلهمش تاني يقيّموا جوجل. هنعرف منين؟ بعد ما نطلب منهم نعملهم اختيار معناه إنه قيّم خلاص.» */
+const GQ_OLD = { phone_norm: "512345678", code: "old00001", order_no: "W1790000000001", kind: "delivery", ref: "W1790000000001", rating: 5, google_sent_at: "2026-09-20T15:00:00Z" };
+const GQ_NEW = { phone_norm: "512345678", code: "ab12cd34", order_no: "W1790012345678", kind: "delivery", ref: "W1790012345678" };
+const gqWorld = (o = {}) => rvWorld({ ...o, invites: (o.invites || [GQ_OLD, GQ_NEW]).map((x) => ({ ...x })) });
+const gqAsk = (w, code = "ab12cd34", orderNo = "W1790012345678") => w.bot.reviewAsk({ phone: "0512345678", orderNo, code, kind: "delivery", ref: orderNo });
+
+test("RV6: a customer who got the Google button before and is not flagged ⇒ the next in-window ask is the ONE-TIME «rated on Google before?» question (two buttons, free); «✅ قيّمت» ⇒ flag (reply) + ONE message: thanks + the stars list for the same order; 5★ then ⇒ thanks WITHOUT the Google button; the log says google_rated", withEnv(CONFIGURED, async () => {
+  const w = gqWorld();
+  await w.say("شكراً");
+  const before = w.calls.length;
+  assert.deepEqual(await gqAsk(w), { ok: true, channel: "wa_gq" });
+  const p = w.calls.slice(before).map((c) => c.body).find((b) => b.type);
+  assert.equal(p.interactive.type, "button");
+  assert.match(p.interactive.body.text, /^سؤال سريع 🙏 سبق وقيّمت فريش كاتس على جوجل؟\nحتى ما نكرّر عليك الطلب\./);
+  assert.deepEqual(p.interactive.action.buttons.map((b) => [b.reply.id, b.reply.title]), [["gq:yes:ab12cd34", "✅ قيّمت"], ["gq:no:ab12cd34", "ما قيّمت بعد"]]);
+  assert.doesNotMatch(JSON.stringify(p), /لسه|دلوقتي|كده/, "customer copy is white dialect");
+  const g0 = w.db.gstate.get("512345678");
+  assert.deepEqual([g0.google_asked_code, Boolean(g0.google_asked_at), g0.google_rated_at || null], ["ab12cd34", true, null], "asked once, not flagged yet");
+  const ch = w.db.chats.get("512345678");
+  assert.deepEqual([ch.review_code, Boolean(ch.review_asked_at), ch.review_stars_at || null, ch.review_answered_at || null], ["ab12cd34", true, null, null], "the question waits; no stars question yet");
+  const yes = await w.press("gq:yes:ab12cd34", "✅ قيّمت");
+  assert.equal(yes.log.reply_key, "gq_yes", JSON.stringify(yes.log));
+  assert.deepEqual([yes.log.reason, yes.log.detail], ["google_rated", "google_rated:reply"]);
+  const m = firstOut(yes);
+  assert.equal(m.interactive.type, "list", "thanks + the stars list in ONE message");
+  assert.match(m.interactive.body.text, /^شكراً لك 🌟 ما راح نطلب منك تقييم جوجل مرة ثانية\.\nوكيف كانت تجربتك هذه المرة؟ اختر من القائمة 👇$/);
+  assert.equal(m.interactive.action.sections[0].rows[0].id, "rs:5:ab12cd34");
+  assert.equal(yes.sent.filter((b) => b.type).length, 1, "one message");
+  const g1 = w.db.gstate.get("512345678");
+  assert.deepEqual([g1.google_rated_source, Boolean(g1.google_rated_at)], ["reply", true]);
+  assert.ok(w.db.chats.get("512345678").review_stars_at, "the stars question is pending now (typed digits count)");
+  assert.deepEqual(w.db.reviewAnswers, [["ab12cd34", "gq:yes"]]);
+  const five = await listTap(w, "rs:5:ab12cd34", "⭐⭐⭐⭐⭐ ممتاز");
+  const t = firstOut(five);
+  assert.equal(t.type, "text", JSON.stringify(five.sent));
+  assert.match(t.text.body, /^شكراً على تقييمك 🌟 يسعدنا إن تجربتك كانت حلوة/);
+  assert.doesNotMatch(JSON.stringify(five.sent), /reviews\/g\/|g\.page|قيّمنا على جوجل/, "no Google button for a flagged customer");
+  assert.deepEqual([five.log.reply_key, five.log.reason, five.log.detail], ["review_star", "google_rated", "google_rated:reply"]);
+  assert.deepEqual([w.db.invites[1].rating, w.db.invites[1].google_sent_at, w.db.reviews.length], [5, undefined, 1], "the rating is still saved; no Google link marked sent");
+}));
+
+test("RV6: «ما قيّمت بعد» ⇒ the usual stars list; 5★ ⇒ the Google button as before; the question is asked ONCE in a lifetime — the next order gets the stars list straight away; a customer never offered the Google button is never asked", withEnv(CONFIGURED, async () => {
+  const w = gqWorld();
+  await w.say("شكراً");
+  assert.deepEqual(await gqAsk(w), { ok: true, channel: "wa_gq" });
+  const no = await w.press("gq:no:ab12cd34", "ما قيّمت بعد");
+  assert.equal(no.log.reply_key, "gq_no", JSON.stringify(no.log));
+  assert.notEqual(no.log.reason, "google_rated");
+  const m = firstOut(no);
+  assert.equal(m.interactive.type, "list");
+  assert.match(m.interactive.body.text, /^كيف كان طلبك رقم W1790012345678؟ 🌟/);
+  assert.equal(w.db.gstate.get("512345678").google_rated_at || null, null, "not flagged");
+  assert.deepEqual(w.db.reviewAnswers, [["ab12cd34", "gq:no"]]);
+  const five = await listTap(w, "rs:5:ab12cd34", "⭐⭐⭐⭐⭐ ممتاز");
+  const g = firstOut(five);
+  assert.equal(g.interactive.type, "cta_url");
+  assert.equal(g.interactive.action.parameters.url, `${RV_GO}ab12cd34`, "Google as before");
+  assert.equal(five.log.reason, null);
+  // weeks later, the next order: asked already ⇒ no second question
+  w.db.invites.push({ phone_norm: "512345678", code: "cd56ef78", order_no: "W1790012345999", kind: "delivery", ref: "W1790012345999" });
+  const before = w.calls.length;
+  assert.deepEqual(await gqAsk(w, "cd56ef78", "W1790012345999"), { ok: true, channel: "wa_list" });
+  assert.equal(w.calls.slice(before).map((c) => c.body).find((b) => b.type).interactive.type, "list");
+  assert.equal(w.db.gstate.get("512345678").google_asked_code, "ab12cd34", "the first ask stays the one on record");
+  // never offered the Google button ⇒ stars list as before, no row written
+  const plain = rvWorld(); await plain.say("شكراً");
+  assert.deepEqual(await gqAsk(plain), { ok: true, channel: "wa_list" });
+  assert.equal((plain.db.gstate && plain.db.gstate.size) || 0, 0, "no review_customer_state row for a customer we never asked");
+}));
+
+test("RV6 policy «مفيش طلب تقييم» (skip): «✅ قيّمت» ⇒ thanks only, no stars list; once flagged the next ask is refused as final (no list, no template, no SMS fallback) — reviews.js records wa_google_rated", withEnv(CONFIGURED, async () => {
+  const w = gqWorld({ waBot: { reviewFlow: { googleRatedPolicy: "skip" } } });
+  await w.say("شكراً");
+  assert.deepEqual(await gqAsk(w), { ok: true, channel: "wa_gq" });
+  const yes = await w.press("gq:yes:ab12cd34", "✅ قيّمت");
+  const m = firstOut(yes);
+  assert.equal(m.type, "text");
+  assert.equal(m.text.body, "شكراً لك 🌟 ما راح نطلب منك تقييم جوجل مرة ثانية.");
+  assert.equal(yes.sent.filter((b) => b.type).length, 1);
+  assert.equal(w.db.chats.get("512345678").review_stars_at || null, null, "no stars question under skip");
+  assert.deepEqual(w.db.reviewAnswers, [["ab12cd34", "gq:yes"]]);
+  w.db.invites.push({ phone_norm: "512345678", code: "cd56ef78", order_no: "W1790012345999", kind: "delivery", ref: "W1790012345999" });
+  const before = w.calls.length;
+  assert.deepEqual(await gqAsk(w, "cd56ef78", "W1790012345999"), { ok: false, skipped: "google_rated", final: true });
+  assert.equal(w.calls.length, before, "nothing sent");
+  // outside the window too (template path): still refused before any template
+  const c = gqWorld({ waBot: { reviewFlow: { googleRatedPolicy: "skip", starsTemplate: true } } });
+  (c.db.gstate ||= new Map()).set("512345678", { phone_norm: "512345678", google_rated_at: "2026-10-01T10:00:00Z", google_rated_source: "staff" });
+  assert.deepEqual(await gqAsk(c), { ok: false, skipped: "google_rated", final: true });
+  assert.equal(c.calls.length, 0);
+}));
+
+test("RV6 click hint: a customer who clicked our Google link before (no row) counts as rated while «ضغطة رابط جوجل = قيّم» is on ⇒ no question, stars list, 5★ = thanks without Google (log google_rated:click); knob off ⇒ not flagged ⇒ the question, and Google again after «ما قيّمت بعد»", withEnv(CONFIGURED, async () => {
+  const clicked = { ...GQ_OLD, google_clicked_at: "2026-09-20T15:05:00Z" };
+  const on = gqWorld({ invites: [clicked, GQ_NEW] });
+  await on.say("شكراً");
+  assert.deepEqual(await gqAsk(on), { ok: true, channel: "wa_list" }, "flagged by the click ⇒ no question");
+  const five = await listTap(on, "rs:5:ab12cd34", "⭐⭐⭐⭐⭐ ممتاز");
+  const t = firstOut(five);
+  assert.equal(t.type, "text");
+  assert.match(t.text.body, /^شكراً على تقييمك 🌟/);
+  assert.deepEqual([five.log.reason, five.log.detail], ["google_rated", "google_rated:click"]);
+  assert.equal((on.db.gstate && on.db.gstate.size) || 0, 0, "the hint is read from the invite — no row is written by a read");
+  const off = gqWorld({ invites: [clicked, GQ_NEW], waBot: { reviewFlow: { googleClickCountsAsRated: false } } });
+  await off.say("شكراً");
+  assert.deepEqual(await gqAsk(off), { ok: true, channel: "wa_gq" }, "knob off ⇒ the click does not count ⇒ offered before ⇒ the question");
+  await off.press("gq:no:ab12cd34", "ما قيّمت بعد");
+  assert.equal(firstOut(await listTap(off, "rs:5:ab12cd34", "⭐⭐⭐⭐⭐ ممتاز")).interactive.type, "cta_url", "Google as before");
+  // a row written by a click while the knob is OFF is ignored at read time (the owner can turn the knob back on later without losing the data)
+  const row = gqWorld({ waBot: { reviewFlow: { googleClickCountsAsRated: false } } });
+  (row.db.gstate ||= new Map()).set("512345678", { phone_norm: "512345678", google_rated_at: "2026-10-01T10:00:00Z", google_rated_source: "click" });
+  await row.say("شكراً");
+  assert.deepEqual(await gqAsk(row), { ok: true, channel: "wa_gq" }, "click row ignored while the knob is off ⇒ not flagged ⇒ offered before ⇒ the question");
+  const rowOn = gqWorld();
+  (rowOn.db.gstate ||= new Map()).set("512345678", { phone_norm: "512345678", google_rated_at: "2026-10-01T10:00:00Z", google_rated_source: "click" });
+  await rowOn.say("شكراً");
+  assert.deepEqual(await gqAsk(rowOn), { ok: true, channel: "wa_list" }, "same row, knob on ⇒ flagged ⇒ no question");
+}));
+
+test("RV6 typed answers: «نعم» while the question waits counts as «✅ قيّمت», «لا» as «ما قيّمت بعد»; «تمام» on the delivered message for an offered customer ⇒ the question FIRST, then the list; a stale «نعم» (no question pending) is not an answer", withEnv(CONFIGURED, async () => {
+  const w = gqWorld();
+  await w.say("شكراً");
+  assert.deepEqual(await gqAsk(w), { ok: true, channel: "wa_gq" });
+  const yes = await w.say("نعم");
+  assert.equal(yes.log.reply_key, "gq_yes", JSON.stringify(yes.log));
+  assert.equal(w.db.gstate.get("512345678").google_rated_source, "reply");
+  assert.equal(firstOut(yes).interactive.type, "list");
+  // «لا» on another customer's pending question
+  const n = gqWorld();
+  await n.say("شكراً");
+  await gqAsk(n);
+  const no = await n.say("لا");
+  assert.equal(no.log.reply_key, "gq_no", JSON.stringify(no.log));
+  assert.equal(firstOut(no).interactive.type, "list");
+  assert.equal(n.db.gstate.get("512345678").google_rated_at || null, null);
+  // «تمام» (delivered message button) ⇒ the question first
+  const d = gqWorld({ invites: [GQ_OLD, { phone_norm: "512345678", code: "kk55jj66", order_no: "W1790012347777", kind: "pickup", ref: "W1790012347777" }] });
+  const ok = await qrTap(d, "تمام 👍");
+  assert.equal(ok.log.reply_key, "gq_ask", JSON.stringify(ok.log));
+  assert.deepEqual([ok.log.reason, ok.log.detail], ["google_rated", "google_rated:ask"]);
+  const q1 = firstOut(ok);
+  assert.equal(q1.interactive.type, "button");
+  assert.deepEqual(q1.interactive.action.buttons.map((b) => b.reply.id), ["gq:yes:kk55jj66", "gq:no:kk55jj66"]);
+  assert.equal(d.db.gstate.get("512345678").google_asked_code, "kk55jj66");
+  assert.equal(d.db.chats.get("512345678").review_stars_at || null, null, "no stars question yet");
+  const after = await d.press("gq:no:kk55jj66", "ما قيّمت بعد");
+  const l = firstOut(after);
+  assert.equal(l.interactive.type, "list");
+  assert.equal(l.interactive.action.sections[0].rows[0].id, "rs:5:kk55jj66");
+  d.clock.advance(1);
+  const typed = await d.say("5");
+  assert.equal(typed.log.reply_key, "review_star", "typed digits count after the list");
+  assert.equal(firstOut(typed).interactive.action.parameters.url, `${RV_GO}kk55jj66`, "not flagged ⇒ Google");
+  // no question pending ⇒ «نعم» is not an answer
+  const s = rvWorld(); await s.say("شكراً");
+  assert.notEqual((await s.say("نعم")).log.reply_key, "gq_yes");
+  assert.equal((s.db.gstate && s.db.gstate.size) || 0, 0);
 }));

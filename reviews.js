@@ -30,7 +30,8 @@ import { subscribe } from "./order-events.js";
 import { setLiveGoogleRating } from "./playbook.js";
 import { reviewDueAt } from "./prepstatus.js";
 /* RV1 (عمر ١٥/١٠): النجوم جوّه واتساب + كل أنواع الطلبات (موقع + كاشير) — القواعد والإعدادات في wareviews.js (waBot.reviewFlow) */
-import { reviewFlowConfig, dueFor, nextAllowed, inQuiet, kindOfInvite, posKindOf, kindOn, KIND_AR, PAGE_LABEL, VISIT_KINDS, APP_METHODS, reviewsDaily, bizDayWindow } from "./wareviews.js";
+import { reviewFlowConfig, dueFor, nextAllowed, inQuiet, kindOfInvite, posKindOf, kindOn, KIND_AR, PAGE_LABEL, VISIT_KINDS, APP_METHODS, reviewsDaily, bizDayWindow,
+  GOOGLE_RATED_DDL, googleRatedState, markGoogleRated, googleRatedStats } from "./wareviews.js";      // RV6 (عمر ١٧/١٠): «قيّم على جوجل ✅» — مانطلبش جوجل تاني
 import { KNOWN_WA_NUMBER } from "./wapolicy.js";
 /* RV1 (عمر ١٥/١٠): «عملاء المحل صالة وتيك أواي موافقين مسبقاً وقت الدفع عند الكاشير» ⇒ صف إثبات pos_payment لكل فاتورة (طلب التقييم بس) */
 import { recordPosReviewConsent, POS_REVIEW_CONSENT } from "./waconsent.js";
@@ -186,6 +187,7 @@ export function register(app, ctx, deps = {}) {
       CREATE TABLE IF NOT EXISTS cms_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     `);
     await pool.query(REVIEW_PORTAL_DDL);      // RV1: نتيجة القفل (outcome) + «شافها» في البورتال + سجل الإجراءات (review_actions)
+    for (const ddl of GOOGLE_RATED_DDL) await pool.query(ddl);      // RV6: صف لكل عميل «قيّم على جوجل ✅» (idempotent)
     // ربط التقييمات القديمة بطلبها (من الدعوة) وبجوال الطلب — كل إقلاع، idempotent
     await pool.query(`
       UPDATE reviews r SET order_no = iv.order_no
@@ -224,6 +226,10 @@ export function register(app, ctx, deps = {}) {
   const ipOf = (c) => c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "";
   /* RV1: إعدادات المسار الجديد من لوحة البوت (waBot.reviewFlow — المخطط في wareviews.js) */
   const flowOf = (s) => reviewFlowConfig((((s || {}).waBot) || {}).reviewFlow);
+  /* RV6: استعلام بيرجّع الصفوف أو null لو القاعدة وقعت (نفس شكل q في wabotrun) — لدوال wareviews (حالة «قيّم على جوجل») */
+  const qq = async (sql, p = []) => { try { return (await pool.query(sql, p)).rows; } catch (e) { console.error("[reviews] q:", e.message); return null; } };
+  /* RV6: العميل ده معلَّم «قيّم على جوجل ✅»؟ (القاعدة وقعت ⇒ false: صفحة التقييم مابتتكسرش عشان العلامة) */
+  const googleRatedOf = async (phone, settings = null) => { const st = await googleRatedState(qq, phone, flowOf(settings || await getSettingsData())); return Boolean(st && st.rated); };
   /* اسم مصدر الدعوة (كان «توصيل» لأي حاجة مش استلام): للعميل في صفحة التقييم، وللفريق في الوارد */
   const inviteLabel = (iv) => KIND_AR[kindOfInvite(iv)] || "توصيل";
   const invitePageLabel = (iv) => PAGE_LABEL[kindOfInvite(iv)] || "توصيل";
@@ -280,7 +286,7 @@ export function register(app, ctx, deps = {}) {
   app.get("/api/reviews/config", async (c) => {
     const cf = await cfg();
     const code = clip(c.req.query("c"), 40);
-    let label = null;
+    let label = null, googleRated = false;
     if (code) {
       const r = await pool.query(
         "UPDATE review_codes SET scans = scans + 1 WHERE code=$1 AND active RETURNING label", [code]);
@@ -289,14 +295,14 @@ export function register(app, ctx, deps = {}) {
       if (!label) {
         const iv = await pool.query(
           `UPDATE review_invites SET opened_at = COALESCE(opened_at, NOW())
-            WHERE code=$1 RETURNING order_no, option, kind`, [code]);
-        if (iv.rows[0]) label = invitePageLabel(iv.rows[0]);
+            WHERE code=$1 RETURNING order_no, option, kind, phone_norm`, [code]);
+        if (iv.rows[0]) { label = invitePageLabel(iv.rows[0]); googleRated = await googleRatedOf(iv.rows[0].phone_norm); }      // RV6: المعلَّم مايشوفش زر جوجل في الصفحة كمان
       }
     }
     return c.json({
       ok: true, active: cf.active !== false, brand: cf.brand,
-      threshold: cf.threshold, hasGoogle: Boolean(cf.googleUrl),
-      googleUrl: cf.googleUrl || "", categories: CATEGORIES, codeLabel: label,
+      threshold: cf.threshold, hasGoogle: Boolean(cf.googleUrl) && !googleRated,
+      googleUrl: googleRated ? "" : cf.googleUrl || "", categories: CATEGORIES, codeLabel: label, ...(googleRated ? { googleRated: true } : {}),
     });
   });
 
@@ -348,9 +354,11 @@ export function register(app, ctx, deps = {}) {
     if (code) await pool.query(
       "UPDATE review_invites SET review_id=$2, rating=$3 WHERE code=$1 AND review_id IS NULL", [code, id, rating]
     ).catch(() => {});
-    const route = routeFor(rating, cf.threshold, cf.googleUrl);
+    /* RV6 (عمر ١٧/١٠): عميل الدعوة معلَّم «قيّم على جوجل ✅» ⇒ الصفحة شكر داخلي من غير جوجل (نفس قاعدة واتساب) */
+    const googleRated = invitePhone ? await googleRatedOf(invitePhone) : false;
+    const route = googleRated ? "internal" : routeFor(rating, cf.threshold, cf.googleUrl);
     if (rating < 4 && !(orderNo && orderNo.startsWith("TEST-")) && code !== "test") portalSay("review_low", { id: Number(id), rating, channel: kind, at: new Date().toISOString() });      // RV1: بورتال المدير
-    return c.json({ ok: true, id, route, googleUrl: cf.googleUrl || "", threshold: cf.threshold });
+    return c.json({ ok: true, id, route, googleUrl: googleRated ? "" : cf.googleUrl || "", threshold: cf.threshold, ...(googleRated ? { googleRated: true } : {}) });
   });
 
   /* ── عام: تفاصيل التقييم السلبي (الفورم الداخلي) + تنبيه المدير ────────── */
@@ -403,9 +411,12 @@ export function register(app, ctx, deps = {}) {
       try {
         const r = await pool.query(
           `UPDATE review_invites SET went_google=TRUE, google_clicked_at=COALESCE(google_clicked_at, NOW())
-            WHERE code=$1 RETURNING review_id`, [code]);
+            WHERE code=$1 RETURNING review_id, phone_norm, order_no`, [code]);
         const rid = r.rows[0]?.review_id;
         if (rid) await pool.query("UPDATE reviews SET went_google=TRUE WHERE id=$1", [rid]);
+        /* RV6: الضغطة بتعلّم العميل «قيّم على جوجل» بمصدر click (بيتحسب بس والمفتاح googleClickCountsAsRated مفتوح — googleRatedState). التجارب لأ. */
+        const pn = r.rows[0]?.phone_norm;
+        if (pn && !/^TEST-/.test(String(r.rows[0]?.order_no || ""))) await markGoogleRated(qq, { phone: pn, source: "click" });
       } catch (e) { console.error("[reviews] go-google:", e.message); }
     }
     c.header("Cache-Control", "no-store");
@@ -661,6 +672,15 @@ export function register(app, ctx, deps = {}) {
           if (await one(`SELECT 1 FROM wa_bot_chats WHERE phone_norm=$1 AND (muted_until > $2::timestamptz OR handoff_at > $2::timestamptz - INTERVAL '24 hours')`, [iv.phone_norm, now.toISOString()])) { await skip("handover_open"); continue; }
           if (await one(`SELECT 1 FROM reviews WHERE phone_norm=$1 AND rating < 4 AND NOT resolved AND NOT COALESCE(is_test,false) AND hidden_at IS NULL
                           AND created_at > $2::timestamptz - INTERVAL '7 days' LIMIT 1`, [iv.phone_norm, now.toISOString()])) { await skip("open_complaint"); continue; }
+          /* RV6 (عمر ١٧/١٠): المعلَّم «قيّم على جوجل ✅» — سياسة «مفيش طلب تقييم» ⇒ الدعوة تتقفل google_rated (ولا واتساب ولا SMS)؛
+             «النجوم الداخلية بس» ⇒ مرة كل googleRatedCooldownDays (اتسأل من قريب ⇒ google_rated:cooldown). القراية وقعت ⇒ الدعوة تستنى المسح الجاي. */
+          const gst = await googleRatedState(qq, iv.phone_norm, flow);
+          if (gst === null) throw CHECK_FAILED;
+          if (gst.rated) {
+            if (flow.googleRatedPolicy === "skip") { await skip("google_rated"); continue; }
+            if (flow.googleRatedCooldownDays > 0 && await one(`SELECT 1 FROM review_invites WHERE phone_norm=$1 AND order_no <> $2 AND sent_at IS NOT NULL AND order_no NOT LIKE 'TEST-%'
+                                                                  AND sent_at > $3::timestamptz - make_interval(days => $4::int) LIMIT 1`, [iv.phone_norm, iv.order_no, now.toISOString(), flow.googleRatedCooldownDays])) { await skip("google_rated:cooldown"); continue; }
+          }
         }
         /* SB2 (عمر ١٤/١٠: «ليه مشغلتش رسالة التقييم تجيله على الواتس»): واتساب أولاً (رسالة حرة بزرّين جوّه النافذة، وإلا القالب المعتمد) — القرار والأقفال في
            wabotrun.reviewAsk (إعداد البوت reviewWhatsApp). العميل موقِّف ⇒ ولا رسالة (ولا SMS). أي سبب تاني ⇒ الـSMS زي الأول، والسبب بيتسجّل. رسالة واحدة للطلب (الصف ده).
@@ -785,6 +805,8 @@ export function register(app, ctx, deps = {}) {
         replyRate: iv.sent ? iv.rated / iv.sent : null,
       },
       google: await placeCache(),
+      /* RV6 (عمر ١٧/١٠): كام عميل معلَّم «قيّم على جوجل ✅» (الكل / الأسبوع / بالمصدر)، كام اتسأل السؤال الوحيد، وكام دعوة اتقفلت بسببه في المدة */
+      googleRated: await googleRatedStats(qq, { flow: flowOf(await getSettingsData()), days }).catch(() => null),
     });
   });
 

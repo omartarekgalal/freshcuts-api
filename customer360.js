@@ -25,6 +25,8 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
+/* RV6 (عمر ١٧/١٠): علامة «قيّم على جوجل ✅» في كارت العميل + زرار الفريق (wareviews.js — نفس القاعدة اللي البوت وصفحة التقييم بيقروها) */
+import { googleRatedState, markGoogleRated, clearGoogleRated, reviewFlowConfig } from "./wareviews.js";
 import {
   normPhone, maskPhone, FIRST_ORDER_CTE, SHOP_NOT_ORDER_STATUSES, shopPaidSql, bizDaySql, isNewCustomer,
   IDENTITY_RULES_AR,
@@ -570,6 +572,8 @@ export function register(app, ctx, deps = {}) {
 
     const nm = names.get(pn) || {};
     const bestName = (acct[0] && plausibleName(acct[0].name) && acct[0].name) || (tsc[0] && plausibleName(tsc[0].name) && tsc[0].name) || nm.name || null;
+    /* RV6 (عمر ١٧/١٠): «قيّم على جوجل ✅» — نفس القاعدة اللي البوت بيقراها (الضغطة بتتحسب حسب المفتاح googleClickCountsAsRated) + مين علّمه من الفريق */
+    const googleRated = await googleRatedOf(pn, settings);
 
     return {
       ref: refOf(pn),
@@ -611,9 +615,51 @@ export function register(app, ctx, deps = {}) {
         hidden: Boolean(r.is_test || r.hidden_at) })),
       reviewInvites: invites.map((i) => ({ orderNo: i.order_no, sentAt: i.sent_at, openedAt: i.opened_at, rating: i.rating, wentGoogle: i.went_google, skip: i.skip_reason })),
       notes, tags: tags[0]?.tags || [],
+      googleRated,      // RV6: { rated, at, source, by, askedAt, offered, clickCounts, policy }
       rules: IDENTITY_RULES_AR,
     };
   }
+
+  /* ═══ RV6 (عمر ١٧/١٠ ٢١:٣٠) — «العملاء اللي قيّموا على جوجل مانبعتلهمش تاني يقيّموا جوجل» ═══
+     الحالة الفعلية من wareviews.googleRatedState (الضغطة بتتحسب حسب مفتاح اللوحة، والضغطة القديمة قبل RV6 كمان) + صف الجدول (مين علّمه وامتى اتسأل). */
+  const qq = async (sql, p = []) => { try { return (await pool.query(sql, p)).rows; } catch (e) { console.error("[c360] q:", e.message); return null; } };
+  async function googleRatedOf(pn, settings = null) {
+    const s = settings || (await getSettingsData().catch(() => ({}))) || {};
+    const flow = reviewFlowConfig(((s.waBot || {}).reviewFlow) || {});
+    const [st, row] = await Promise.all([
+      googleRatedState(qq, pn, flow).catch(() => null),
+      qq("SELECT google_rated_at, google_rated_source, google_rated_by, google_asked_at FROM review_customer_state WHERE phone_norm=$1", [pn]),
+    ]);
+    const r = (row && row[0]) || {};
+    return {
+      rated: Boolean(st && st.rated), at: (st && st.at) || null, source: (st && st.source) || null,
+      by: r.google_rated_by || null, askedAt: (st && st.askedAt) || r.google_asked_at || null, offered: Boolean(st && st.offered),
+      clickCounts: flow.googleClickCountsAsRated !== false, policy: flow.googleRatedPolicy, cooldownDays: flow.googleRatedCooldownDays,
+      /* الصف موجود بعلامة ضغطة بس والمفتاح مقفول ⇒ اللوحة تعرف إن فيه ضغطة مش محسوبة */
+      clickIgnored: Boolean(r.google_rated_at && r.google_rated_source === "click" && flow.googleClickCountsAsRated === false),
+      unavailable: st === null,
+    };
+  }
+  /* الفريق بيعلّم العميل «قيّم على جوجل ✅» (أو يشيل العلامة) من كارت العميل. :ref = بصمة الملف (c…) أو الجوال نفسه. الكتابة = «تعديل» على «العملاء»
+     (المالك + اللي معاه تعديل العملاء) — requireAdmin بيسجّل سطر النشاط وإحنا بنكمّله بـ«إيه اللي اتغيّر»، وبنكتب ملاحظة في الكارت عشان التاريخ يبان. */
+  app.post("/api/cms/customers/:ref/google-rated", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const ref = String(c.req.param("ref") || "");
+    let pn = /^c[0-9a-f]{15}$/.test(ref) ? await pnOfRef(ref) : (ctx.normPhone ? ctx.normPhone(ref) : ref.replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""));
+    if (!/^5\d{8}$/.test(String(pn || ""))) return bad(c, "not_found", 404);
+    pn = String(pn);
+    const b = await c.req.json().catch(() => ({}));
+    if (b.rated !== undefined && typeof b.rated !== "boolean") return bad(c, "rated_boolean");
+    const rated = b.rated !== false;
+    const u = await whoami(c).catch(() => null);
+    const by = String((u && u.name) || "المالك").slice(0, 80);
+    const ok = rated ? await markGoogleRated(qq, { phone: pn, source: "staff", by }) : await clearGoogleRated(qq, { phone: pn, by });
+    if (!ok) return c.json({ ok: false, error: "unavailable" }, 503);
+    ctx.auditNote?.(c, `google-rated: ${rated ? "on" : "off"} ${maskPhone(pn)} by ${by}`)?.catch?.(() => {});
+    await pool.query("INSERT INTO c360_notes(phone_norm, body, author) VALUES ($1,$2,$3)",
+      [pn, rated ? "✅ الفريق علّمه: قيّم على جوجل — مش هنطلب منه تقييم جوجل تاني" : "↩️ الفريق شال علامة «قيّم على جوجل»", by]).catch(() => {});
+    return c.json({ ok: true, googleRated: await googleRatedOf(pn) });
+  });
 
   /* ═══ ✉️ سجل الرسايل ═══════════════════════════════════════════════════ */
   const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));

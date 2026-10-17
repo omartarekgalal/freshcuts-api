@@ -58,7 +58,7 @@ export const JOURNEY_SCHEMA = Object.freeze({
 
 /* ── مين «مبادِر» ─────────────────────────────────────────────────────────── */
 /* مفاتيح رسايل البوت المبادِرة (wabotrun sendOwnX key) ⇒ guardSend proactive:true */
-export const PROACTIVE_KEYS = Object.freeze(new Set(["paid_note", "window_keep", "lead_followup", "reply_followup", "lead_nudge", "review_ask", "review_stars_ask"]));
+export const PROACTIVE_KEYS = Object.freeze(new Set(["paid_note", "window_keep", "lead_followup", "reply_followup", "lead_nudge", "review_ask", "review_stars_ask", "review_google_ask"]));      // RV6 (١٧/١٠): سؤال «قيّمت على جوجل؟» مبادِر زي طلب التقييم
 /* شغلات wa_bot_jobs اللي بتتأجّل (مش بتتلغي) طول ما الهدوء شغّال */
 export const PROACTIVE_JOB_KINDS = Object.freeze(["paid_note", "window_keep", "lead_followup", "reply_followup", "assist_nudge"]);
 /* مصادر guardSend اللي سقف الطلب مابيلمسهاش (رد على كلام العميل / الفريق / تجربة) */

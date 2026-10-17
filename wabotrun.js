@@ -67,7 +67,8 @@ import { FREE_STAGES } from "./waswitches.js";      // RT2 مراجعة (١٧/١
 import { JOURNEY_GROUP, JOURNEY_GROUP_AR, JOURNEY_DEFAULTS, JOURNEY_NUMS, JOURNEY_BOOLS, JOURNEY_SCHEMA, journeyCfg, holdUntil, deferDecision, PROACTIVE_KEYS, PROACTIVE_JOB_KINDS, PAID_CONFIRM_SQL } from "./wajourney.js";      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض
 import { COURIER_JOB_DEFAULTS, COURIER_JOB_SCHEMA, COURIER_JOB_SCHEMA_GROUP, courierJobConfig, courierJobFromBody } from "./courierwa-cfg.js";      // CW1
 import { REVIEW_FLOW_DEFAULTS, REVIEW_FLOW_SCHEMA, REVIEW_SCHEMA_GROUP, REVIEW_TEXTS, reviewFlowConfig, reviewFlowFromBody, starOfListId, starOfQr, typedStar, reasonOfListId, reviewsCfgOf,
-  starsAskReply, starsSubject, starReply, applyStar, applyReason, captureLowComment, pendingStars, markGoogleSent, reviewCtaOk, reviewsDaily, WEB_KINDS, VISIT_KINDS } from "./wareviews.js";      // RV1: النجوم جوّه واتساب
+  starsAskReply, starsSubject, starReply, applyStar, applyReason, captureLowComment, pendingStars, markGoogleSent, reviewCtaOk, reviewsDaily, WEB_KINDS, VISIT_KINDS,
+  googleRatedState, shouldAskGoogleRated, markGoogleAsked, markGoogleRated, pendingGoogleAsk, gqOfButtonId, typedGoogleAnswer, gqAskReply, gqAnswerReply } from "./wareviews.js";      // RV1: النجوم جوّه واتساب · RV6 (عمر ١٧/١٠): «قيّم على جوجل ✅»
 
 export const STORE = "https://freshcuts.sa";
 export const UNSUPPORTED_OPENER_BODY = "[فتح المحادثة برسالة واتساب مابيعرضهاش — غالباً ضغطة «راسلنا» من إعلان]";
@@ -586,7 +587,7 @@ export const ACTIVE_ORDER_STATUSES = Object.freeze(["paid", "pos_created", "acce
 export const NOTE_MOD_RE = /(^| )(زود|زودوا|زودو|زودلي|زودولي|زيد|زيدوا|زيدو|زياده|اكسترا|extra|بدون|من غير|بلا|ما ابي|ما ابغى|ما ابغا|مابي|مابغى|مابغا|لا تحط|لا تحطوا|لا تحطو|ماتحط|ماتحطوا|حطوا|حطو|حطولي|حطلي|ضيفوا|ضيفو|ضيف|ضيفلي|ضيفولي|اضيفوا|اضف|اضيف|خلوها|خليها|خلها|خلوه|خليه|خله|بدلوا|بدلو|بدل|ملاحظه|ملاحظات|ملاحظتي|تنبيه|نسيت|without|add|more|less)( |$)/;
 export const NOTE_ADDR_RE = /(^| )(دور|الدور|طابق|الطابق|شقه|شقتي|عماره|عمارتي|فيلا|بيت|بيتي|مبنى|مبني|المبنى|بوابه|البوابه|مدخل|المدخل|مكتب|برج|حي|شارع|عنوان|عنواني|العنوان|موقعي|لوكيشن|الموقع|بجوار|بجنب|جنب|جمب|قدام|مقابل|وراء|ورا|خلف|قريب|المجمع|مجمع|سكن|استراحه|فندق|شاليه|الرقم الاضافي|رقم المبنى|floor|flat|apartment|apt|building|villa|gate|entrance|next to|behind|opposite)( |$)/;
 const NOTE_HARD_KEYS = new Set(["complaint", "problem", "status", "eta", "stop", "start", "stop_updates", "cancel_what", "human", "reorder", "thanks", "greet", "hours", "hoursloc", "location", "payment", "secret", "whoami", "main", "nack", "rf_yes", "rf_no", "optin_yes", "optin_no",
-  "resume_all", "resume_updates", "review_ok", "review_note", "review_star", "review_reason", "channel", "custom_offer", "delivery_time", "other_city", "repeat_short", "unsupported"]);
+  "resume_all", "resume_updates", "review_ok", "review_note", "review_star", "review_reason", "gq_ask", "gq_yes", "gq_no", "channel", "custom_offer", "delivery_time", "other_city", "repeat_short", "unsupported"]);      // RV6: سؤال/إجابة «قيّمت على جوجل؟» مش ملاحظة على طلب
 const CANCEL_WORD_RE = /(^| )(الغ|الغي|الغيه|الغاء|كنسل|كانسل|cancel|استرجاع|استرداد|refund)/;
 /* ⇒ "location" | "address" | "photo" | "note" | null — بعد التصنيف. الضغطات والأسئلة (؟) مش ملاحظات (إلا لو فيها عنوان). */
 export function noteKindOf(ev, cls) {
@@ -1517,6 +1518,11 @@ export function buildReply(key, c) {
     /* RV1: ضغطة نجوم (arg من wareviews.applyStar في work: route/link/ref/reviewId) ⇒ جوجل للعالي، اعتذار + الأسباب + المدير للواطي */
     case "review_star": return starReply({ T, F, arg: c.arg || {}, callLine: c.arg && c.arg.route === "low" ? callLine() : "" });
     case "review_reason": return { body: T("rs_reason_ok") };
+    /* RV6 (عمر ١٧/١٠): السؤال الوحيد «قيّمت فريش كاتس على جوجل قبل كده؟» (بدل قايمة النجوم لما «تمام» بتفتحها) وإجابته:
+       «✅ قيّمت» ⇒ شكر (+ قايمة النجوم لنفس الطلب مع «النجوم الداخلية بس») · «لسه» ⇒ قايمة النجوم العادية. arg من work (code/kind/ref/order/rated). */
+    case "gq_ask": return gqAskReply({ T, code: c.arg && c.arg.code });
+    case "gq_yes": case "gq_no": { const a = c.arg || {};
+      return gqAnswerReply({ T, F, yes: key === "gq_yes", policy: cfg.reviewFlow && cfg.reviewFlow.googleRatedPolicy, kind: a.kind || null, orderNo: a.ref || a.order || null, code: a.code, rated: Boolean(a.rated) }); }
     /* RV1: رقم الطلب في الرد = رقم طلب موقع بس (دعوة الكاشير «pos:…» رقم داخلي)؛ من غير رقم ⇒ سطر «طلب رقم» بيتشال بدل ما يفضل فاضي */
     case "review_note": { const no = /^W\d{6,20}$/.test(String((c.arg && c.arg.order) || "")) ? String(c.arg.order) : "";
       const body = F("rv_note", { order_no: no, wait: wait() });
@@ -1788,6 +1794,8 @@ export function classify(ev, know = {}) {
     /* RV1: صف نجوم rs:<نجوم>:<الكود> · صف سبب التقييم الواطي rr:<السبب>:<رقم التقييم> */
     if (k === "rs") { const st = starOfListId(id); if (st) return out("review_star", st, "list:review_star"); }
     if (k === "rr") { const rr = reasonOfListId(id); if (rr) return out("review_reason", rr, "list:review_reason"); }
+    /* RV6 (عمر ١٧/١٠): زرّي «قيّمت فريش كاتس على جوجل قبل كده؟» — gq:yes:<كود الدعوة> / gq:no:<الكود> */
+    if (k === "gq") { const g = gqOfButtonId(id); if (g) return out(g.yes ? "gq_yes" : "gq_no", { code: g.code }, `button:gq:${g.yes ? "yes" : "no"}`); }
   }
   /* EX6 (١٣/١٠: أول رسالة من إعلان وصلت «unsupported» واتسابت من غير رد): مابتتجاهلش. بداية محادثة ⇒ ترحيب (work)، جوّه محادثة ⇒ سطر «اكتبها نص». */
   if (type === "unsupported" && !ev.interactiveId) return out("unsupported", null, "type:unsupported", 0);
@@ -2011,7 +2019,7 @@ export const COMPLAINT_24H_SQL = "SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 A
 const REVIEW_SOFT_KEYS = new Set([...MENU_KEYS, "order", "reorder", "offers"]);
 const OPS_SERIOUS = new Set(["order_change", "order_late", "order_issue", "allergy_severe", "send_failed"]);
 /* سطر التعريف بالمساعد مابيتحطش فوق رد رحلة التقييم (رد على زر إحنا بعتناه، مش بداية محادثة) */
-const NO_DISCLOSE = new Set(["whoami", "review_ok", "review_star", "review_reason"]);
+const NO_DISCLOSE = new Set(["whoami", "review_ok", "review_star", "review_reason", "gq_ask", "gq_yes", "gq_no"]);      // RV6: رد على زر إحنا بعتناه
 const iso = (ms) => new Date(ms).toISOString();
 
 /* ctx = { cfg, now, chat, lastEchoAt, repliesLastHour, lastSame, failedRecently, data, cls, afterWait }
@@ -2633,8 +2641,15 @@ export function register(app, ctx, deps = {}) {
     /* ١٤/١٠: الرسالة الجاهزة من زر «تابع طلبك» ⇒ المحادثة «متابعة طلب» (follow_order/follow_at) — للتقرير والمتابعة. رسالته نفسها فتحت النافذة. */
     if (!afterWait && cls.rawIntent === "follow_link" && /^5\d{8}$/.test(phone) && cls.entities && cls.entities.orderNo)
       await q("INSERT INTO wa_bot_chats(phone_norm, follow_order, follow_at) VALUES ($1,$2,NOW()) ON CONFLICT (phone_norm) DO UPDATE SET follow_order=$2, follow_at=NOW(), updated_at=NOW()", [phone, String(cls.entities.orderNo).slice(0, 30)]);
+    /* RV6 (عمر ١٧/١٠): «قيّمت» / «نعم» / «لسه» / «لا» مكتوبة والسؤال الوحيد «قيّمت على جوجل قبل كده؟» مستني رد ⇒ نفس الزر.
+       قبل قاعدة «تمام» المكتوبة (SB2) عشان «نعم» ماتتحسبش «تمام» وتفتح قايمة النجوم من غير ما العلامة تتسجّل. */
+    if (!afterWait && /^5\d{8}$/.test(phone) && !ev.interactiveId && String(ev.type || "text") === "text" && String(ev.text || "").trim()) {
+      const ans = typedGoogleAnswer(ev.text);
+      let gp = null; if (ans) { try { gp = await pendingGoogleAsk(q, phone, now, cfg.reviewReplyHours); } catch (e) { console.error("[wabot] gq pending:", e.message); gp = null; } }
+      if (gp) cls = { ...cls, key: ans === "yes" ? "gq_yes" : "gq_no", arg: { code: gp.code }, rawIntent: "gq_typed" };
+    }
     /* SB2: «تمام» / «عندي ملاحظة» مكتوبة بعد رسالة التقييم (خلال reviewReplyHours ولسه مااتردّش عليها) = نفس الزرار. الضغطة نفسها بتوصل بمعرّفها (classify). */
-    if (!afterWait && cfg.reviewWhatsApp && /^5\d{8}$/.test(phone) && !ev.interactiveId && (cls.key === "ack" || REVIEW_NOTE_RE.test(normalize(String(ev.text || ""))))) {
+    if (!afterWait && cfg.reviewWhatsApp && /^5\d{8}$/.test(phone) && !ev.interactiveId && !/^gq_/.test(String(cls.key || "")) && (cls.key === "ack" || REVIEW_NOTE_RE.test(normalize(String(ev.text || ""))))) {
       const rv = await q("SELECT review_code, review_order, review_asked_at, review_answered_at FROM wa_bot_chats WHERE phone_norm=$1", [phone]), c0 = rv && rv[0];
       /* RV1: السؤال المستني سؤال نجوم (قايمة/قالب النجوم) ⇒ «تمام» المكتوبة مش إجابة عليه (ماترجّعش القايمة تاني) */
       const sa = c0 && c0.review_code ? ((await q("SELECT review_stars_at FROM wa_bot_chats WHERE phone_norm=$1", [phone])) || [])[0] : null;
@@ -2677,7 +2692,8 @@ export function register(app, ctx, deps = {}) {
        • ضغطة نجمة ⇒ صف في reviews + الدعوة بتتقفل + التوجيه (جوجل / شكر / اعتذار + المدير) قبل القرار، عشان buildReply يبني الرد منه.
        • ضغطة سبب ⇒ بيتضاف لتصنيفات التقييم. «تمام» والمسار شغّال ⇒ سؤال النجوم اتعرض (review_stars_at). */
     if (!afterWait && /^5\d{8}$/.test(phone)) {
-      if (cls.key !== "review_star" && cls.key !== "review_reason" && !ev.interactiveId && String(ev.type || "text") === "text" && String(ev.text || "").trim()) {
+      /* RV6: الإجابة المكتوبة على سؤال جوجل اتعرفت فوق (قبل SB2) — هنا بس مش بنعدّها نجمة ولا تعليق */
+      if (cls.key !== "review_star" && cls.key !== "review_reason" && cls.key !== "gq_yes" && cls.key !== "gq_no" && !ev.interactiveId && String(ev.type || "text") === "text" && String(ev.text || "").trim()) {
         const n = typedStar(ev.text);
         const pend = n ? await pendingStars(q, phone, now, cfg.reviewReplyHours) : null;
         if (pend) cls = { ...cls, key: "review_star", arg: { stars: n, exact: true, code: pend.code }, rawIntent: "review_star_typed" };
@@ -2685,9 +2701,36 @@ export function register(app, ctx, deps = {}) {
       }
       if (cls.key === "review_star") { try { cls = await applyStar(q, { phone, cls, flow: cfg.reviewFlow, rcfg: reviewsCfgOf(settings), contextId: ev.contextId || null }); } catch (e) { console.error("[wabot] review star:", e.message); } }
       else if (cls.key === "review_reason") { try { cls = await applyReason(q, { phone, cls }); } catch (e) { console.error("[wabot] review reason:", e.message); } }
+      else if ((cls.key === "gq_yes" || cls.key === "gq_no") && cls.arg && cls.arg.code) {
+        /* RV6: إجابة السؤال الوحيد. «✅ قيّمت» ⇒ علامة «قيّم على جوجل» بمصدر reply (مانطلبش جوجل تاني أبداً). الدعوة (لنفس الجوال بس) بتدّي النوع/الرقم للرد،
+           ولو الرد هيعرض قايمة النجوم لنفس الطلب (لسه مااتقيّمش، ومش سياسة «مفيش طلب تقييم» مع «قيّمت») ⇒ سؤال نجوم مستني (الأرقام المكتوبة بتتحسب). */
+        try {
+          const yes = cls.key === "gq_yes", code = String(cls.arg.code);
+          const iv = ((await q("SELECT order_no, kind, option, ref, rating FROM review_invites WHERE code=$1 AND phone_norm=$2", [code, phone])) || [])[0] || null;
+          if (yes) await markGoogleRated(q, { phone, source: "reply" });
+          const rated = Boolean(iv && iv.rating != null);
+          cls = { ...cls, arg: { code: iv ? code : null, kind: iv ? iv.kind || (iv.option === "pickup" ? "pickup" : "delivery") : null, ref: (iv && iv.ref) || null, order: (iv && iv.order_no) || null, rated } };
+          await q("UPDATE wa_bot_chats SET review_answered_at=NOW() WHERE phone_norm=$1", [phone]);
+          if (iv) await q("UPDATE review_invites SET wa_answer=$2, wa_answered_at=NOW() WHERE code=$1 AND wa_answer IS NULL", [code, yes ? "gq:yes" : "gq:no"]);
+          const asks = Boolean(iv) && !rated && (!yes || cfg.reviewFlow.googleRatedPolicy !== "skip");
+          if (asks) await q(`INSERT INTO wa_bot_chats(phone_norm, review_code, review_order, review_stars_at) VALUES ($1,$2,$3,NOW())
+                             ON CONFLICT (phone_norm) DO UPDATE SET review_code=$2, review_order=$3, review_stars_at=NOW(), updated_at=NOW()`, [phone, code, String(iv.order_no || "").slice(0, 30) || null]);
+        } catch (e) { console.error("[wabot] gq answer:", e.message); }
+      }
       else if (cls.key === "review_ok" && cfg.reviewFlow.enabled && cls.arg && cls.arg.code && !cls.arg.rated) {
-        await q(`INSERT INTO wa_bot_chats(phone_norm, review_code, review_order, review_stars_at) VALUES ($1,$2,$3,NOW())
-                 ON CONFLICT (phone_norm) DO UPDATE SET review_code=$2, review_order=$3, review_stars_at=NOW(), updated_at=NOW()`, [phone, String(cls.arg.code), String(cls.arg.order || "").slice(0, 30) || null]);
+        /* RV6: «تمام» بتفتح قايمة النجوم — بس لو العميل وصله زر جوجل قبل كده ولسه مش معلَّم ومااتسألش ⇒ السؤال الوحيد الأول (مرة في العمر)، وإجابته بتجيب القايمة.
+           القراية وقعت ⇒ القايمة زي الأول (مش هنمنع التقييم عشان القاعدة). */
+        let gst = null; try { gst = await googleRatedState(q, phone, cfg.reviewFlow); } catch (e) { console.error("[wabot] gq state:", e.message); gst = null; }
+        if (shouldAskGoogleRated(gst)) {
+          cls = { ...cls, key: "gq_ask", rawIntent: "review_ok_gq" };
+          await markGoogleAsked(q, { phone, code: String(cls.arg.code) });
+          await q(`INSERT INTO wa_bot_chats(phone_norm, review_code, review_order, review_asked_at, review_answered_at) VALUES ($1,$2,$3,NOW(),NULL)
+                   ON CONFLICT (phone_norm) DO UPDATE SET review_code=$2, review_order=$3, review_asked_at=NOW(), review_answered_at=NULL, updated_at=NOW()`, [phone, String(cls.arg.code), String(cls.arg.order || "").slice(0, 30) || null]);
+          await q("UPDATE wa_bot_chats SET review_stars_at = CASE WHEN $2::boolean THEN NOW() ELSE NULL END WHERE phone_norm=$1", [phone, false]);
+        } else {
+          await q(`INSERT INTO wa_bot_chats(phone_norm, review_code, review_order, review_stars_at) VALUES ($1,$2,$3,NOW())
+                   ON CONFLICT (phone_norm) DO UPDATE SET review_code=$2, review_order=$3, review_stars_at=NOW(), updated_at=NOW()`, [phone, String(cls.arg.code), String(cls.arg.order || "").slice(0, 30) || null]);
+        }
       }
     }
     /* آخر موقع شاركه العميل بيتحفظ على محادثته (لفحص النطاق، ولمساعد الطلبات عشان مايسألش عن العنوان تاني) */
@@ -2991,11 +3034,16 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       const dctx = { cfg: assistOn ? { ...cfg, humanPauseMin: cfg.assist.staffStepBackMin } : cfg, now, chat: assistOn && !held ? { ...chat, handoff_at: null, handoff_reason: null } : chat,
         lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, sameTextAt: afterWait ? null : rc.sameTextAt, sameTextKey: rc.sameTextKey, failedRecently: rc.failedRecently, data, cls, afterWait, assistOn, cardRun, neverReply: gate5.never, outOfScope: gate5.out };
       let d = decide(ev, dctx);
+      /* RV6 (عمر ١٧/١٠): سجل البوت بيقول ليه زر جوجل ماطلعش (العميل معلَّم «قيّم على جوجل» + المصدر) / إن السؤال الوحيد اتسأل أو اتجاوب «✅ قيّمت» — detail google_rated:* */
+      if (d.act === "reply") {
+        const why = cls.key === "review_star" && cls.arg && cls.arg.googleRated ? `google_rated:${cls.arg.googleRated}` : cls.key === "gq_yes" ? "google_rated:reply" : cls.key === "gq_ask" ? "google_rated:ask" : null;
+        if (why) d = { ...d, reason: d.reason || "google_rated", detail: why };
+      }
       /* ═══ MJ1 #٥ — رسالة تحويل واحدة للشكوى (١٦/١٠: سالم ٣ رسايل في دقيقتين، حسام ٣ رسايل في ٤٠ ثانية) ═══
          تحويل شكوى/ملاحظة اتفتح من ثواني (handoverBurstSec) ⇒ الصورة أو النص أو «عندي ملاحظة» اللي بعده = نفس الشكوى: بتوصل للموظف في المحادثة من غير رد تاني ولا تنبيه تاني،
          والمساعد مابيشوفهاش. الحقايق (حالة الطلب / المواعيد / إيقاف) ونجوم التقييم بيتردّ عليهم عادي. */
       if (ok && !afterWait && cfg.handoverBurstSec > 0 && chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoverBurstSec * 1000 && BURST_REASONS.has(String(chat.handoff_reason || ""))
-        && !FACTUAL_KEYS.has(cls.key) && !["review_star", "review_reason", "review_ok"].includes(cls.key) && d.act !== "silent") {
+        && !FACTUAL_KEYS.has(cls.key) && !["review_star", "review_reason", "review_ok", "gq_yes", "gq_no"].includes(cls.key) && d.act !== "silent") {      // RV6: إجابة سؤال جوجل بتتردّ عليها عادي
         await finish({ decision: "silent", reason: "handover_burst", key: cls.key, detail: `${chat.handoff_reason} ${Math.round((now.getTime() - Date.parse(chat.handoff_at)) / 1000)}s ago — same complaint, staff see it in the chat` });
         return;
       }
@@ -3354,12 +3402,22 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
                  ON CONFLICT (phone_norm) DO UPDATE SET review_code=$2, review_order=$3, review_asked_at=NOW(), review_answered_at=NULL, updated_at=NOW()`, [phone, String(code), String(orderNo).slice(0, 30)]);
         await q("UPDATE wa_bot_chats SET review_stars_at = CASE WHEN $2::boolean THEN NOW() ELSE NULL END WHERE phone_norm=$1", [phone, Boolean(stars)]);      // RV1: سؤال نجوم ولا سؤال «تمام / ملاحظة» (نفس ساعة القاعدة)
       };
+      /* RV6 (عمر ١٧/١٠): المعلَّم «قيّم على جوجل ✅» + سياسة «مفيش طلب تقييم» ⇒ ولا رسالة (final: ولا SMS) — لا قايمة ولا قالب. reviews.js بيقفلها قبل كده أصلاً (google_rated)؛
+         ده الحارس التاني لأي منادي تاني. القراية وقعت ⇒ زي الأول. وجوّه النافذة: العميل وصله زر جوجل قبل كده ولسه مش معلَّم ومااتسألش ⇒ السؤال الوحيد
+         «قيّمت فريش كاتس على جوجل قبل كده؟» (ببلاش) بدل قايمة النجوم — مرة واحدة في عمره، وإجابته بتجيب القايمة لنفس الطلب. */
+      let gst = null;
+      if (flow.enabled) { try { gst = await googleRatedState(q, phone, flow); } catch { gst = null; } }
+      if (gst && gst.rated && flow.googleRatedPolicy === "skip") return { ok: false, skipped: "google_rated", final: true };
+      const gq = Boolean(open && flow.enabled && shouldAskGoogleRated(gst));
       if (open) {
         let rep; try {
-          rep = flow.enabled ? starsAskReply({ T, F, kind: k, orderNo: shown, code })
-            : { body: fill("rv_ask", textOf(cfg, "rv_ask", lang), { order_no: orderNo }), buttons: [{ id: `rv:ok:${code}`, title: textOf(cfg, "btn_rv_ok", lang) }, { id: `rv:note:${code}:${String(orderNo).slice(0, 30)}`, title: textOf(cfg, "btn_rv_note", lang) }] };
+          rep = gq ? gqAskReply({ T, code })
+            : flow.enabled ? starsAskReply({ T, F, kind: k, orderNo: shown, code })
+              : { body: fill("rv_ask", textOf(cfg, "rv_ask", lang), { order_no: orderNo }), buttons: [{ id: `rv:ok:${code}`, title: textOf(cfg, "btn_rv_ok", lang) }, { id: `rv:note:${code}:${String(orderNo).slice(0, 30)}`, title: textOf(cfg, "btn_rv_note", lang) }] };
         } catch { rep = null; }
-        if (rep) { const sx = await sendOwnX(phone, cfg, now, rep, lang, flow.enabled ? "review_stars_ask" : "review_ask", `order ${orderNo}`), err = sx.err; if (!err) { await mark(flow.enabled); return { ok: true, channel: flow.enabled ? "wa_list" : "wa" }; } if (/opted_out|stopped/.test(err)) return { ok: false, skipped: err, final: true };
+        if (rep) { const sx = await sendOwnX(phone, cfg, now, rep, lang, gq ? "review_google_ask" : flow.enabled ? "review_stars_ask" : "review_ask", `order ${orderNo}`), err = sx.err;
+          if (!err) { await mark(flow.enabled && !gq); if (gq) await markGoogleAsked(q, { phone, code }); return { ok: true, channel: gq ? "wa_gq" : flow.enabled ? "wa_list" : "wa" }; }
+          if (/opted_out|stopped/.test(err)) return { ok: false, skipped: err, final: true };
           if (/burst_hold/.test(err)) return { ok: false, skipped: "burst_hold", defer: true, until: sx.until || new Date(now.getTime() + 5 * 60_000).toISOString() }; }      // CJ1a: العميل لسه واصلته رسالة ⇒ reviews.js بيأجّل due_at
       }
       /* ١٤/١٠ — النافذة مقفولة ⇒ سياسة القوالب (wapolicy.reviewDecision): التوصيل اتبعت بزرّين «تمام / عندي ملاحظة» (v2 أو حر) ⇒ ده نفس سؤال التقييم، مفيش قالب تاني
