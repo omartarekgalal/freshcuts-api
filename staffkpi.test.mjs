@@ -199,7 +199,7 @@ test("GET /api/cms/staff-kpis: الفترة من preset، كل المصادر ب
   const r = await w.call("GET", "/api/cms/staff-kpis", { query: { preset: "yesterday" } });
   assert.equal(r.status, 200); assert.equal(r.body.ok, true); assert.equal(r.body.scope, "all");
   assert.deepEqual([r.body.range.from, r.body.range.to], ["2026-10-16", "2026-10-16"]);
-  assert.equal(r.body.targets.ackMin, 3, "الهدف من الإعدادات");
+  assert.equal(r.body.targets.ackMin, 3, "الهدف من الإعدادات"); assert.equal(r.body.targetDefs.length, TARGET_DEFS.length, "تعريفات الأهداف مع الرد (لغير المالك)");
   assert.deepEqual(r.body.partial, ["المندوب الخارجي", "حضور البوابة"]);
   assert.ok(r.body.unavailable.some((u) => u.key === "presence"));
   assert.equal(r.body.staff.find((s) => s.name === "منى").metrics.ack.targetMin, 3);
@@ -237,7 +237,7 @@ test("GET /api/portal/kpis: الكاشير يشوف نفسه بس (من غير �
   const cashier = world();
   const r = await cashier.call("GET", "/api/portal/kpis", { query: { preset: "yesterday" } });
   assert.equal(r.status, 200); assert.equal(r.body.scope, "self");
-  assert.deepEqual(r.body.staff.map((s) => s.name), ["منى"]); assert.equal(r.body.team, null);
+  assert.deepEqual(r.body.staff.map((s) => s.name), ["منى"]); assert.equal(r.body.team, null); assert.ok(Array.isArray(r.body.targetDefs));
   assert.ok(!cashier.queries.some(([s]) => /kpi:(pos|orders|offline|notes|reviewsOpen|incidentsOpen)/.test(s)), "مصادر الفريق مابتتقراش للكاشير");
   const mgr = world({ portalUser: { id: "st_2", name: "أحمد", role: "manager" } });
   const m = await mgr.call("GET", "/api/portal/kpis", { query: {} });

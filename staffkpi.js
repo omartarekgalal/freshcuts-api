@@ -456,9 +456,10 @@ export function register(app, ctx, deps = {}) {
     const out = shapeKpis({ directory, targets, range, rows, failed });
     if (scope === "self") {
       const me = out.staff.filter((x) => (self.id && x.id === self.id) || (self.name && x.name === self.name));
-      return { status: 200, body: { ok: true, scope: "self", range, targets, staff: me, team: null, unavailable: out.unavailable, partial: out.partial, generatedAt: now().toISOString() } };
+      return { status: 200, body: { ok: true, scope: "self", range, targets, targetDefs: TARGET_DEFS, staff: me, team: null, unavailable: out.unavailable, partial: out.partial, generatedAt: now().toISOString() } };
     }
-    return { status: 200, body: { ok: true, scope: "all", range, ...out, generatedAt: now().toISOString() } };
+    /* targetDefs مع الرد نفسه: اللوحة بتعرض الأهداف بأسمائها لأي دور من غير ما تنادي /settings (اللي قسمها «إعدادات» ⇒ 403 لغير المالك) */
+    return { status: 200, body: { ok: true, scope: "all", range, ...out, targetDefs: TARGET_DEFS, generatedAt: now().toISOString() } };
   }
   const qOf = (c) => ({ preset: c.req.query("preset") || undefined, from: c.req.query("from") || undefined, to: c.req.query("to") || undefined });
 
