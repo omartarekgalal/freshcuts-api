@@ -39,7 +39,8 @@ function hoWorld({ at = "2026-10-14T12:29:00Z" } = {}) {
       if (!r) return { rows: [], rowCount: 0 }; r.rung_at = p[1]; r.rings++; return { rows: [{ id: r.id }], rowCount: 1 };
     }
     if (/^UPDATE portal_presence SET last_visible = last_seen/i.test(s)) return { rows: [], rowCount: 0 };      // PO1 (المراجعة التانية): نقل صفوف RG1 القديمة
-    if (/^INSERT INTO portal_presence/i.test(s)) { db.presence.set(`${p[0]}|${p[1]}`, { staff_id: p[0], device: p[1], role: p[2], staff_name: p[3], last_seen: p[4], via: p[5], last_visible: p[6] }); return { rows: [], rowCount: 1 }; }
+    if (/^INSERT INTO portal_presence_day/i.test(s)) return { rows: [], rowCount: 1 };      // KP1: دفتر اليوم
+    if (/^INSERT INTO portal_presence\(/i.test(s)) { db.presence.set(`${p[0]}|${p[1]}`, { staff_id: p[0], device: p[1], role: p[2], staff_name: p[3], last_seen: p[4], via: p[5], last_visible: p[6] }); return { rows: [], rowCount: 1 }; }
     if (/^SELECT staff_id, staff_name, role, device, last_seen, seen_since, via, last_visible, visible_since FROM portal_presence/i.test(s)) return { rows: [...db.presence.values()].filter((x) => Date.parse(x.last_seen) > Date.parse(p[0])) };
     throw new Error("unexpected SQL: " + s.slice(0, 90));
   } };
@@ -129,7 +130,7 @@ test("portal presence: a real poll of the handover list = the portal is open; on
   const w = hoWorld();
   await w.poll("Tablet"); await w.poll("Tablet"); w.advance(0.5); await w.poll("Tablet");
   await new Promise((r) => setTimeout(r, 5));
-  assert.equal(w.db.sql.filter((s) => /^INSERT INTO portal_presence/.test(s)).length, 1, "throttled");
+  assert.equal(w.db.sql.filter((s) => /^INSERT INTO portal_presence\(/.test(s)).length, 1, "throttled");
   w.advance(1); await w.poll("Tablet"); await w.poll("iPhone");
   await new Promise((r) => setTimeout(r, 5));
   assert.equal(w.db.presence.size, 2, "tablet and iPhone are two devices of the same cashier");

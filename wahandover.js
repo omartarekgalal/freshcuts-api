@@ -34,6 +34,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 import { bizDay, bizStart } from "./bizday.js";
 import { isReviewHandover, reviewPortalRole, reviewPushRoles } from "./reviewaudience.js";
+import { PRESENCE_DAY_DDL, PRESENCE_DAY_UPSERT, presenceDayParams } from "./staffkpi.js";      // KP1: دفتر حضور يومي (دقايق) لأداء الفريق
 
 const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
 const normPhone = (p) => { const d = String(p || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""); return /^5\d{8}$/.test(d) ? d : null; };
@@ -67,6 +68,7 @@ const DDL = `
   ALTER TABLE portal_presence ADD COLUMN IF NOT EXISTS via TEXT;
   ALTER TABLE portal_presence ADD COLUMN IF NOT EXISTS last_visible TIMESTAMPTZ;
   ALTER TABLE portal_presence ADD COLUMN IF NOT EXISTS visible_since TIMESTAMPTZ;
+${PRESENCE_DAY_DDL}
 `;
 const MIN = 60_000;
 export const PRESENCE_WRITE_MS = 60_000;      // كتابة واحدة في الدقيقة لكل جهاز بالكتير
@@ -311,10 +313,13 @@ export function register(app, ctx, deps = {}) {
   const after = (a, b) => Boolean(a) && (!b || Date.parse(a) >= Date.parse(b));
   const healthNow = () => ({ ...health, failing: after(health.lastErrorAt, health.lastOkAt), readFailing: after(health.lastReadErrorAt, health.lastReadOkAt) });
   let loggedErrAt = -Infinity, loggedReadErrAt = -Infinity;
+  /* KP1 (١٧/١٠): نفس الكتابة بتزوّد دفتر اليوم (portal_presence_day) — دقيقة لكل سلّة دقيقة جديدة للموظف (جهازين في نفس الدقيقة = دقيقة).
+     فشلها بيتعدّ في health.dayErrors ومابيلمسش حالة الحضور نفسها. */
+  const writeDay = (r) => pool.query(PRESENCE_DAY_UPSERT, presenceDayParams(r)).catch((e) => { health.dayErrors = (health.dayErrors || 0) + 1; health.lastDayError = clip(e && e.message, 160); });
   const write = (r) => ready.then(() => pool.query(PRESENCE_UPSERT,
     [String(r.user.id).slice(0, 60), r.dev, String(r.user.role), r.user.name ? String(r.user.name).slice(0, 60) : null,
       new Date(r.t).toISOString(), r.via, r.vis ? new Date(r.vis).toISOString() : null]))
-    .then(() => { health.writes++; health.lastOkAt = now().toISOString(); })
+    .then(() => { health.writes++; health.lastOkAt = now().toISOString(); return writeDay(r); })
     .catch((e) => {
       health.errors++; health.lastError = clip(e && e.message, 160); health.lastErrorAt = now().toISOString();
       const t = now().getTime();

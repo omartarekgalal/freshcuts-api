@@ -26,7 +26,7 @@ const later = (a, b) => (!a ? b : !b ? a : isoMs(a) >= isoMs(b) ? a : b);      /
 function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS, settings = {}, preLog = [], preTo = [], prePresence = [], app = null, owner = true, fail = () => false, failSql = null, portal = false, windowsClosed = false } = {}) {
   let nowMs = Date.parse(start);
   const ms = isoMs;
-  const db = { presence: new Map(prePresence.map((r) => [`${r.staff_id}|${r.device}`, { ...r }])), writes: [], portal: null, to: new Map(preTo.map((r) => [r.phone_norm, { ...r }])), log: [...preLog], notices: [],
+  const db = { presence: new Map(prePresence.map((r) => [`${r.staff_id}|${r.device}`, { ...r }])), writes: [], day: [], portal: null, to: new Map(preTo.map((r) => [r.phone_norm, { ...r }])), log: [...preLog], notices: [],
     settings: { waTeam: { members, keeper: { enabled: false }, odd: { enabled: false }, daily: { enabled: false }, ...waTeam }, ...settings } };
   const pool = { db, async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
@@ -38,7 +38,9 @@ function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS,
       return { rows: [] };
     }
     /* ── portal_presence: نفس منطق الـUPSERT (seen_since / visible_since بفجوة STREAK_GAP_MS) ── */
-    if (/^INSERT INTO portal_presence/i.test(s)) {
+    /* KP1: دفتر اليوم (portal_presence_day) — كتابة تانية بعد كل كتابة حضور؛ بتتسجّل لوحدها ومابتتحسبش كتابة حضور */
+    if (/^INSERT INTO portal_presence_day/i.test(s)) { db.day.push(p); return { rows: [] }; }
+    if (/^INSERT INTO portal_presence\(/i.test(s)) {
       const [id, dev, role, name, ls, via, lv] = p, k = `${id}|${dev}`, o = db.presence.get(k), GAP = HO.STREAK_GAP_MS;
       db.writes.push({ at: nowMs, k, ls, via, lv });
       if (!o) { db.presence.set(k, { staff_id: id, device: dev, role, staff_name: name, last_seen: ls, seen_since: ls, via, last_visible: lv, visible_since: lv }); return { rows: [] }; }
@@ -196,6 +198,10 @@ test("touch: one write a minute per staff/device; signals inside the minute are 
   assert.equal(w.db.writes.length, 1, "still one write inside the minute");
   w.setNow(utc("18:00:55")); assert.equal(w.ho.flush(), 0, "the minute is not over yet");
   w.setNow(utc("18:01:00")); assert.equal(w.ho.flush(), 1); await settle();
+  /* KP1: كل كتابة حضور بتزوّد دفتر اليوم بنفس الموظف وسلّة الدقيقة (اليوم التشغيلي ١٤/١٠ — الساعة ٩ بالليل الرياض) */
+  assert.equal(w.db.day.length, 2, "one day-ledger row per presence write");
+  assert.deepEqual(w.db.day[0].slice(0, 2), ["2026-10-14", "s1"]); assert.equal(w.db.day[0][4], Math.floor(utc("18:00:00") / 60_000));
+  assert.equal(w.db.day[1][4], Math.floor(utc("18:00:50") / 60_000)); assert.equal(w.db.day[1][5], Math.floor(utc("18:00:30") / 60_000), "the visible bucket is the newest visible signal");
   const row = [...w.db.presence.values()][0];
   assert.deepEqual([row.last_seen, row.last_visible, row.via], ["2026-10-14T18:00:50.000Z", "2026-10-14T18:00:30.000Z", "api"], "last_seen = the newest signal, last_visible = the newest visible one");
   assert.equal(row.seen_since, "2026-10-14T18:00:00.000Z");
@@ -221,7 +227,7 @@ test("touch: one write a minute per staff/device; signals inside the minute are 
 test("a presence write that fails is counted and logged (first time, then once per 10 min) instead of vanishing; health() says so", async () => {
   let nowMs = utc("18:00:00"), fail = true;
   const errs = [];
-  const pool = { async query(sql) { if (/INSERT INTO portal_presence/.test(String(sql))) { if (fail) throw new Error("column \"via\" does not exist"); } return { rows: [] }; } };
+  const pool = { async query(sql) { if (/INSERT INTO portal_presence\(/.test(String(sql))) { if (fail) throw new Error("column \"via\" does not exist"); } return { rows: [] }; } };
   const ho = HO.register({ get() {}, post() {} }, { pool }, { requirePortal: async () => ({ res: "no" }), now: () => new Date(nowMs), noTimer: true, log: { error: (...a) => errs.push(a.join(" ")) } });
   ho.touch(CASHIER, TABLET, "poll"); await settle(); await settle();
   nowMs += 61 * SEC; ho.touch(CASHIER, TABLET, "poll"); await settle(); await settle();
@@ -245,7 +251,7 @@ test("production wiring (portal.js + wahandover on one Hono app): every authenti
   const api = registerPortal(app, { pool: { async query() { return { rows: [], rowCount: 0 }; } }, getSettingsData: async () => settings, requireAdmin: async (c) => c.json({ error: "Unauthorized" }, 401), log: { error() {} } },
     { timers: false, eventStore: false, heartbeatMs: 25, env: { ADMIN_TOKEN: "admin-token-xyz-123" }, subscribe: () => () => {}, emitOrder: () => {}, webpush: { sendNotification: async () => {} },
       onSeen: (u, x) => { seen.push({ id: u.id, role: u.role, ...x }); return ho && ho.seen(u, x); } });
-  const hoPool = { async query(sql, p = []) { if (/^\s*INSERT INTO portal_presence/.test(String(sql))) writes.push({ via: p[5], vis: p[6] }); return { rows: [] }; } };
+  const hoPool = { async query(sql, p = []) { if (/^\s*INSERT INTO portal_presence\(/.test(String(sql))) writes.push({ via: p[5], vis: p[6] }); return { rows: [] }; } };
   ho = HO.register(app, { pool: hoPool }, { requirePortal: api.requirePortal, now: () => new Date(nowMs), noTimer: true, log: { error() {} } });
   const lr = await app.request("/api/portal/login", { method: "POST", headers: { "Content-Type": "application/json", "cf-connecting-ip": "10.0.0.9" }, body: JSON.stringify({ pin: "2468" }) });
   const { token } = await lr.json();
@@ -283,7 +289,7 @@ test("production wiring (portal.js + wahandover on one Hono app): every authenti
 test("POST /api/portal/presence (the visible heartbeat) and the handover list count as visible when the auth layer did not report them already", async () => {
   const routes = {}, db = { rows: [] };
   let nowMs = utc("18:00:00"), reported = false;
-  const pool = { async query(sql, p = []) { if (/^INSERT INTO portal_presence/.test(String(sql).trim())) db.rows.push(p); return { rows: [] }; } };
+  const pool = { async query(sql, p = []) { if (/^INSERT INTO portal_presence\(/.test(String(sql).trim())) db.rows.push(p); return { rows: [] }; } };
   HO.register({ get: (pt, h) => { routes[`GET ${pt}`] = h; }, post: (pt, h) => { routes[`POST ${pt}`] = h; } }, { pool },
     { requirePortal: async () => ({ user: CASHIER, ...(reported ? { seen: true } : {}) }), now: () => new Date(nowMs), noTimer: true, log: { error() {} } });
   const c = { req: { param: () => null, header: () => TABLET }, json: (body, status = 200) => ({ body, status }) };

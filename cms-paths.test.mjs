@@ -120,3 +120,11 @@ test("مُرسل واتساب تحت «العملاء» مش «الإعدادا�
   assert.equal(sectionOf("/api/cms/wa-sender/jobs/3/results"), "customers");
   assert.equal(sectionOf("/api/cms/outreach"), "customers");
 });
+
+test("KP1: أداء الفريق «طلبات» وأهدافه «إعدادات»", () => {
+  assert.equal(sectionOf("/api/cms/staff-kpis"), "orders");
+  assert.equal(sectionOf("/api/cms/staff-kpis?preset=yesterday"), "orders");
+  assert.equal(sectionOf("/api/cms/staff-kpis/settings"), "settings");
+  // العمليات بتشوف الطلبات ⇒ بتشوف أداء الفريق؛ الكتابة على الأهداف للمالك جوّه المسار نفسه
+  assert.notEqual(DEFAULT_PERMS.operations.orders, "none");
+});

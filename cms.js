@@ -123,6 +123,9 @@ const PATH_SECTIONS = [
   // قسم واتساب في اللوحة (wahub.js): المحادثات = «الطلبات» + قايمة أدوار جوّه المسار نفسه؛ القوالب = «العملاء» (المالك والتسويق)
   [/^\/api\/cms\/wa\/threads/, "orders"],
   [/^\/api\/cms\/wa\/templates/, "customers"],
+  // KP1 (١٧/١٠): أداء الفريق = «الطلبات» (العمليات تشوفه)؛ أهدافه «إعدادات» (والكتابة للمالك بس جوّه المسار)
+  [/^\/api\/cms\/staff-kpis\/settings/, "settings"],
+  [/^\/api\/cms\/staff-kpis/, "orders"],
   [/^\/api\/cms\/(ops|sla)/, "orders"],
   [/^\/api\/(shop\/coupons|discounts)/, "discounts"],
   [/^\/api\/(finance|keeta-payouts|costing|staff-meals|staff_meals|pay\/|influencer-payments)/, "finance"],
