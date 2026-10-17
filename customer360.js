@@ -29,7 +29,7 @@ import {
   normPhone, maskPhone, FIRST_ORDER_CTE, SHOP_NOT_ORDER_STATUSES, shopPaidSql, bizDaySql, isNewCustomer,
   IDENTITY_RULES_AR,
 } from "./identity.js";
-import { initSmsLog, SMS_KINDS, partsOf } from "./smslog.js";
+import { initSmsLog, SMS_KINDS, SMS_PART_PRICE, partsOf } from "./smslog.js";
 import { teamPhoneSet, itemFamily } from "./smsrules.js";
 import { plausibleName } from "./accounts.js";
 // 👁 قاعدة إظهار الجوال الكاملة — مصدر واحد للوحة كلها
@@ -38,7 +38,7 @@ import { phoneOut } from "./phones.js";
 export const MATCH_TOTAL_TOL = 1.5;      // ر.س — تقريب تاب سينس
 export const MATCH_BEFORE_MS = 3600_000; // ساعة قبل طلب الموقع
 export const MATCH_AFTER_MS = 6 * 3600_000;
-export const SMS_PART_PRICE = 0.075;     // ر.س للجزء — من فواتير تقنيات (٢ جزء = ٠٫١٥)
+export { SMS_PART_PRICE };               // ر.س للجزء — المصدر الواحد في smslog.js (MC1: تكلفة التسويق بتستخدم نفس الرقم)
 
 const APPS = ["keeta", "hungerstation", "ninja", "jahez", "toyou", "mrsool", "careem", "feedus"];
 export const CHANNEL_LABELS = {

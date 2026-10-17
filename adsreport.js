@@ -229,7 +229,7 @@ export function smsAdsText(rep) {
 }
 
 /* Pure assembly — unit-tested. */
-export function buildReport({ day, pos, shop, meta, snap = null, other = null, guardLog = [], whatsapp = null, now = new Date() }) {
+export function buildReport({ day, pos, shop, meta, snap = null, other = null, guardLog = [], whatsapp = null, marketing = null, now = new Date() }) {
   const onlineDelivery = { orders: 0, revenue: 0 }, onlinePickup = { orders: 0, revenue: 0 };
   let testOrders = 0, ours = 0, oursMeta = 0, oursSnap = 0, adsRevenue = 0;
   const byLink = {}, bySource = {};
@@ -278,6 +278,20 @@ export function buildReport({ day, pos, shop, meta, snap = null, other = null, g
     spendShareOfRevenue: total ? Math.round((spendTotal / total) * 10000) / 10000 : null,
     metaError: meta?.error || null,
   };
+  /* MC1 (١٧/١٠): التسويق كله (إعلانات + قوالب واتساب التسويقية + SMS التسويقية) — حقول للعرض بس.
+     قرارات CUT/SCALE/HOLD وحد الـ١٣٪ فاضلين على الإعلانات (spendShareOfRevenue) زي ما عمر قالها. */
+  const mk = marketing && !marketing.error && marketing.marketingTotal != null ? marketing : null;
+  const mkTotal = mk ? r2(mk.marketingTotal) : null;
+  ads.marketingTotal = mkTotal;
+  ads.marketingShareOfRevenue = mk && total ? Math.round((mkTotal / total) * 10000) / 10000 : null;
+  const mkB = mk ? (mk.breakdown || {}) : {};
+  const marketingOut = mk ? {
+    total: mkTotal, shareOfRevenue: ads.marketingShareOfRevenue,
+    ads: r2(mkB.ads), whatsapp: r2(mkB.whatsapp), whatsappTemplates: num(mk.whatsapp?.marketing?.n), sms: r2(mkB.sms), smsCount: num(mk.sms?.marketing?.n),
+    operational: r2(mk.operationalTotal), llm: r2(mk.llm?.total), estimated: !!mk.estimated, estimatedParts: mk.estimatedParts || [],
+    adsShareOfRevenue: ads.spendShareOfRevenue,
+    note: "التسويق = الإعلانات + قوالب واتساب التسويقية + SMS التسويقية في نفس اليوم التشغيلي. حد الـ١٣٪ والتوصية (CUT/SCALE) على الإعلانات بس.",
+  } : null;
   const rep = {
     day, generatedAt: now.toISOString(),
     revenue: {
@@ -292,6 +306,7 @@ export function buildReport({ day, pos, shop, meta, snap = null, other = null, g
       costPerConversation: ads.whatsappConversations ? r2(spendWhatsapp / ads.whatsappConversations) : null,
       ...(whatsapp || { linkLandings: 0, ordersFromLinks: 0, revenueFromLinks: 0 }),
     },
+    marketing: marketingOut,
     thresholds: THRESH,
     guard: guardLog,
     notes: NOTES(day),
@@ -517,7 +532,10 @@ export function register(app, ctx, deps = {}) {
   async function compute(day) {
     const [pos, shop, metaLa, guardLog, whatsapp, snapOld] = await Promise.all([posPartBiz(day), shopPart(day), metaPart(day), guardPart(day), whatsappPart(day), snapPart(day)]);
     const sp = await spendParts(day, metaLa, snapOld);
-    const rep = buildReport({ day, pos, shop, meta: sp.meta, snap: sp.snap, other: sp.other || null, guardLog, whatsapp });
+    /* MC1: التسويق كله لنفس اليوم التشغيلي من bizreports (marketingcost.js) — لو وقع، التقرير يكمّل من غيره */
+    const biz = deps.biz && typeof deps.biz.marketingCostInWindow === "function" ? deps.biz : null;
+    const marketing = biz ? await biz.marketingCostInWindow(bizStart(day), bizEnd(day)).catch((e) => { console.error("[adsreport] marketing:", e.message); return null; }) : null;
+    const rep = buildReport({ day, pos, shop, meta: sp.meta, snap: sp.snap, other: sp.other || null, guardLog, whatsapp, marketing });
     rep.spendAlignment = sp.aligned
       ? { aligned: true, window: `${day} 04:00 → ${shiftDay(day, 1)} 04:00 (الرياض)`, metaAccountDaySpend: sp.metaDaySpend, snapCalendarDaySpend: sp.snapDaySpend,
           note: "الصرف محسوب ساعة بساعة جوّه اليوم التشغيلي نفسه (مش يوم ميتا على توقيت لوس أنجلوس)." }

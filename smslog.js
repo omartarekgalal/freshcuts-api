@@ -19,6 +19,9 @@
 let _pool = null;
 let _ready = null;
 
+/* ر.س للجزء لما تقنيات ماترجّعش تكلفة — من فواتير تقنيات (٢ جزء = ٠٫١٥). المصدر الواحد: سجل الرسايل (customer360.js) وتكلفة التسويق (marketingcost.js). */
+export const SMS_PART_PRICE = 0.075;
+
 export const SMS_KINDS = {
   otp: "رمز التحقق",
   order_status: "حالة الطلب",

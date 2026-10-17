@@ -10,6 +10,8 @@
      • التقسيم: totals.groups (store = الموقع · apps = التطبيقات قبل العمولة · restaurant = الصالة + السفري + تليفون الكاشير)
      • المقارنة: totals.compare.lastWeek = نفس اليوم الأسبوع اللي فات متقطوع عند نفس الساعة
      • الإعلانات: ads.total و ads.shareOfRevenue قصاد حد adsGuard.revenueCap.pct (الافتراضي ١٣٪ — قاعدة عمر ١٥/١٠)
+     • التسويق (MC1 ١٧/١٠): marketing.marketingTotal = إعلانات + قوالب واتساب التسويقية + SMS التسويقية — سطر تاني جنب
+       سطر الإعلانات (الرقمين بيبانوا؛ حد الـ١٣٪ فاضل على الإعلانات بس زي ما عمر قالها)
      • طلبات الموقع: كارت store (توصيل/استلام) قصاد هدف اليوم (cms.dailyTarget — نفس هدف «نبض اليوم»)
    سطر التنبيه (واحد بس، الأهم): مشكلة خطيرة في صحة واتساب (wa_health_state) ⇒ وإلا أهم تنبيه إدارة اتبعت في آخر
    ساعتين (sms_log kind=staff، بنفس كتالوج staffcontrol: الحرج ⇒ المندوب ⇒ التأخير ⇒ الباقي).
@@ -147,6 +149,8 @@ export function nextSlot(now, cfg) {
 /* ── النص ──────────────────────────────────────────────────────────────── */
 const DAY_AR = ["الأحد", "الاتنين", "التلات", "الأربع", "الخميس", "الجمعة", "السبت"];
 const num0 = (v) => Math.round(Number(v) || 0).toLocaleString("en-US");
+/* أرقام صغيرة (واتساب/SMS بالريال والهللة): تحت ١٠٠ بعشر واحد عشان ٦٫٧٢ ماتبقاش «٧» */
+const num1 = (v) => { const n = Number(v) || 0; return Math.abs(n) < 100 ? (Math.round(n * 10) / 10).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 1 }) : num0(n); };
 export const hm12 = (ms) => {
   const d = new Date(Number(ms) + 3 * 3600_000);
   const h = d.getUTCHours(), m = d.getUTCMinutes();
@@ -171,12 +175,19 @@ export function pulseText({ d, range, now, kind = "slot", adsLimitPct = 13, targ
   const ads = d && d.ads && !d.ads.error ? d.ads : null;
   const adsPct = ads && ads.shareOfRevenue != null ? Number(ads.shareOfRevenue) * 100 : null;
   const adsOver = adsPct != null && adsPct > adsLimitPct;
+  /* MC1: التسويق كله (إعلانات + واتساب تسويقي + SMS تسويقي) — سطر تاني، والحد فاضل على الإعلانات */
+  const mk = d && d.marketing && !d.marketing.error && d.marketing.marketingTotal != null ? d.marketing : null;
+  const mkPct = mk && mk.shareOfRevenue != null ? Number(mk.shareOfRevenue) * 100 : null;
+  const mkB = mk ? (mk.breakdown || {}) : {};
+  const mkParts = mk ? { ads: Number(mkB.ads) || 0, whatsapp: Number(mkB.whatsapp) || 0, sms: Number(mkB.sms) || 0 } : null;
   const close = kind === "close";
   const at = hm12(now);
   const facts = {
     revenue: Number(t.revenue) || 0, orders: Number(t.orders) || 0, store: st, apps: ap, restaurant: rs,
     lastWeek: lw ? { revenue: Number(lw.revenue) || 0, orders: Number(lw.orders) || 0, delta: dl } : null,
     ads: ads ? { total: Number(ads.total) || 0, pct: adsPct == null ? null : Math.round(adsPct * 10) / 10, limit: adsLimitPct, over: adsOver } : null,
+    marketing: mk ? { total: Number(mk.marketingTotal) || 0, pct: mkPct == null ? null : Math.round(mkPct * 10) / 10, ...mkParts,
+      operational: Number(mk.operationalTotal) || 0, estimated: !!mk.estimated, adsLimit: adsLimitPct } : null,
     web: { orders: st.orders, delivery: sp ? Number(sp.delivery && sp.delivery.orders) || 0 : null, pickup: sp ? Number(sp.pickup && sp.pickup.orders) || 0 : null, target },
     alert: alert || null, day, kind,
   };
@@ -187,6 +198,7 @@ export function pulseText({ d, range, now, kind = "slot", adsLimitPct = 13, targ
     `💰 ${num0(t.revenue)} ر · ${num0(t.orders)} طلب${cmpWa ? ` · ${cmpWa}` : ""}`,
     `🛒 الموقع ${num0(st.revenue)} ر (${st.orders}) · 📱 التطبيقات ${num0(ap.revenue)} ر (${ap.orders}) · 🍽 الصالة والسفري ${num0(rs.revenue)} ر (${rs.orders})`,
     ads ? `📣 الإعلانات ${num0(ads.total)} ر${adsPct == null ? "" : ` = ${Math.round(adsPct)}% من الدخل`} (الحد ${adsLimitPct}%)${adsOver ? " ⚠️ فوق الحد" : ""}` : null,
+    mk ? `📣 التسويق ${num0(mk.marketingTotal)} ر${mkPct == null ? "" : ` = ${Math.round(mkPct)}% من الدخل`} (إعلانات ${num0(mkParts.ads)} · واتساب ${num1(mkParts.whatsapp)} · رسائل ${num1(mkParts.sms)}${mk.estimated ? " · جزء تقديري" : ""}) — الحد ${adsLimitPct}% على الإعلانات بس` : null,
     `🌐 طلبات الموقع ${st.orders}${target ? ` من ${target}` : ""}${sp ? ` (توصيل ${facts.web.delivery} · استلام ${facts.web.pickup})` : ""}`,
     alert ? `⚠️ ${alert}` : null,
   ].filter(Boolean).join("\n");
@@ -197,6 +209,7 @@ export function pulseText({ d, range, now, kind = "slot", adsLimitPct = 13, targ
     `موقع ${num0(st.revenue)}/${st.orders} تطبيقات ${num0(ap.revenue)}/${ap.orders} صالة+سفري ${num0(rs.revenue)}/${rs.orders}`,
     ads ? `اعلانات ${num0(ads.total)}ر${adsPct == null ? "" : ` ${Math.round(adsPct)}%`} الحد ${adsLimitPct}%${adsOver ? " فوق الحد" : ""}` : null,
     alert ? `تنبيه: ${alert}` : null,
+    mk ? `تسويق ${num0(mk.marketingTotal)}ر${mkPct == null ? "" : ` ${Math.round(mkPct)}%`} (اعلانات ${num0(mkParts.ads)} واتساب ${num1(mkParts.whatsapp)} رسائل ${num1(mkParts.sms)})` : null,
     `طلبات الموقع ${st.orders}${target ? ` من ${target}` : ""}`,
   ].filter(Boolean);
   let sms = lines.slice(0, 2).join("\n");

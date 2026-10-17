@@ -20,6 +20,8 @@
    ٦. عمولة التطبيقات من جدول العقود في finance.js (mergeRates/bandFor) بتاريخ
       الطلب نفسه — مش بتاريخ النهارده. أي رقم مبني على افتراض متعلّم.
    ٧. الصرف الإعلاني من ad_spend_hourly (adspend.js) في نفس النافذة بالظبط.
+   ٨. (MC1 ١٧/١٠) «التسويق» = الإعلانات + قوالب واتساب التسويقية + SMS التسويقية في نفس
+      النافذة (marketingcost.js) — جنب «الإعلانات» مش بدالها: حد الـ١٣٪ قاعدة على الإعلانات بس.
 
    المسارات (كلها admin، قراءة بس):
      GET /api/reports/biz/range      ?preset|from&to  → الفترة محلولة (للواجهة)
@@ -32,6 +34,7 @@
 import { bizDay, bizStart, bizEnd, bizRange, rangeJson, riyadhHour, bizHourIndex, shiftDay, spanDays, DAY_RE, BIZ_TZ, bizDaySql, DEFAULT_WEEK_START } from "./bizday.js";
 import { firstOrderDays } from "./identity.js";
 import { mergeRates, bandFor, nextBandFor, subsidyFor } from "./finance.js";
+import { makeMarketingCost } from "./marketingcost.js";
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const r2 = (v) => Math.round(num(v) * 100) / 100;
@@ -294,6 +297,8 @@ const cmpOf = (cur, base, label) => (base == null ? null : {
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, DEFAULT_DELIVERY_APPS } = ctx;
   const spend = () => (typeof deps.adspend === "function" ? deps.adspend() : deps.adspend) || null;
+  // MC1: تكلفة التسويق (واتساب + SMS + ذكاء) بنفس النافذة — deps.marketing = null بيقفلها (اختبارات)
+  const mkt = deps.marketing === null ? null : (deps.marketing || makeMarketingCost({ pool, getSettingsData, adspend: spend }));
 
   async function settings() {
     const s = (await getSettingsData()) || {};
@@ -441,15 +446,16 @@ export function register(app, ctx, deps = {}) {
     totals.compare = { prev: cmpOf(totals, pT, range.prev.label), lastWeek: cmpOf(totals, lT, range.lastWeek.label) };
 
     let ads = null;
+    const store = cM.get("store") || { orders: 0, revenue: 0 };
     const sp = spend();
+    let a = null, ap = null, al = null;
     if (sp) {
       try {
-        const [a, ap, al] = await Promise.all([
+        [a, ap, al] = await Promise.all([
           sp.spendInWindow(range.startUtc, range.cutUtc),
           sp.spendInWindow(range.prev.startUtc, range.prev.cutUtc),
           sp.spendInWindow(range.lastWeek.startUtc, range.lastWeek.cutUtc),
         ]);
-        const store = cM.get("store") || { orders: 0, revenue: 0 };
         ads = {
           ...a,
           shareOfRevenue: ratio(a.total, totals.revenue),
@@ -463,7 +469,29 @@ export function register(app, ctx, deps = {}) {
         };
       } catch (e) { ads = { error: e.message }; }
     }
-    return { cards: out, totals, ads, stats: cur.stats };
+    /* MC1: التسويق كله في نفس التلات نوافذ — الصرف اللي اتسحب فوق بيتبعت زي ما هو (مش بيتسحب مرتين) */
+    let marketing = null;
+    if (mkt) {
+      try {
+        const [m, mp, ml] = await Promise.all([
+          mkt.marketingCostInWindow(range.startUtc, range.cutUtc, { ads: a }),
+          mkt.marketingCostInWindow(range.prev.startUtc, range.prev.cutUtc, { ads: ap }),
+          mkt.marketingCostInWindow(range.lastWeek.startUtc, range.lastWeek.cutUtc, { ads: al }),
+        ]);
+        marketing = {
+          ...m,
+          shareOfRevenue: ratio(m.marketingTotal, totals.revenue),
+          adsShareOfRevenue: ads && !ads.error ? ads.shareOfRevenue : null,
+          costPerStoreOrder: store.orders ? r2(m.marketingTotal / store.orders) : null,
+          compare: {
+            prev: { label: range.prev.label, total: mp.marketingTotal, delta: delta(m.marketingTotal, mp.marketingTotal) },
+            lastWeek: { label: range.lastWeek.label, total: ml.marketingTotal, delta: delta(m.marketingTotal, ml.marketingTotal) },
+          },
+          note: "التسويق = الإعلانات + قوالب واتساب التسويقية + SMS التسويقية في نفس نافذة الطلبات. حد الـ١٣٪ على الإعلانات بس.",
+        };
+      } catch (e) { marketing = { error: e.message }; }
+    }
+    return { cards: out, totals, ads, marketing, stats: cur.stats };
   }
 
   const rangeOf = (c, cfg) => bizRange({ preset: c.req.query("preset"), from: c.req.query("from") || c.req.query("date"), to: c.req.query("to") || c.req.query("date"), weekStart: cfg.weekStart });
@@ -485,6 +513,7 @@ export function register(app, ctx, deps = {}) {
           `اليوم التشغيلي ${range.window} — طلب الساعة ١ بالليل بيتحسب على اليوم اللي قبله.`,
           "المتجر = اللي حصّلناه فعلاً (أكل + رسوم توصيل + إكرامية)، من غير طلبات الاختبار.",
           "التطبيقات: «قبل» = اللي دفعه العميل، «بعد» = بعد العمولة ورسوم الدفع ودعم التوصيل حسب العقد بتاريخ كل طلب.",
+          "التسويق = الإعلانات + قوالب واتساب التسويقية + SMS التسويقية في نفس الفترة (التشغيلي: واتساب خدمي وردود، SMS تشغيلية، ذكاء البوت — معروض لوحده). حد الـ١٣٪ على الإعلانات بس.",
           range.partial ? "الفترة لسه شغّالة: المقارنات متقطوعة عند نفس الساعة (يوم ناقص قدام يوم ناقص)." : null,
         ].filter(Boolean) });
     } catch (e) {
@@ -507,7 +536,7 @@ export function register(app, ctx, deps = {}) {
         totals: d.totals,
         channels: d.cards.filter((x) => x.orders > 0 || x.compare?.prev?.orders > 0)
           .map((x) => ({ id: x.id, label: x.label, group: x.group, orders: x.orders, revenue: x.revenue, deltaOrders: x.compare?.lastWeek?.deltaOrders ?? null })),
-        ads: d.ads, stats: d.stats,
+        ads: d.ads, marketing: d.marketing, stats: d.stats,
       });
     } catch (e) {
       console.error("[bizreports] pulse:", e.message);
@@ -576,7 +605,7 @@ export function register(app, ctx, deps = {}) {
       }
       return c.json({
         ok: true, day, window: { startUtc: s.toISOString(), endUtc: e.toISOString(), riyadh: `${day} 04:00 → ${shiftDay(day, 1)} 04:00` },
-        report: { cards: d.cards.map((x) => ({ id: x.id, label: x.label, orders: x.orders, revenue: x.revenue, split: x.split || null, commission: x.commission || null })), totals: d.totals, ads: d.ads, stats: d.stats },
+        report: { cards: d.cards.map((x) => ({ id: x.id, label: x.label, orders: x.orders, revenue: x.revenue, split: x.split || null, commission: x.commission || null })), totals: d.totals, ads: d.ads, marketing: d.marketing, stats: d.stats },
         raw: { shopOrders: shopRaw.rows, posByType: posRaw.rows, posCalendarDay: posCal.rows[0], adSpendSync: spendRaw, campaigns },
       });
     } catch (e) {
@@ -585,7 +614,7 @@ export function register(app, ctx, deps = {}) {
     }
   });
 
-  return { salesData, loadWindow, settings, firstDays };
+  return { salesData, loadWindow, settings, firstDays, marketingCostInWindow: mkt ? (s, e, o) => mkt.marketingCostInWindow(s, e, o) : null };
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

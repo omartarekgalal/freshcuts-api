@@ -182,3 +182,24 @@ test("تغييرات الحارس: الإعداد بيتجمّع «+N edits» و
   ];
   assert.equal(changesText(g), "WA off, RT 120, WA on, 2 AI vids off, +3 edits");
 });
+
+test("MC1: التسويق كله حقول للعرض في التقرير اليومي — التوصية وحد الـ١٣٪ على الإعلانات زي ما هما", () => {
+  const base = buildReport({ day: "2026-09-18", pos, shop, meta });
+  const mk = { marketingTotal: 470.5, operationalTotal: 7.05, estimated: true, estimatedParts: ["sms_parts"],
+    breakdown: { ads: 450, whatsapp: 12.95, sms: 7.55 }, whatsapp: { marketing: { n: 60 } }, sms: { marketing: { n: 43 } }, llm: { total: 0.03 } };
+  const r = buildReport({ day: "2026-09-18", pos, shop, meta, marketing: mk });
+  assert.equal(r.marketing.total, 470.5); assert.equal(r.marketing.ads, 450); assert.equal(r.marketing.whatsapp, 12.95); assert.equal(r.marketing.whatsappTemplates, 60);
+  assert.equal(r.marketing.sms, 7.55); assert.equal(r.marketing.smsCount, 43); assert.equal(r.marketing.operational, 7.05); assert.equal(r.marketing.llm, 0.03);
+  assert.equal(r.marketing.estimated, true); assert.deepEqual(r.marketing.estimatedParts, ["sms_parts"]);
+  assert.equal(r.marketing.shareOfRevenue, Math.round(470.5 / 2622.75 * 10000) / 10000);
+  assert.equal(r.ads.marketingTotal, 470.5); assert.equal(r.ads.marketingShareOfRevenue, r.marketing.shareOfRevenue);
+  assert.equal(r.marketing.adsShareOfRevenue, base.ads.spendShareOfRevenue);
+  assert.equal(r.ads.spendShareOfRevenue, base.ads.spendShareOfRevenue, "نسبة الإعلانات ماتغيّرتش");
+  assert.equal(r.recommendation.code, base.recommendation.code, "التوصية على الإعلانات بس");
+  assert.equal(r.sms, base.sms, "رسالة عمر زي ما هي"); assert.equal(smsAdsText(r), smsAdsText(base));
+  assert.match(r.marketing.note, /١٣٪.*الإعلانات بس/);
+  for (const bad of [null, undefined, { error: "x" }, { marketingTotal: null }]) {
+    const x = buildReport({ day: "2026-09-18", pos, shop, meta, marketing: bad });
+    assert.equal(x.marketing, null); assert.equal(x.ads.marketingTotal, null); assert.equal(x.ads.marketingShareOfRevenue, null);
+  }
+});

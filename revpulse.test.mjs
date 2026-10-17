@@ -311,3 +311,27 @@ test("المسارات: العرض (المالك الأرقام كاملة، غ�
   await s.call("POST", "/api/cms/revenue-pulse/test", {});
   assert.deepEqual([s.db.smsSent[0].ref, s.db.smsSent[0].kind], ["test", "staff"]);
 });
+
+test("MC1: سطر «التسويق» جنب سطر الإعلانات — الرقمين بيبانوا وحد الـ١٣٪ فاضل على الإعلانات؛ من غيره مفيش سطر", () => {
+  const mk = { marketingTotal: 546.1, shareOfRevenue: 546.1 / 4520.5, operationalTotal: 7.05, estimated: false,
+    breakdown: { ads: 526.43, whatsapp: 12.95, sms: 6.72 } };
+  const m = R.pulseText({ d: { ...SALES({ ads: 526.43 }), marketing: mk }, range: RANGE, now: FRI_1905, adsLimitPct: 13, target: 200, alert: null });
+  const L = m.wa.split("\n");
+  assert.match(L[3], /^📣 الإعلانات 526 ر = 12% من الدخل \(الحد 13%\)$/, "سطر الإعلانات زي ما هو");
+  assert.match(L[4], /^📣 التسويق 546 ر = 12% من الدخل \(إعلانات 526 · واتساب 13 · رسائل 6\.7\) — الحد 13% على الإعلانات بس$/);
+  assert.match(L[5], /^🌐 طلبات الموقع/);
+  assert.deepEqual(m.facts.marketing, { total: 546.1, pct: 12.1, ads: 526.43, whatsapp: 12.95, sms: 6.72, operational: 7.05, estimated: false, adsLimit: 13 });
+  assert.equal(m.facts.ads.total, 526.43, "رقم الإعلانات لوحده لسه موجود");
+  assert.match(m.sms, /تسويق 546ر 12% \(اعلانات 526 واتساب 13 رسائل 6\.7\)/);
+  assert.ok(smsInfo(m.sms).segments <= 3);
+  /* تقديري ⇒ معلّم؛ خطأ أو مفيش ⇒ ولا سطر */
+  const e = R.pulseText({ d: { ...SALES(), marketing: { ...mk, estimated: true } }, range: RANGE, now: FRI_1905 });
+  assert.match(e.wa, /رسائل 6\.7 · جزء تقديري\)/);
+  for (const bad of [undefined, null, { error: "down" }, { marketingTotal: null }]) {
+    const x = R.pulseText({ d: { ...SALES(), marketing: bad }, range: RANGE, now: FRI_1905 });
+    assert.doesNotMatch(x.wa, /التسويق/); assert.doesNotMatch(x.sms, /تسويق/); assert.equal(x.facts.marketing, null);
+  }
+  /* جزء واحد: سطر التسويق بيقع قبل ما سطر الدخل يقع */
+  const one = R.pulseText({ d: { ...SALES(), marketing: mk }, range: RANGE, now: FRI_1905, maxParts: 1 });
+  assert.equal(smsInfo(one.sms).segments, 1); assert.match(one.sms, /^فريش كاتس لحد/);
+});
