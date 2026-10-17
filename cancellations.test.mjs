@@ -2,7 +2,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
-import { summarize, webReason, webKind, posKind, keetaReason, loadCancellations, register, KIND_LABELS, WEB_STATUSES } from "./cancellations.js";
+import { readFileSync } from "node:fs";
+import { summarize, webReason, webKind, posKind, keetaReason, keetaReversed, loadCancellations, register, KIND_LABELS, WEB_STATUSES } from "./cancellations.js";
 
 const T = (h) => `2026-10-16T${h}:00:00.000Z`;    // ١٦/١٠ يوم تشغيلي (١١ص الرياض = 08:00Z)
 
@@ -88,6 +89,89 @@ test("summarize: قبل الإلغاءات = الصافي + اللي اتشال�
   assert.ok(s.notes.length >= 4);
 });
 
+/* ── مراجعة ١٧/١٠: كيتا ↔ نقطة البيع ─────────────────────────────────────── */
+test("keetaReversed = نفس شرط keeta_reversed في bizreports.js وSALES_ONLY في finance.js بالحرف (حارس مزامنة)", () => {
+  // الشرط نفسه
+  assert.equal(keetaReversed({ refunds: [{ reason: "x" }], part_refund: false }), true);
+  assert.equal(keetaReversed({ order_status: 20, refunds: [{}], part_refund: false }), true);      // الحالة مش شرط
+  assert.equal(keetaReversed({ order_status: 50, refunds: [], part_refund: false }), false);       // 50 لوحده مش دليل (bizreports بيحسبه مبيعات)
+  assert.equal(keetaReversed({ refunds: [{}], part_refund: true }), false);                        // جزئي
+  assert.equal(keetaReversed({ refunds: null }), false);
+  assert.equal(keetaReversed({}), false);
+  // الحارس: لو حد غيّر الشرط في bizreports/finance من غير هنا، الاختبار ده يقع
+  for (const f of ["./bizreports.js", "./finance.js"]) {
+    const src = readFileSync(new URL(f, import.meta.url), "utf8");
+    assert.match(src, /jsonb_array_length\(COALESCE\(kp\.refunds,'\[\]'::jsonb\)\) > 0/, f);
+    assert.match(src, /COALESCE\(kp\.part_refund, false\) = false/, f);
+  }
+});
+
+test("summarize: طلب كيتا مرتجع بالكامل + فويد في نقطة البيع = مرة واحدة تحت كيتا بمجموع نقطة البيع، والفويد «مرآة نقطة البيع»", () => {
+  const keetaRefund = [{ reason: "Order cancelled", merchantAtFault: true }];
+  const s = summarize({
+    salesRevenue: 1000,
+    pos: [
+      // (١) فويد كيتا بنفس order_id — كان بيتحسب مرتين (فويد ١١٠ + كيتا ١٢٠)
+      { order_id: "7001", receipt: "R7001", ts: T("18"), day: "2026-10-16", order_type: "Void External", order_option: "Delivery", total: 110, staff_name: "أحمد", mirror_of: null },
+      // (٢) فويد اتسجّل بصف تاني بنفس الإيصال (order_id مختلف) — بيتمسك بالإيصال
+      { order_id: "7002-v", receipt: "R7002", ts: T("19"), day: "2026-10-16", order_type: "Void", order_option: "Delivery", total: 80, staff_name: "أحمد", mirror_of: null },
+      // (٣) فويد عادي مالوش علاقة بكيتا
+      { order_id: "7005", receipt: "R7005", ts: T("20"), day: "2026-10-16", order_type: "Void", order_option: "Take away", total: 30, staff_name: "منى", mirror_of: null },
+      // (٤) فويد مرآة موقع — بيفضل موقع حتى لو كيتا فيها نفس الرقم بالصدفة
+      { order_id: "7006", receipt: "R7006", ts: T("20"), day: "2026-10-16", order_type: "Void", order_option: "Delivery", total: 50, staff_name: "منى", mirror_of: "W9" },
+    ],
+    web: [{ order_no: "W9", ts: T("20"), day: "2026-10-16", status: "rejected_refunded", option: "delivery", total: 50, history: [], is_test: false }],
+    keeta: [
+      { order_view_id: "K7001", order_id: "7001", keeta_day: "2026-10-16", order_time: T("18"), order_status: 50, refunds: keetaRefund, refunded_to_customer: 120, refund_price: 0, part_refund: false, product_price: 110, customer_pay_total: 120,
+        pos: { order_id: "7001", receipt: "R7001", order_type: "Void External", total: 110 } },
+      { order_view_id: "K7002", order_id: "7002", keeta_day: "2026-10-16", order_time: T("19"), order_status: 50, refunds: keetaRefund, refunded_to_customer: 90, refund_price: 0, part_refund: false, product_price: 80, customer_pay_total: 90,
+        pos: { order_id: "7002", receipt: "R7002", order_type: "External", total: 80 } },
+      // (٥) مرتجع بالكامل وصفه في نقطة البيع عادي (مش فويد) — bizreports شاله بـkeeta_reversed؛ مرة واحدة بمجموع نقطة البيع
+      { order_view_id: "K7003", order_id: "7003", keeta_day: "2026-10-16", order_time: T("21"), order_status: 20, refunds: keetaRefund, refunded_to_customer: 70, refund_price: 0, part_refund: false, product_price: 60, customer_pay_total: 70,
+        pos: { order_id: "7003", receipt: "R7003", order_type: "External", total: 60 } },
+      // (٦) مرتجع بالكامل من غير صف في نقطة البيع — قيمة كيتا
+      { order_view_id: "K7004", order_id: null, keeta_day: "2026-10-16", order_time: T("21"), order_status: 50, refunds: keetaRefund, refunded_to_customer: 40, refund_price: 0, part_refund: false, product_price: 35, customer_pay_total: 40, pos: null },
+      // (٧) order_status 50 من غير refunds — مش مرتجع (bizreports بيحسبه مبيعات) ⇒ مش معروض ولا مخصوم
+      { order_view_id: "K7006", order_id: "7006", keeta_day: "2026-10-16", order_time: T("22"), order_status: 50, refunds: [], refunded_to_customer: 0, refund_price: 0, part_refund: false, product_price: 50, customer_pay_total: 55, pos: { order_id: "7006", receipt: "R7006", order_type: "Void", total: 50 } },
+    ],
+  });
+  const t = s.totals;
+  assert.deepEqual(t.pos.voids, { n: 1, amount: 30 });                 // الفويد العادي بس
+  assert.equal(t.pos.mirrors, 3);                                     // موقع ١ + كيتا ٢
+  assert.equal(t.pos.keetaMirrors, 2);
+  assert.deepEqual(t.keeta.reversed, { n: 4, amount: 110 + 80 + 60 + 40 });   // بمجموع نقطة البيع لما موجود، وإلا قيمة كيتا
+  assert.equal(t.keeta.posMirrors, 3);
+  assert.equal(t.deducted, 30 + 50 + 290);                            // فويد + موقع + كيتا — ولا طلب مرتين
+  assert.equal(t.deductedN, 1 + 1 + 4);
+  assert.equal(t.gross, 1000 + 370);
+  // الصفوف
+  const v1 = s.rows.find((r) => r.id === "7001");
+  assert.equal(v1.mirrorOf, "K7001"); assert.equal(v1.mirrorSrc, "keeta"); assert.equal(v1.deducted, false);
+  const v2 = s.rows.find((r) => r.id === "7002-v");
+  assert.equal(v2.mirrorOf, "K7002"); assert.equal(v2.mirrorSrc, "keeta"); assert.equal(v2.deducted, false);
+  const v4 = s.rows.find((r) => r.id === "7006");
+  assert.equal(v4.mirrorOf, "W9"); assert.equal(v4.mirrorSrc, "web");
+  assert.equal(s.rows.find((r) => r.id === "7005").mirrorSrc, null);
+  const k1 = s.rows.find((r) => r.id === "K7001");
+  assert.deepEqual(k1.posMirror, { id: "7001", receipt: "R7001", orderType: "Void External", total: 110, voided: true });
+  assert.equal(k1.amount, 110); assert.equal(k1.orderValue, 120); assert.equal(k1.deducted, true);
+  assert.equal(s.rows.find((r) => r.id === "K7002").posMirror.id, "7002-v");       // صف الفويد اللي اتمسك بالإيصال
+  const k3 = s.rows.find((r) => r.id === "K7003");
+  assert.equal(k3.posMirror.voided, false); assert.equal(k3.amount, 60); assert.equal(k3.orderValue, 70);
+  assert.equal(s.rows.find((r) => r.id === "K7004").posMirror, null);
+  assert.equal(s.rows.find((r) => r.id === "K7004").amount, 40);
+  assert.ok(!s.rows.some((r) => r.id === "K7006"));
+  // اليوم: الفويدات المرايا مش في posVoids، وكيتا بمجموعها مرة واحدة
+  assert.equal(s.days.length, 1);
+  assert.equal(s.days[0].posVoids, 30);
+  assert.equal(s.days[0].keeta, 290);
+  assert.equal(s.days[0].deducted, 370);
+  // مفيش رقم طلب مخصوم مرتين (نفس الفحص اللي verify.py بيعمله على الحي)
+  const dedIds = s.rows.filter((r) => r.deducted).map((r) => (r.src === "keeta" && r.posMirror ? r.posMirror.id : r.id));
+  assert.equal(new Set(dedIds).size, dedIds.length);
+  assert.ok(s.notes.some((n) => /كيتا المرتجع بالكامل له صف في نقطة البيع/.test(n)));
+});
+
 test("summarize: فاضي = أصفار وصافي بس، ومن غير مبيعات gross = null", () => {
   const s = summarize({ salesRevenue: 100 });
   assert.equal(s.totals.deducted, 0); assert.equal(s.totals.gross, 100); assert.equal(s.totals.rate, 0);
@@ -120,9 +204,39 @@ test("loadCancellations: ts_orders بالـcalendar_day + shop_orders بالحا
   const sh = pool.q.find((x) => /FROM shop_orders so/.test(x.sql));
   assert.deepEqual(sh.vals[2], WEB_STATUSES);
   const kp = pool.q.find((x) => /FROM keeta_payouts/.test(x.sql));
-  assert.match(kp.sql, /order_status = 50/);
+  assert.match(kp.sql, /jsonb_array_length\(COALESCE\(refunds,'\[\]'::jsonb\)\) > 0/);
+  assert.match(kp.sql, /COALESCE\(part_refund,false\)/);
+  assert.ok(!/order_status = 50/.test(kp.sql), "50 لوحده مش شرط (نفس bizreports)");
+  // مفيش كيتا مرتجع ⇒ مفيش استعلام ts_orders بالأرقام
+  assert.ok(!pool.q.some((x) => /FROM ts_orders WHERE order_id = ANY/.test(x.sql)));
   // مفيش ولا كتابة
   assert.ok(pool.q.every((x) => /^\s*SELECT/i.test(x.sql)));
+});
+
+test("loadCancellations: كيتا المرتجع بالكامل بيجيب صف نقطة البيع بتاعه (order_id عبر فيدأس) ويلزقه pos — قراءة بس", async () => {
+  const keetaRows = [
+    { order_view_id: "K1", order_id: "7001", keeta_day: "2026-10-16", order_time: T("18"), order_status: 50, refunds: [{ reason: "x" }], refunded_to_customer: 120, refund_price: 0, part_refund: false, product_price: 110, customer_pay_total: 120 },
+    { order_view_id: "K2", order_id: "7002", keeta_day: "2026-10-16", order_time: T("19"), order_status: 20, refunds: [{ isPartial: true }], refunded_to_customer: 10, refund_price: 10, part_refund: true, product_price: 90, customer_pay_total: 95 },
+    { order_view_id: "K3", order_id: null, keeta_day: "2026-10-16", order_time: T("20"), order_status: 50, refunds: [{ reason: "y" }], refunded_to_customer: 40, refund_price: 0, part_refund: false, product_price: 35, customer_pay_total: 40 },
+  ];
+  const pool = fakePool([
+    [/FROM ts_orders WHERE order_id = ANY/, (vals) => ({ rows: vals[0].includes("7001") ? [{ order_id: "7001", receipt: "R7001", order_type: "Void External", total: 110 }] : [] })],
+    [/FROM ts_orders o/, () => ({ rows: [{ order_id: "7001", receipt: "R7001", ts: T("18"), calendar_day: "2026-10-16", order_type: "Void External", order_option: "Delivery", total: 110, staff_name: "x" }] })],
+    [/FROM keeta_payouts/, () => ({ rows: keetaRows })],
+  ]);
+  const out = await loadCancellations(pool, { startUtc: new Date("2026-10-16T01:00:00Z"), endUtc: new Date("2026-10-17T01:00:00Z") });
+  const look = pool.q.find((x) => /FROM ts_orders WHERE order_id = ANY/.test(x.sql));
+  assert.deepEqual(look.vals[0], ["7001"]);                 // المرتجع بالكامل اللي له order_id بس (مش الجزئي ولا اللي من غير رقم)
+  assert.deepEqual(out.keeta[0].pos, { order_id: "7001", receipt: "R7001", order_type: "Void External", total: 110 });
+  assert.equal(out.keeta[1].pos, null); assert.equal(out.keeta[2].pos, null);
+  assert.ok(pool.q.every((x) => /^\s*SELECT/i.test(x.sql)));
+  // من الآخر للآخر: الفويد + كيتا = خصم واحد ١١٠ تحت كيتا، والفويد مرآة
+  const s = summarize({ ...out, salesRevenue: 500 });
+  assert.deepEqual(s.totals.keeta.reversed, { n: 2, amount: 110 + 40 });
+  assert.deepEqual(s.totals.pos.voids, { n: 0, amount: 0 });
+  assert.equal(s.totals.pos.keetaMirrors, 1);
+  assert.equal(s.totals.deducted, 150); assert.equal(s.totals.gross, 650);
+  assert.equal(s.rows.find((r) => r.id === "7001").mirrorOf, "K1");
 });
 
 test("الراوت: admin بس، بيستعمل فترة bizreports ومبيعاتها، وبيرجّع kinds", async () => {

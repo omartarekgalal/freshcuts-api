@@ -7,11 +7,17 @@
      ٢. الموقع (shop_orders): اعتذر المطعم واسترجعنا (rejected_refunded، فلوس ماي فاتورة رجعت)، الاسترجاع فشل
         (refund_failed — الفلوس لسه معانا ومستحقة للعميل)، انتهت صلاحيته من غير دفع (expired)، أو اتلغى. السبب من
         سجل الطلب (history) لو موجود.
-     ٣. كيتا (keeta_payouts): اترجع بالكامل (order_status 50 — برّه التسوية كلها) أو ارتجاع جزئي (part_refund) — بسبب
-        كيتا نفسه (applyReason) ومين المسؤول (merchantAtFault).
+     ٣. كيتا (keeta_payouts): اترجع بالكامل — **نفس قاعدة bizreports/finance بالحرف** (keetaReversed تحت: refunds غير
+        فاضية AND part_refund = false؛ order_status 50 لوحده مش دليل) — أو ارتجاع جزئي (part_refund) — بسبب كيتا نفسه
+        (applyReason) ومين المسؤول (merchantAtFault).
 
-   القاعدة المهمة — «مش رقمين لنفس الطلب»: طلب الموقع لما الكاشير يرفضه بيتعمله فويد في نقطة البيع كمان. صف الفويد
-   اللي رقمه = shop_orders.pos_tenant_order_id بيتعلّم «مرآة» ومابيتجمعش تاني (بيتحسب مرة واحدة تحت الموقع).
+   القاعدة المهمة — «مش رقمين لنفس الطلب»:
+     • الموقع: طلب الموقع لما الكاشير يرفضه بيتعمله فويد في نقطة البيع كمان. صف الفويد اللي رقمه =
+       shop_orders.pos_tenant_order_id بيتعلّم «مرآة» ومابيتجمعش تاني (بيتحسب مرة واحدة تحت الموقع).
+     • كيتا (مراجعة ١٧/١٠): طلب كيتا المرتجع بالكامل له صف في نقطة البيع برضه (keeta_payouts.order_id = ts_orders.order_id
+       عن طريق فيدأس) — لو الكاشير عمله فويد/ارتجاع كمان كان بيتحسب مرتين (كيتا + فويد). دلوقتي بيتحسب مرة واحدة تحت كيتا،
+       صف نقطة البيع بيتعلّم «مرآة» (mirrorSrc = keeta)، وصف كيتا شايل posMirror. المبلغ المخصوم = مجموع صف نقطة البيع
+       (ده اللي bizreports شالته من المبيعات فعلاً؛ قيمة كيتا بتشمل رسوم توصيلها اللي ماكانتش مبيعاتنا) — وقيمة كيتا في orderValue.
 
    «قبل الإلغاءات → الإلغاءات → الصافي»: الصافي = مبيعات bizreports زي ما هي (الفويد/الارتجاع/كيتا المرتجع بالكامل
    مش جوّاها أصلاً). «قبل» = الصافي + اللي اتشال منه. الارتجاع الجزئي من كيتا **مش مخصوم** من المبيعات (الطلب بيتحسب
@@ -73,6 +79,20 @@ export function posKind(row) {
 /* قيمة الطلب على كيتا لما نعرض «اترجع بالكامل»: اللي دفعه العميل لو موجود، وإلا سعر المنتجات */
 const keetaValue = (r) => (num(r.customer_pay_total) > 0 ? num(r.customer_pay_total) : num(r.product_price));
 
+/**
+ * «اترجع بالكامل» على كيتا — نسخة JS حرفية من شرط keeta_reversed في bizreports.js (loadWindow SELECT) وSALES_ONLY في finance.js:
+ *     EXISTS (SELECT 1 FROM keeta_payouts kp WHERE kp.order_id = o.order_id
+ *               AND jsonb_array_length(COALESCE(kp.refunds,'[]'::jsonb)) > 0
+ *               AND COALESCE(kp.part_refund, false) = false)
+ * يعني: فيه صف ارتجاع واحد على الأقل، ومش معلّم «جزئي». order_status 50 لوحده مش بيدخل الطلب هنا (bizreports بيحسبه مبيعات)
+ * — لو دخلناه كان الصافي هيختلف عن «مبيعات اليوم». cancellations.test.mjs فيه حارس بيقرا bizreports.js ويتأكد إن الشرط لسه زي ما هو.
+ */
+export function keetaReversed(k) {
+  return Array.isArray(k?.refunds) && k.refunds.length > 0 && !k.part_refund;
+}
+
+const sid = (v) => (v == null ? "" : String(v));
+
 export function keetaReason(r) {
   const ev = Array.isArray(r.refunds) ? r.refunds : [];
   const why = ev.map((e) => String(e?.reason || "").trim()).filter(Boolean)[0] || null;
@@ -87,28 +107,47 @@ export function keetaReason(r) {
  * يحوّل الصفوف الخام لقايمة موحّدة + مجاميع. صافية ومتختبرة.
  *  pos:   [{order_id, receipt, ts, day, order_type, order_option, total, staff_name, mirror_of}]
  *  web:   [{order_no, ts, status, option, total, refund, history, is_test}]
- *  keeta: [{order_view_id, order_id, keeta_day, order_time, order_status, refunds, refunded_to_customer, refund_price, part_refund, product_price, customer_pay_total}]
+ *  keeta: [{order_view_id, order_id, keeta_day, order_time, order_status, refunds, refunded_to_customer, refund_price, part_refund, product_price, customer_pay_total,
+ *           pos?: {order_id, receipt, order_type, total}}]   ← صف نقطة البيع لنفس الطلب لو اتجاب (loadCancellations)
  */
 export function summarize({ pos = [], web = [], keeta = [], salesRevenue = null, range = null } = {}) {
   const rows = [];
   const bucket = () => ({ n: 0, amount: 0 });
   const t = {
-    pos: { voids: bucket(), refunds: bucket(), mirrors: 0 },
+    pos: { voids: bucket(), refunds: bucket(), mirrors: 0, keetaMirrors: 0 },
     web: { refunded: bucket(), refundFailed: bucket(), expired: bucket(), cancelled: bucket() },
-    keeta: { reversed: bucket(), partial: bucket() },
+    keeta: { reversed: bucket(), partial: bucket(), posMirrors: 0 },
   };
   const add = (b, amt) => { b.n++; b.amount += amt; };
+
+  /* مرآة كيتا ↔ نقطة البيع: طلب كيتا المرتجع بالكامل بنعرفه في نقطة البيع برقم الطلب (keeta_payouts.order_id) أو برقم الإيصال
+     (لو الفويد اتسجّل بصف تاني بنفس الإيصال). صف الفويد/الارتجاع اللي بيطابق مابيتخصمش تاني. */
+  const kRev = keeta.filter(keetaReversed);
+  const kByOrder = new Map(), kByReceipt = new Map();
+  for (const k of kRev) {
+    if (sid(k.order_id)) kByOrder.set(sid(k.order_id), k);
+    if (k.pos && sid(k.pos.receipt)) kByReceipt.set(sid(k.pos.receipt), k);
+  }
+  const posRowOfKeeta = new Map();   // order_view_id → صف نقطة البيع (فويد/ارتجاع) اللي اتعلّم مرآة
 
   for (const p of pos) {
     const kind = posKind(p); if (!kind) continue;
     const amt = Math.abs(num(p.total));
     const day = p.day || bizDay(p.ts);
-    if (p.mirror_of) { t.pos.mirrors++; }
+    let mirrorOf = p.mirror_of || null, mirrorSrc = p.mirror_of ? "web" : null;
+    if (!mirrorOf) {
+      const km = kByOrder.get(sid(p.order_id)) || (sid(p.receipt) ? kByReceipt.get(sid(p.receipt)) : null);
+      if (km && !posRowOfKeeta.has(sid(km.order_view_id || km.order_id))) {
+        mirrorOf = sid(km.order_view_id || km.order_id); mirrorSrc = "keeta";
+        posRowOfKeeta.set(mirrorOf, p);
+      }
+    }
+    if (mirrorOf) { t.pos.mirrors++; if (mirrorSrc === "keeta") t.pos.keetaMirrors++; }
     else add(kind === "pos_void" ? t.pos.voids : t.pos.refunds, amt);
     rows.push({ src: "pos", kind, label: KIND_LABELS[kind], day, at: p.ts, ref: p.receipt || p.order_id, id: String(p.order_id),
       amount: r2(amt), option: p.order_option || null, staff: p.staff_name || null,
       reason: "السبب مش متاح من نقطة البيع (تاب سينس مابتسجّلش سبب الفويد)",
-      mirrorOf: p.mirror_of || null, deducted: !p.mirror_of });
+      mirrorOf, mirrorSrc, deducted: !mirrorOf });
   }
   for (const w of web) {
     if (w.is_test) continue;
@@ -122,15 +161,20 @@ export function summarize({ pos = [], web = [], keeta = [], salesRevenue = null,
       refundId: w.refund_id || null, paid, deducted: kind === "web_refunded" });
   }
   for (const k of keeta) {
-    const reversed = Number(k.order_status) === 50 || (!k.part_refund && Array.isArray(k.refunds) && k.refunds.length > 0);
+    const reversed = keetaReversed(k);
     const partial = !reversed && (Boolean(k.part_refund) || num(k.refunded_to_customer) > 0 || num(k.refund_price) > 0);
     if (!reversed && !partial) continue;
     const kind = reversed ? "keeta_reversed" : "keeta_partial";
-    const amt = reversed ? keetaValue(k) : (num(k.refunded_to_customer) || num(k.refund_price));
+    const kid = sid(k.order_view_id || k.order_id);
+    /* صف نقطة البيع لنفس الطلب: الفويد/الارتجاع اللي اتعلّم مرآة فوق، وإلا الصف العادي اللي loadCancellations جابه (k.pos) */
+    const pm = reversed ? (posRowOfKeeta.get(kid) || k.pos || null) : null;
+    const posMirror = pm ? { id: sid(pm.order_id), receipt: pm.receipt || null, orderType: pm.order_type || null, total: r2(Math.abs(num(pm.total))), voided: posKind(pm) != null } : null;
+    if (posMirror) t.keeta.posMirrors++;
+    const amt = reversed ? (posMirror && posMirror.total > 0 ? posMirror.total : keetaValue(k)) : (num(k.refunded_to_customer) || num(k.refund_price));
     add(reversed ? t.keeta.reversed : t.keeta.partial, amt);
     rows.push({ src: "keeta", kind, label: KIND_LABELS[kind], day: k.keeta_day ? String(k.keeta_day).slice(0, 10) : bizDay(k.order_time), at: k.order_time || null,
-      ref: k.order_view_id || k.order_id, id: String(k.order_view_id || k.order_id), amount: r2(amt), option: null, staff: null,
-      reason: keetaReason(k), orderValue: r2(keetaValue(k)), deducted: reversed });
+      ref: k.order_view_id || k.order_id, id: kid, amount: r2(amt), option: null, staff: null,
+      reason: keetaReason(k), orderValue: r2(keetaValue(k)), posMirror, deducted: reversed });
   }
   rows.sort((a, b) => String(b.at || b.day).localeCompare(String(a.at || a.day)));
   for (const g of Object.values(t)) for (const b of Object.values(g)) if (b && typeof b === "object") b.amount = r2(b.amount);
@@ -166,7 +210,8 @@ export function summarize({ pos = [], web = [], keeta = [], salesRevenue = null,
     notes: [
       "الصافي = «مبيعات اليوم» زي ما هي (إقفال الكاشير). «قبل الإلغاءات» = الصافي + اللي اتشال منه: فويد وارتجاع نقطة البيع، طلبات الموقع المسترجعة، وطلبات كيتا المرتجعة بالكامل.",
       "طلب الموقع لما يترفض بيتعمله فويد في نقطة البيع كمان — بيتحسب مرة واحدة (تحت الموقع)، وصف الفويد بيتعلّم «مرآة».",
-      "ارتجاع كيتا الجزئي مش مخصوم من المبيعات (الطلب محسوب بمجموعه) — معروض لوحده. يوم كيتا = يوم فاتورتها (نص الليل)، مش اليوم التشغيلي.",
+      "طلب كيتا المرتجع بالكامل له صف في نقطة البيع برضه — بيتحسب مرة واحدة (تحت كيتا) بمجموع صف نقطة البيع (ده اللي اتشال من المبيعات)؛ لو الكاشير عمله فويد كمان، صف الفويد بيتعلّم «مرآة نقطة البيع» ومابيتخصمش تاني.",
+      "«اترجع بالكامل» على كيتا = نفس قاعدة «مبيعات اليوم»: فيه صف ارتجاع ومش جزئي. ارتجاع كيتا الجزئي مش مخصوم من المبيعات (الطلب محسوب بمجموعه) — معروض لوحده. يوم كيتا = يوم فاتورتها (نص الليل)، مش اليوم التشغيلي.",
       "«ماتدفعش» = طلبات موقع انتهت قبل الدفع — ماكانتش فلوس، للمتابعة بس.",
       "تاب سينس مابتسجّلش سبب الفويد؛ السبب موجود للموقع (سجل الطلب) ولكيتا (سبب كيتا + على حساب مين).",
     ],
@@ -194,19 +239,24 @@ export async function loadCancellations(pool, { startUtc, endUtc }) {
               product_price::float8 AS product_price, customer_pay_total::float8 AS customer_pay_total
          FROM keeta_payouts
         WHERE keeta_day >= $1::date AND keeta_day <= $2::date
-          AND (order_status = 50 OR jsonb_array_length(COALESCE(refunds,'[]'::jsonb)) > 0 OR COALESCE(refund_price,0) > 0 OR COALESCE(part_refund,false))
+          AND (jsonb_array_length(COALESCE(refunds,'[]'::jsonb)) > 0 OR COALESCE(refunded_to_customer,0) > 0 OR COALESCE(refund_price,0) > 0 OR COALESCE(part_refund,false))
         ORDER BY order_time DESC LIMIT 2000`, [fromDay, toDay]).catch(() => ({ rows: [] })),
   ]);
-  /* مرآة طلب الموقع في نقطة البيع (الفويد بعد الرفض) — مرة واحدة */
+  /* (أ) مرآة طلب الموقع في نقطة البيع (الفويد بعد الرفض) — مرة واحدة
+     (ب) صف نقطة البيع لطلب كيتا المرتجع بالكامل (keeta_payouts.order_id = ts_orders.order_id عبر فيدأس) — عشان يتحسب مرة واحدة
+         ولو الكاشير عمله فويد كمان (مرآة)؛ من غير قيد بالـcalendar_day لأنه نفس الطلب أياً كان يوم إقفاله */
   const ids = pos.rows.map((p) => String(p.order_id));
-  let mirrors = new Map();
-  if (ids.length) {
-    const m = await pool.query(`SELECT order_no, pos_tenant_order_id::text AS pid FROM shop_orders WHERE pos_tenant_order_id::text = ANY($1::text[])`, [ids]).catch(() => ({ rows: [] }));
-    mirrors = new Map(m.rows.map((r) => [String(r.pid), r.order_no]));
-  }
+  const kids = [...new Set(keeta.rows.filter(keetaReversed).map((k) => sid(k.order_id)).filter(Boolean))];
+  const [m, kp] = await Promise.all([
+    ids.length ? pool.query(`SELECT order_no, pos_tenant_order_id::text AS pid FROM shop_orders WHERE pos_tenant_order_id::text = ANY($1::text[])`, [ids]).catch(() => ({ rows: [] })) : { rows: [] },
+    kids.length ? pool.query(`SELECT order_id, receipt, order_type, total::float8 AS total FROM ts_orders WHERE order_id = ANY($1::text[])`, [kids]).catch(() => ({ rows: [] })) : { rows: [] },
+  ]);
+  const mirrors = new Map(m.rows.map((r) => [String(r.pid), r.order_no]));
+  const posOfKeeta = new Map(kp.rows.map((r) => [String(r.order_id), r]));
   const posRows = pos.rows.map((p) => ({ ...p, day: dayOf(p), mirror_of: mirrors.get(String(p.order_id)) || null }));
   const webRows = web.rows.map((w) => ({ ...w, day: bizDay(w.ts) }));
-  return { pos: posRows, web: webRows, keeta: keeta.rows };
+  const keetaRows = keeta.rows.map((k) => ({ ...k, pos: posOfKeeta.get(sid(k.order_id)) || null }));
+  return { pos: posRows, web: webRows, keeta: keetaRows };
 }
 function dayOf(p) {
   const c = p.calendar_day;
