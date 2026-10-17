@@ -3225,7 +3225,8 @@ let posNamesApi = null;
 accountsApi = accounts.register(app, moduleCtx, { posNames: () => posNamesApi });
 // WO (١٢/١٠): موافقة «تحديثات الطلب على واتساب» — اختيار العميل برقم متحقق (جلسة الحساب)، تسجيل بس من غير أي إرسال
 waconsent.register(app, moduleCtx, { customerOf: (c) => accountsApi.customerOf(c) });
-const tspApi = tspartner.register(app, moduleCtx);
+// ⚡ RT1 (١٧/١٠): ويبهوك تاب سينس بيتطبّق على الطلب فوراً عبر shop.applyWebhookFor (late-bound)
+const tspApi = tspartner.register(app, moduleCtx, { shop: () => shopApi });
 /* إضافات الأصناف — لازم بعد tspartner لأنها بتقرا كتالوج الشريك منه
    (القائمة الرقمية اللي المتجر بيقرا منها مفيهاش إضافات خالص). */
 modifiersApi = modifiers.register(app, moduleCtx, { listProducts: () => tspApi.listProducts() });

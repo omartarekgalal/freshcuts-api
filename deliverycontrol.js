@@ -32,6 +32,7 @@ import { trackEtaCfg } from "./tracketa.js";
 import { smartEtaCfg, MIX_KEYS, MIX_LABELS, PERCENTILES } from "./smarteta-core.js";
 import { ljWatchCfg, LJ_WATCH_LIMITS, controlLine } from "./ljwatch.js";
 import { pickupLateCfg, PICKUP_TRACK_LIMITS, PICKUP_TRACK_DEFAULTS } from "./pickuptrack.js";
+import { sweepSecOf, readyGraceMinOf, SWEEP_LIMITS, READY_GRACE_LIMITS } from "./prepstatus.js";   // ⚡ RT1 (١٧/١٠)
 
 /* ── عنوان الحقل جوّه الإعدادات ──────────────────────────────────────────── */
 export function getAt(obj, path) {
@@ -132,6 +133,16 @@ export const FIELDS = [
     hint: "الكابتن بيتطلب أول لحظة من اتنين: «جاهز» على نقطة البيع، أو المهلة دي بعد القبول. ٠ = مع القبول فوراً." },
   { path: "delivery.autoRefundOnNoAccept", group: "dispatch", type: "bool",
     label: "استرجاع تلقائي لو الطلب ماتقبلش خالص" },
+  /* ⚡ RT1 (عمر ١٧/١٠: «التحديثات موصلتش فوري وموصلتش رسايل واتساب إن الطلب جاهز»):
+     ويبهوك تاب سينس بقى بيتطبّق على الطلب لحظة وصوله (shop.applyWebhookFor)، والكنس
+     شبكة أمان بس. الاتنين دول كانوا ثابت في الكود (١٢٠ ث) وشرط مخفي (أي قفل يشيل
+     إشعار «جاهز») — دلوقتي من اللوحة، وبيتقروا من غير ريستارت. */
+  { path: "shop.sweepSec", group: "dispatch", type: "int", min: SWEEP_LIMITS.min, max: SWEEP_LIMITS.max,
+    label: "الكنس الاحتياطي لنقطة البيع كل (ثانية)",
+    hint: "من ١٧/١٠ تحديثات تاب سينس (قبول / جاهز / قفل) بتتطبّق على الطلب لحظة وصول الويبهوك. الكنس ده شبكة أمان بيلمّ اللي فاته (ويبهوك ضاع أو وصل وقت تبديل الحاوية)، وكمان بيعيد نقطة البيع والاسترجاعات ويطلب المندوب في وقته. بيتقري كل دورة من غير ريستارت. SHOP_SWEEP_SECONDS في Coolify احتياطي بس لو الخانة فاضية." },
+  { path: "shop.readyNotifyGraceMin", group: "dispatch", type: "int", min: READY_GRACE_LIMITS.min, max: READY_GRACE_LIMITS.max,
+    label: "إشعار «طلبك جاهز» يطلع حتى لو الكاشير قفل الطلب خلال (دقيقة)",
+    hint: "استلام وطاولة بس (التوصيل بيسمع من المندوب). الكاشير بيضغط «جاهز» و«تم التوصيل» ورا بعض، وقبل ١٧/١٠ لو الاتنين وصلوا في نفس الدفعة إشعار «جاهز» (واتساب + متصفح) كان بيتشال خالص. دلوقتي بيتشال بس لو القفل جه بعد «جاهز» بأكتر من المدة دي — يعني «جاهز» قديمة والعميل استلم من زمان. ٠ = السلوك القديم." },
 
   /* ── النطاق والحارس ── */
   { path: "delivery.courierSla.farGuard.fromKm", group: "zone", type: "num", min: 1, max: 50, step: 0.5,
@@ -457,6 +468,8 @@ export function effectiveSettings(settings, envRead = (k) => (process.env[k] || 
     dispatchDelayMin: dispatchDelayOf(settings),
     provider: String(d.provider || envRead("COURIER_PROVIDER") || "flyingarrow").toLowerCase(),
     autoDispatch: shop.autoDispatch !== false,
+    sweepSec: sweepSecOf(settings, envRead),                 // ⚡ RT1
+    readyNotifyGraceMin: readyGraceMinOf(settings),          // ⚡ RT1
     autoRefundOnNoAccept: d.autoRefundOnNoAccept !== false,
     newOrderSms: d.newOrderSms !== false,
     staffSmsLanguage: d.staffSmsLanguage === "ar" ? "ar" : "en",
@@ -476,6 +489,8 @@ export function effectiveOf(path, settings, envRead) {
     case "delivery.dispatchDelayMin": return e.dispatchDelayMin;
     case "shop.autoDispatch": return e.autoDispatch;
     case "shop.pickupLateAfterMin": return pickupLateCfg(settings).lateAfterMin;   // PK1: الجديد ← القديم pickupReadyMinutes ← ٤٥
+    case "shop.sweepSec": return e.sweepSec;                          // ⚡ RT1
+    case "shop.readyNotifyGraceMin": return e.readyNotifyGraceMin;    // ⚡ RT1
     case "delivery.autoRefundOnNoAccept": return e.autoRefundOnNoAccept;
     case "delivery.newOrderSms": return e.newOrderSms;
     case "delivery.staffSmsLanguage": return e.staffSmsLanguage;
@@ -516,6 +531,10 @@ export function sourceOf(path, settings, envRead = (k) => (process.env[k] || "")
   /* PK1: الخانة الجديدة فاضية والقديمة pickupReadyMinutes متحطّة (القيمة المؤقتة ١٨٠ يوم الحادثة) ⇒ الشاشة تقول منين الرقم بدل «افتراضي الكود» */
   if (path === "shop.pickupLateAfterMin" && getAt(settings || {}, path) == null && pickupLateCfg(settings).source === "legacy") {
     return { kind: "settings", note: "من المفتاح القديم shop.pickupReadyMinutes" };
+  }
+  // ⚡ RT1: الخانة فاضية والمتغيّر موجود ⇒ الفترة جاية من Coolify (احتياطي، مش قفل)
+  if (path === "shop.sweepSec" && getAt(settings || {}, path) == null && Number(envRead("SHOP_SWEEP_SECONDS")) > 0) {
+    return { kind: "env", note: "SHOP_SWEEP_SECONDS (احتياطي)", locked: false };
   }
   const raw = getAt(settings || {}, path);
   if (raw === undefined || raw === null || raw === "") return { kind: "default", note: "افتراضي الكود" };

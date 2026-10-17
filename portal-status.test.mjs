@@ -230,24 +230,50 @@ test("الكنس (استلام): «جاهز» من غير قفل ⇒ إشعار 
     assert.equal(s.queries.some((q) => /SET status=\$2/.test(q.sql)), false, "«جاهز» مش «استلم»");
   } finally { s.restore(); }
 
-  // ب) جاهز + قفل في نفس اللحظة (اللي بيحصل فعلاً): «استلمت طلبك» بس، من غير إشعار «جاهز» قبلها بثانية
-  s = build({
-    handler: (sql) => {
-      if (/pos_ready_at IS NULL\s+OR \(option='delivery'/.test(sql)) return { rows: [{ order_no: "P2", pos_order_id: "8", branch_id: "1", option: "pickup", pos_ready_at: null }] };
-      if (/WHERE option='pickup' AND pos_order_id IS NOT NULL/.test(sql)) return { rows: [{ order_no: "P2", pos_order_id: "8" }] };
-      if (/FROM tsp_webhooks/.test(sql)) return { rows: hooks(22, 22.2) };
-      if (/SET pos_ready_at = \$2::timestamptz/.test(sql)) return { rows: [], rowCount: 1 };
-      return null;
-    },
-  });
+  /* ب) جاهز + قفل في نفس اللحظة (اللي بيحصل فعلاً). ⚡ RT1 (عمر ١٧/١٠): قبل كده الإشعار كان
+     بيتشال خالص لمجرد إن القفل وصل في نفس الدفعة — «موصلتش رسايل واتساب إن الطلب جاهز».
+     دلوقتي: القفل جوّه مهلة shop.readyNotifyGraceMin (١٠ د) ⇒ إشعار «جاهز» **مرة واحدة** + «استلمت طلبك». */
+  const stateful = (closedAtMin, settings) => {
+    let readySet = false;
+    return build({
+      settings,
+      handler: (sql) => {
+        if (/pos_ready_at IS NULL\s+OR \(option='delivery'/.test(sql)) return { rows: [{ order_no: "P2", pos_order_id: "8", branch_id: "1", option: "pickup", pos_ready_at: null }] };
+        if (/WHERE option='pickup' AND pos_order_id IS NOT NULL/.test(sql)) return { rows: [{ order_no: "P2", pos_order_id: "8", option: "pickup", pos_ready_at: readySet ? at(22) : null }] };
+        if (/FROM tsp_webhooks/.test(sql)) return { rows: hooks(22, closedAtMin) };
+        if (/SET pos_ready_at = \$2::timestamptz/.test(sql)) { if (readySet) return { rows: [], rowCount: 0 }; readySet = true; return { rows: [], rowCount: 1 }; }
+        return null;
+      },
+    });
+  };
+  s = stateful(22.2);
   try {
     await s.api.sweep(); await tick();
-    assert.deepEqual(s.readyPush, []);
+    assert.deepEqual(s.readyPush, ["P2"], "القفل بعد ١٢ ثانية من «جاهز» ⇒ الإشعار يطلع (مرة واحدة)");
+    assert.equal(s.events.filter((e) => e.name === "pos_ready").length, 1);
     const close = s.queries.find((q) => /collected_at = COALESCE\(collected_at, \$4::timestamptz\)/.test(q.sql));
     assert.deepEqual(close.vals, ["P2", at(22), "pos_ready", at(22.2)]);
     const st = s.queries.find((q) => /SET status=\$2/.test(q.sql));
     assert.equal(st.vals[1], "delivered");
     assert.deepEqual(s.sms, [["P2", "delivered"]]);
+  } finally { s.restore(); }
+
+  // ج) القفل بعد «جاهز» بـ١١ دقيقة (أكتر من المهلة) ⇒ «جاهز» قديمة: مفيش إشعار، وسبب مسجّل في التتبع
+  s = stateful(33);
+  try {
+    await s.api.sweep(); await tick();
+    assert.deepEqual(s.readyPush, []);
+    const skip = s.events.find((e) => e.name === "notify_sent" && e.data?.reason === "closed_after_grace");
+    assert.ok(skip, "سبب الشطب بيبان في أحداث الطلب");
+    assert.equal(skip.data.graceMin, 10);
+    assert.equal(s.queries.find((q) => /SET status=\$2/.test(q.sql)).vals[1], "delivered");
+  } finally { s.restore(); }
+
+  // د) المهلة من اللوحة: ٣٠ د ⇒ نفس الـ١١ دقيقة بقت جوّه المهلة
+  s = stateful(33, { shop: { readyNotifyGraceMin: 30 } });
+  try {
+    await s.api.sweep(); await tick();
+    assert.deepEqual(s.readyPush, ["P2"]);
   } finally { s.restore(); }
 });
 

@@ -43,6 +43,7 @@ export const ORDER_EVENTS = Object.freeze([
   "customer_note",     // {kind,text,…}            MJ1: ملاحظة العميل على طلبه الشغّال من واتساب (wabotrun.js)
   "staff_call",        // {outcome}
   "staff_action",      // {action}
+  "webhook_applied",   // {via: webhook/sweep, lagSec, ready, handed, closed, accepted} ⚡ RT1 (١٧/١٠): ويبهوك نقطة البيع اتطبّق على الطلب — الفرق بين وصوله وتطبيقه
 ]);
 const EVENT_SET = new Set(ORDER_EVENTS);
 export const isOrderEvent = (name) => typeof name === "string" && EVENT_SET.has(name);
@@ -71,6 +72,7 @@ export const DEFAULT_SUMMARY = Object.freeze({
   customer_note: "ملاحظة من العميل",
   staff_call: "مكالمة للعميل",
   staff_action: "إجراء من الفريق",
+  webhook_applied: "اتطبّق تحديث نقطة البيع",
 });
 
 export const CHANNEL = "order_event";

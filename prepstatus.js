@@ -191,6 +191,48 @@ export function reviewDueAt({ deliveredAt, askAfterMin = 30, option = "delivery"
   return new Date(due);
 }
 
+/* ═══ ⚡ RT1 (عمر ١٧/١٠/٢٠٢٦): «التحديثات موصلتش فوري … وموصلتش رسايل واتساب إن الطلب جاهز» ═══
+   القياس يوم ١٧/١٠: ويبهوك pickup_ready وصل ١٩:١٨:٥٨ واتطبّق بالكنس ١٩:٢٠:١٧ (٧٩ ث)،
+   وتاني ١٩:٤٣:٢٠ → ١٩:٤٤:١٦ (٥٦ ث). من RT1 الويبهوك بيتطبّق لحظة وصوله والكنس
+   شبكة أمان. الإعدادات الاتنين دول في اللوحة (التوصيل والمندوبين ← توقيت طلب
+   المندوب) — مش في الكود ولا env. */
+
+/* فترة الكنس الاحتياطي بالثواني: shop.sweepSec من اللوحة (٣٠–٦٠٠)، وإلا
+   SHOP_SWEEP_SECONDS كاحتياطي بس (بيتقصّ على نفس المدى)، وإلا ١٢٠. */
+export const SWEEP_LIMITS = Object.freeze({ min: 30, max: 600, def: 120 });
+export function sweepSecOf(settings = {}, envRead = (k) => process.env[k]) {
+  const s = Number(((settings || {}).shop || {}).sweepSec);
+  if (Number.isFinite(s) && s >= SWEEP_LIMITS.min && s <= SWEEP_LIMITS.max) return Math.round(s);
+  const e = Number(String(envRead("SHOP_SWEEP_SECONDS") ?? "").trim());
+  if (Number.isFinite(e) && e > 0) return Math.min(SWEEP_LIMITS.max, Math.max(SWEEP_LIMITS.min, Math.round(e)));
+  return SWEEP_LIMITS.def;
+}
+
+/* مهلة إشعار «طلبك جاهز» بالدقايق: لو الكاشير قفل الطلب بعد «جاهز» بأكتر من كده
+   يبقى «جاهز» قديمة (العميل استلم من زمان) والإشعار بيتشال. ٠ = السلوك القديم
+   (أي قفل قبل التطبيق يشيل الإشعار). */
+export const READY_GRACE_LIMITS = Object.freeze({ min: 0, max: 120, def: 10 });
+export function readyGraceMinOf(settings = {}) {
+  const v = Number(((settings || {}).shop || {}).readyNotifyGraceMin);
+  return Number.isFinite(v) && v >= READY_GRACE_LIMITS.min && v <= READY_GRACE_LIMITS.max ? Math.round(v) : READY_GRACE_LIMITS.def;
+}
+
+/* هل إشعار «طلبك جاهز» لسه في وقته؟ صافية.
+   - التوصيل: لأ (العميل بيسمع من المندوب).
+   - «جاهز» مش ضغطة صريحة (readyBasis = pos_closed: الكاشير قفل من غير «جاهز»): لأ —
+     رسالة «استلمت طلبك» جاية حالاً ومفيش لحظة «جاهز» حصلت.
+   - مفيش قفل: أيوه. فيه قفل: أيوه لو القفل جه خلال المهلة من «جاهز»، وإلا لأ. */
+export function readyNotifyDue({ option = null, readyAt = null, closedAt = null, readyBasis = "pos_ready", graceMin = READY_GRACE_LIMITS.def } = {}) {
+  if (option === "delivery") return false;
+  if (readyBasis && readyBasis !== "pos_ready") return false;
+  const r = ms(readyAt);
+  if (r == null) return false;
+  const c = ms(closedAt);
+  if (c == null) return true;
+  const g = Number.isFinite(Number(graceMin)) ? Math.max(0, Number(graceMin)) : READY_GRACE_LIMITS.def;
+  return c - r <= g * 60_000;
+}
+
 /* ── SQL: ويبهوكات طلب واحد ── */
 export const WEBHOOKS_SQL = `SELECT received_at,
          payload->'resource'->'statuses_slugs'->>'approval_status' AS approval,

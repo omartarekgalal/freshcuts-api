@@ -56,7 +56,8 @@ import { parseWaUpdates, recordWaUpdates, parseTermsVersion, recordTermsAcceptan
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
 import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableWho, tableTrackLabel, cleanCustomerText } from "./table-order.js";
-import { posMilestones, prepCfg, prepCheck, prepSmsEnabled, orderKind, WEBHOOKS_SQL, PREP_DDL } from "./prepstatus.js";
+import { posMilestones, prepCfg, prepCheck, prepSmsEnabled, orderKind, WEBHOOKS_SQL, PREP_DDL,
+  sweepSecOf, readyGraceMinOf, readyNotifyDue } from "./prepstatus.js";   // ⚡ RT1 (١٧/١٠)
 import { computeTrackEta, trackStages } from "./tracketa.js";
 import { smartTrackContext, recordShownEta } from "./smarteta.js";
 import { pickupTrackState, pickupLateCfg } from "./pickuptrack.js";
@@ -2443,13 +2444,21 @@ export function register(app, ctx, deps = {}) {
     if (!posOrderId) return null;
     try {
       const rows = (await pool.query(WEBHOOKS_SQL, [String(posOrderId)])).rows || [];
-      return { ...posMilestones(rows), n: rows.length };
+      // ⚡ RT1: lastAt = آخر ويبهوك وصل — الكنس بيحسب منه كام ثانية اتأخّر لو هو اللي لمّ المحطة
+      const last = rows.length ? rows[rows.length - 1] : null;
+      return { ...posMilestones(rows), n: rows.length, lastAt: last && last.received_at ? new Date(last.received_at).toISOString() : null };
     } catch { return null; }   // tsp_webhooks لسه ماتعملتش
   }
 
   /* بيكتب «جاهز» و«تسليم للمندوب» بأوقات الضغط الحقيقية — مرة واحدة لكل
-     محطة (الشرط في جملة الـUPDATE نفسها)، وبيطلّع حدث لكل واحدة. */
-  async function applyPosMilestones(r, pm) {
+     محطة (الشرط في جملة الـUPDATE نفسها)، وبيطلّع حدث لكل واحدة.
+     ⚡ RT1 (عمر ١٧/١٠): إشعار «طلبك جاهز» ماعادش بيتشال لمجرد إن القفل وصل في نفس
+     الدفعة — «موصلتش رسايل واتساب إن الطلب جاهز». بيتشال بس لو القفل جه بعد «جاهز»
+     بأكتر من shop.readyNotifyGraceMin (١٠ د افتراضياً، من اللوحة) — يعني «جاهز»
+     قديمة والعميل استلم فعلاً من زمان. القرار نفسه في prepstatus.readyNotifyDue.
+     الصف r بيتحدّث في الذاكرة بعد كل محطة عشان نداء تاني في نفس الدورة
+     (الكنس أو ويبهوك تاني) مايحاولش يكتبها تاني. */
+  async function applyPosMilestones(r, pm, opts = {}) {
     const out = { ready: false, handed: false };
     const did = (u) => u && (u.rowCount == null || u.rowCount > 0);
     if (pm.readyAt && !r.pos_ready_at) {
@@ -2460,12 +2469,22 @@ export function register(app, ctx, deps = {}) {
         [r.order_no, pm.readyAt, pm.readyBasis || "pos", pm.closedAt && r.option !== "delivery" ? null : "pickup_ready"]);
       if (did(u)) {
         out.ready = true;
+        r.pos_ready_at = pm.readyAt;
         emitOrder("pos_ready", { orderNo: r.order_no, source: "shop",
           data: { source: "pos", by: null, approval: pm.readyBasis === "pos_closed" ? "delivered" : "pickup_ready", at: pm.readyAt, basis: pm.readyBasis } });
-        /* الاستلام/الطاولة: العميل يعرف إن طلبه جاهز — إلا لو الكاشير قفل
-           الطلب في نفس اللحظة (ساعتها رسالة «استلمت طلبك» جاية حالاً). */
-        if (r.option !== "delivery" && !pm.closedAt && notify && typeof notify.orderReady === "function") {
-          notify.orderReady(String(r.order_no)).catch((e) => console.error(`[shop] ready notify failed for ${r.order_no}:`, e.message));
+        /* الاستلام/الطاولة: العميل يعرف إن طلبه جاهز — إلا لو القفل جه بعد «جاهز»
+           بأكتر من المهلة (ساعتها رسالة «استلمت طلبك» هي اللي في وقتها). */
+        if (r.option !== "delivery") {
+          let graceMin = opts.graceMin;
+          if (graceMin == null) graceMin = readyGraceMinOf(await getSettingsData().catch(() => ({})));
+          const due = readyNotifyDue({ option: r.option, readyAt: pm.readyAt, closedAt: pm.closedAt, readyBasis: pm.readyBasis, graceMin });
+          if (due && notify && typeof notify.orderReady === "function") {
+            notify.orderReady(String(r.order_no)).catch((e) => console.error(`[shop] ready notify failed for ${r.order_no}:`, e.message));
+          } else if (!due && pm.closedAt && pm.readyBasis === "pos_ready") {
+            // بيبان في تتبع الطلب ليه مفيش إشعار «جاهز» (زي no_subscriptions)
+            emitOrder("notify_sent", { orderNo: r.order_no, source: "notify", channel: "none", ok: false,
+              data: { ok: false, stage: "ready", channel: "none", reason: "closed_after_grace", graceMin } });
+          }
         }
       }
     }
@@ -2475,12 +2494,271 @@ export function register(app, ctx, deps = {}) {
           WHERE order_no = $1 AND (handed_at IS NULL OR handed_source = 'courier')`, [r.order_no, pm.closedAt]);
       if (did(u)) {
         out.handed = true;
+        r.handed_at = pm.closedAt; r.handed_source = "pos";
         emitOrder("staff_action", { orderNo: r.order_no, source: "shop",
           summary: "الكاشير سلّم الطلب للمندوب (نقطة البيع)",
           data: { action: "handed_to_courier", via: "pos", at: pm.closedAt } });
       }
     }
     return out;
+  }
+
+  /* ═══ ⚡ RT1 (عمر ١٧/١٠): معالجة طلب واحد من ويبهوكات نقطة البيع — تنفيذ واحد ═══
+     «التحديثات موصلتش بشكل فوري»: الويبهوك كان بيتسجّل في tsp_webhooks وبس، والكنس
+     (كل ١٢٠ ث) هو اللي بيطبّقه ⇒ العميل والبورتال وواتساب بيعرفوا «جاهز» بعد
+     ٥٦–٧٩ ث (قياس ١٧/١٠). دلوقتي جسم كل خطوة من خطوات الكنس (١ب/١ج/٢) طلع في
+     دالة لوحده، والكنس والويبهوك الفوري بيناديا **نفس** الدوال:
+       readyStep        ١ب) «جاهز» / «تسليم للمندوب» بعد القبول
+       pickupCloseStep  ١ج) الاستلام: الكاشير قفل الطلب ⇒ collected_at + delivered
+       inboxStep        ٢)  الطلب في صندوق نقطة البيع: قَبِل ولا رفض؟
+       processPosOrder  طلب واحد، الخطوات بنفس ترتيب الكنس، تحت قفل الطلب
+       applyWebhookFor  من الويبهوك: يلاقي الطلب بـpos_order_id ويطبّق ويسجّل الفرق
+
+     الأمان ضد التكرار (الكنس ممكن يشتغل في نفس اللحظة، وحاويتين وقت الـrollover):
+       ١) جمل الـUPDATE نفسها مشروطة (pos_ready_at IS NULL / handed_at IS NULL …)
+          والحدث والإشعار بيطلعوا بس لو الجملة غيّرت صف — ده الضمان الحقيقي عبر
+          العمليات.
+       ٢) قفل لكل طلب جوّه العملية (withOrderLock) بيرتّب الويبهوك والكنس ورا بعض
+          فمايتسابقوش على نفس الصف ومايتعملش نداء شبكة مكرر.
+       ٣) الصف بيتحدّث في الذاكرة بعد كل محطة (applyPosMilestones). */
+  const _orderLocks = new Map();
+  function withOrderLock(key, fn) {
+    const k = String(key);
+    const prev = _orderLocks.get(k) || Promise.resolve();
+    const run = prev.then(fn);
+    const tail = run.then(() => undefined, () => undefined).then(() => { if (_orderLocks.get(k) === tail) _orderLocks.delete(k); });
+    _orderLocks.set(k, tail);
+    return run;
+  }
+  const READY_WATCH = new Set(["accepted", "courier_requested", "courier_assigned", "on_the_way", "out_for_delivery", "courier_cancelled"]);
+  const LAST_APPROVAL_SQL = `SELECT jsonb_build_object('resource', jsonb_build_object('statuses_slugs',
+                    payload->'resource'->'statuses_slugs')) AS payload
+             FROM tsp_webhooks
+            WHERE payload->'resource'->'order'->>'id' = $1
+            ORDER BY received_at DESC LIMIT 1`;
+  const changedAny = (a) => Boolean(a && (a.ready || a.handed || a.closed || a.accepted || a.rejected));
+  // الكنس لمّ محطة الويبهوك الفوري فاتها ⇒ نفس حدث webhook_applied بس via=sweep، والفرق من آخر ويبهوك
+  function emitSweepApplied(r, pm, a) {
+    if (!changedAny(a)) return;
+    const recv = pm && pm.lastAt ? new Date(pm.lastAt).getTime() : NaN;
+    const lagMs = Number.isFinite(recv) ? Math.max(0, Date.now() - recv) : null;
+    emitOrder("webhook_applied", { orderNo: r.order_no, source: "shop", ok: true,
+      summary: "الكنس الاحتياطي طبّق تحديث نقطة البيع",
+      data: { via: "sweep", lagMs, lagSec: lagMs == null ? null : Math.round(lagMs / 100) / 10,
+              ready: Boolean(a.ready), handed: Boolean(a.handed), closed: Boolean(a.closed), accepted: Boolean(a.accepted), rejected: Boolean(a.rejected) } });
+  }
+
+  /* ١ب) «جاهز» بعد القبول (+ «تسليم للمندوب» للتوصيل). pm اختياري (الكنس بيبعته
+     لو قراه). الاحتياطي من غير ويبهوكات: آخر approval أو getOrder (١٦ سبتمبر). */
+  async function readyStep(r, pm, opts = {}) {
+    const out = { ready: false, handed: false };
+    if (pm === undefined) pm = await posMilestonesOf(r.pos_order_id);
+    if (pm && pm.n) { const a = await applyPosMilestones(r, pm, opts); out.ready = a.ready; out.handed = a.handed; return out; }
+    if (r.pos_ready_at) return out;
+    const wh = await pool.query(LAST_APPROVAL_SQL, [r.pos_order_id]);
+    let a = String(approvalFromWebhook(wh.rows[0]?.payload) || "").toLowerCase();
+    // طلب نزل من مسار المتجر العادي (الاحتياطي لما الشريك يفشل) مالوش webhooks
+    // شريك — «جاهز» بتاعه بيتقرا من getOrder زي الكنس الأصلي (16 سبتمبر).
+    if (!a) {
+      try { a = String(tsstore.approvalOf(await tsstore.getOrder(r.pos_order_id, r.branch_id)) || "").toLowerCase(); }
+      catch { /* مش متاح — الدورة الجاية */ }
+    }
+    if (a.includes("ready")) {
+      await pool.query(
+        `UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()),
+                ready_source = COALESCE(ready_source, 'pos'),
+                updated_at=NOW() WHERE order_no=$1`, [r.order_no, a]);
+      emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } });
+      r.pos_ready_at = new Date().toISOString();
+      out.ready = true;
+    }
+    return out;
+  }
+
+  /* ١ج) طلبات الاستلام اللي الكاشير سلّمها على تاب سينس (17 سبتمبر): تاب سينس
+     بيبعت approval_status=delivered / order_status=completed لما الطلب يتقفل،
+     واحنا ماكناش بنقراهم — فالطلب W1789590376537 فضل «مقبول» في شاشة المتابعة
+     بعد ما العميل استلمه. التوصيل مش هنا: الطلب بيتقفل بتحديثات المندوب.
+     ١٠/١٠: أوقات «جاهز» و«استلم» من الويبهوكات نفسها (مش وقت الكنس)،
+     و«استلم» بتتسجّل في collected_at. الإشارة لسه هي هي: completed.
+     ⚡ RT1: «جاهز» بتتسجّل بحدثها وإشعارها (لو جوّه المهلة) **قبل** القفل — قبل
+     كده الطلب اللي اتقبل واتجهّز واتقفل في نفس الفجوة كان بيتقفل من غير أي «جاهز». */
+  async function pickupCloseStep(r, pm, opts = {}) {
+    const out = { closed: false, ready: false };
+    if (pm === undefined) pm = await posMilestonesOf(r.pos_order_id);
+    if (pm && pm.n) {
+      if (pm.closedAt) {
+        if (!r.pos_ready_at) {
+          const a = await applyPosMilestones(r, pm, opts).catch((e) => { console.error(`[shop] ready before close failed for ${r.order_no}:`, e.message); return { ready: false }; });
+          out.ready = Boolean(a.ready);
+        }
+        await pool.query(
+          `UPDATE shop_orders SET pos_approval = 'delivered',
+                  pos_ready_at = COALESCE(pos_ready_at, $2::timestamptz),
+                  ready_source = COALESCE(ready_source, $3),
+                  collected_at = COALESCE(collected_at, $4::timestamptz)
+            WHERE order_no = $1`,
+          [r.order_no, pm.readyAt || pm.closedAt, pm.readyBasis || "pos_closed", pm.closedAt]);
+        await setStatus(r.order_no, "delivered", { note: "الكاشير سلّم الطلب (تاب سينس)" });
+        out.closed = true;
+      }
+      return out;
+    }
+    const wh = await pool.query(
+      `SELECT payload->'resource'->'statuses_slugs'->>'approval_status' AS a,
+              payload->'resource'->'statuses_slugs'->>'order_status' AS o,
+              payload->'resource'->'statuses_slugs'->>'payment_status' AS pay,
+              event
+         FROM tsp_webhooks
+        WHERE payload->'resource'->'order'->>'id' = $1
+        ORDER BY received_at DESC LIMIT 1`, [r.pos_order_id]);
+    const a = String(wh.rows[0]?.a || "").toLowerCase();
+    const o = String(wh.rows[0]?.o || "").toLowerCase();
+    const pay = String(wh.rows[0]?.pay || "").toLowerCase();
+    /* عمر (17 سبتمبر): «استلمت طلبك» تظهر بعد ما الطلب يتدفع على نقطة البيع —
+       ده دليل إن العميل استلم (الكاشير بيقفل الفاتورة وقت التسليم) — مش مجرد
+       «جاهز». فالإشارة هي payment_status=fully_paid (حدث order-paid) أو
+       order_status=completed؛ approval «delivered» لوحده مابيكفيش. */
+    /* ١٩/٩ مساءً: طلبات الموقع بتنزل تاب سينس «مدفوعة مسبقاً» (already_paid)
+       فـfully_paid/order-paid بيوصلوا لحظة إنشاء الطلب — الطلب W1789839510561
+       اتعلّم «استلم» بعد دقيقتين من الدفع ورسالة التقييم وصلت قبل ما العميل
+       يستلم. الإشارة الوحيدة الصح دلوقتي: الكاشير قفل الطلب (completed). */
+    void pay;
+    if (o === "completed") {
+      await pool.query(
+        "UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()) WHERE order_no=$1",
+        [r.order_no, a || o]);
+      await setStatus(r.order_no, "delivered", { note: "الكاشير سلّم الطلب (تاب سينس)" });
+      out.closed = true;
+    }
+    return out;
+  }
+
+  /* ٢) الطلب في صندوق نقطة البيع — الكاشير قَبِل ولا رفض؟
+     طلبات الشريك (already_paid) بتبلّغ حالتها عبر webhook مش عبر getOrder،
+     فبنقرا آخر approval_status اتسجّل لنفس رقم طلب الـPOS من tsp_webhooks.
+     ⚡ RT1: لو فيه ويبهوكات للطلب بنقراها **الأول** — getOrder كان بيترمي لطلبات
+     الشريك بعد نداء شبكة على الفاضي قبل كل قبول. اللي مالوش ويبهوكات (مسار
+     المتجر القديم) لسه بيتقرا من getOrder زي الأول. */
+  async function inboxStep(r, pm, opts = {}) {
+    const out = { accepted: false, rejected: false, ready: false, handed: false, approval: null };
+    if (pm === undefined) pm = await posMilestonesOf(r.pos_order_id);
+    const fromWebhook = async () => {
+      try { return approvalFromWebhook((await pool.query(LAST_APPROVAL_SQL, [r.pos_order_id])).rows[0]?.payload); }
+      catch { return null; }   // tsp_webhooks لسه ماتعملتش
+    };
+    let approval = pm && pm.n ? await fromWebhook() : null;
+    if (!approval) {
+      try { approval = tsstore.approvalOf(await tsstore.getOrder(r.pos_order_id, r.branch_id)); }
+      catch { /* طلبات API الشريك (مدفوعة مسبقاً) مالهاش getOrder */ }
+    }
+    if (!approval && !(pm && pm.n)) approval = await fromWebhook();
+    if (!approval) return out;
+    out.approval = approval;
+    await pool.query("UPDATE shop_orders SET pos_approval=$2, updated_at=NOW() WHERE order_no=$1",
+      [r.order_no, approval]);
+    const a = String(approval || "").toLowerCase();
+    // «مقبول» عند الشريك بيمر بمراحل: accepted → pickup_ready → …؛ كلها
+    // معناها إن الكاشير قَبِل الطلب، فنطلب الكابتن. «rejected/cancelled» رفض.
+    const acceptedLike = a.includes("accept") || a.includes("pickup_ready")
+      || a.includes("preparing") || a.includes("processing") || a.includes("ready");
+    const rejectedLike = a.includes("reject") || a.includes("cancel");
+    // «جاهز للاستلام»: أول ما الكاشير يسجّلها، بنثبّت وقت الجهوزية مرة واحدة.
+    // ("pickup_ready" وأي "ready" تدخل؛ accepted/preparing/processing مش منها.)
+    if (acceptedLike) {
+      /* وقت القبول = لحظة ضغطة الكاشير (الويبهوك)، مش لحظة ما الكنس شافها
+         (فرق وسيطه ١٫١ د ولحد دقيقتين) — وقت التحضير بيبدأ منها. */
+      await pool.query(
+        "UPDATE shop_orders SET accepted_at = COALESCE(accepted_at, $2::timestamptz) WHERE order_no=$1",
+        [r.order_no, (pm && pm.acceptedAt) || new Date().toISOString()])
+        .catch((e) => console.error(`[shop] accepted_at failed for ${r.order_no}:`, e.message));
+    }
+    if (pm && pm.n && !rejectedLike) {
+      const m = await applyPosMilestones(r, pm, opts);
+      out.ready = m.ready; out.handed = m.handed;
+    } else if (a.includes("ready")) {
+      await pool.query(
+        "UPDATE shop_orders SET pos_ready_at = COALESCE(pos_ready_at, NOW()), ready_source = COALESCE(ready_source, 'pos'), updated_at=NOW() WHERE order_no=$1",
+        [r.order_no]);
+      if (!r.pos_ready_at) { emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } }); out.ready = true; }
+    }
+    if (acceptedLike) {
+      await setStatus(r.order_no, "accepted", { from: "pos_created" });
+      out.accepted = true;
+      // طلب الكابتن في الخطوة 2b من الكنس: بعد «جاهز» أو بعد مهلة التحضير.
+    } else if (rejectedLike) {
+      // لو كنا طلبنا كابتن قبل الرفض, نلغي عندهم — رسوم الإلغاء أرخص من
+      // توصيلة كاملة لطلب المطعم اعتذر عنه.
+      if (r.option === "delivery" && delivery.cancelShipment) {
+        delivery.cancelShipment(r.order_no, `order ${r.order_no} rejected by restaurant`)
+          .catch((e) => console.error(`[shop] courier cancel failed for ${r.order_no}:`, e.message));
+      }
+      // Omar's rule: automatic refund, exactly once.
+      await refundOrder(await getOrderRow(r.order_no), `rejected by cashier`);
+      out.rejected = true;
+    }
+    return out;
+  }
+
+  /* طلب واحد، كل محطات نقطة البيع، بنفس ترتيب الكنس (١ب ← ١ج ← ٢) وتحت قفل
+     الطلب. r لازم يكون فيه: order_no, status, option, branch_id, pos_order_id,
+     pos_ready_at, handed_at, handed_source, total, mf_payment_id, refund_id. */
+  async function processPosOrder(r, opts = {}) {
+    return withOrderLock(r.order_no, async () => {
+      const out = { orderNo: r.order_no, status: String(r.status || ""), ready: false, handed: false, closed: false, accepted: false, rejected: false };
+      const pm = await posMilestonesOf(r.pos_order_id);
+      let status = out.status;
+      if (READY_WATCH.has(status) || (status === "delivered" && r.option === "delivery")) {
+        const a = await readyStep(r, pm, opts);
+        out.ready = a.ready; out.handed = a.handed;
+      }
+      if (r.option === "pickup" && (status === "pos_created" || status === "accepted")) {
+        const a = await pickupCloseStep(r, pm, opts);
+        out.ready = out.ready || a.ready;
+        if (a.closed) { out.closed = true; status = "delivered"; }
+      }
+      if (status === "pos_created") {
+        const a = await inboxStep(r, pm, opts);
+        out.accepted = a.accepted; out.rejected = a.rejected;
+        out.ready = out.ready || a.ready; out.handed = out.handed || a.handed;
+        if (a.accepted) status = "accepted"; else if (a.rejected) status = "rejected";
+      }
+      out.status = status;
+      return out;
+    });
+  }
+
+  /* من الويبهوك (tspartner.js): الطلب بـresource.order.id ↔ pos_order_id (أو
+     tenant_order_id ↔ pos_tenant_order_id — عندهم «freshcuts-4110» وعندنا الرقم بس).
+     بيرجع order_not_found بالسكات لطلبات الكاشير (معظم الويبهوكات). الحدث
+     webhook_applied بيسجّل الفرق بين وصول الويبهوك وتطبيقه (lagSec) — اللوحة
+     بتقرا p50/max من /api/system/health (ts_ready_lag). */
+  async function applyWebhookFor({ posOrderId, tenantOrderId = null, receivedAt = null, event = null, approval = null, orderStatus = null } = {}) {
+    const pid = posOrderId == null ? "" : String(posOrderId).trim();
+    const tid = tenantOrderId == null ? "" : String(tenantOrderId).trim();
+    const tidNum = (tid.match(/(\d+)\s*$/) || [])[1] || "";
+    if (!pid && !tid) return { ok: false, reason: "no_order_id" };
+    const row = (await pool.query(
+      `SELECT order_no, status, option, branch_id, pos_order_id, pos_ready_at, total, mf_payment_id, refund_id, created_at,
+              NULLIF(to_jsonb(shop_orders)->>'handed_at','') AS handed_at,
+              NULLIF(to_jsonb(shop_orders)->>'handed_source','') AS handed_source
+         FROM shop_orders
+        WHERE created_at > NOW() - INTERVAL '48 hours'
+          AND (($1 <> '' AND pos_order_id = $1)
+               OR ($2 <> '' AND NULLIF(to_jsonb(shop_orders)->>'pos_tenant_order_id','') IN ($2, $3)))
+        ORDER BY (pos_order_id = $1) DESC, created_at DESC LIMIT 1`, [pid, tid, tidNum || tid])).rows[0];
+    if (!row) return { ok: false, reason: "order_not_found" };
+    const t0 = Date.now();
+    const out = await processPosOrder(row, { via: "webhook" });
+    const recv = receivedAt ? new Date(receivedAt).getTime() : NaN;
+    const lagMs = Number.isFinite(recv) ? Math.max(0, Date.now() - recv) : null;
+    emitOrder("webhook_applied", { orderNo: row.order_no, source: "shop", ok: true,
+      summary: lagMs == null ? "اتطبّق تحديث نقطة البيع فور وصوله" : `اتطبّق تحديث نقطة البيع بعد ${(lagMs / 1000).toFixed(1)} ث من وصوله`,
+      data: { via: "webhook", event: event ? String(event).slice(0, 40) : null, approval: approval ? String(approval).slice(0, 40) : null,
+              orderStatus: orderStatus ? String(orderStatus).slice(0, 40) : null,
+              lagMs, lagSec: lagMs == null ? null : Math.round(lagMs / 100) / 10, workMs: Date.now() - t0,
+              ready: out.ready, handed: out.handed, closed: out.closed, accepted: out.accepted, rejected: out.rejected, status: out.status } });
+    return { ok: true, ...out, lagMs };
   }
 
   /* ── مهلة التحضير (عمر): من القبول لحد «جاهز» ≤ ٣٠ دقيقة ─────────────────
@@ -2702,31 +2980,14 @@ export function register(app, ctx, deps = {}) {
           AND (status IN ('accepted','courier_requested','courier_assigned','on_the_way','out_for_delivery','courier_cancelled')
                OR (status='delivered' AND option='delivery' AND updated_at > NOW() - INTERVAL '3 hours'))
           AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
+    // ⚡ RT1: الجسم في readyStep (نفس الدالة اللي الويبهوك الفوري بيناديها)
     for (const r of awaitingReady) {
       try {
-        const pm = await posMilestonesOf(r.pos_order_id);
-        if (pm && pm.n) { await applyPosMilestones(r, pm); continue; }
-        if (r.pos_ready_at) continue;
-        const wh = await pool.query(
-          `SELECT jsonb_build_object('resource', jsonb_build_object('statuses_slugs',
-                    payload->'resource'->'statuses_slugs')) AS payload
-             FROM tsp_webhooks
-            WHERE payload->'resource'->'order'->>'id' = $1
-            ORDER BY received_at DESC LIMIT 1`, [r.pos_order_id]);
-        let a = String(approvalFromWebhook(wh.rows[0]?.payload) || "").toLowerCase();
-        // طلب نزل من مسار المتجر العادي (الاحتياطي لما الشريك يفشل) مالوش webhooks
-        // شريك — «جاهز» بتاعه بيتقرا من getOrder زي الكنس الأصلي (16 سبتمبر).
-        if (!a) {
-          try { a = String(tsstore.approvalOf(await tsstore.getOrder(r.pos_order_id, r.branch_id)) || "").toLowerCase(); }
-          catch { /* مش متاح — الدورة الجاية */ }
-        }
-        if (a.includes("ready")) {
-          await pool.query(
-            `UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()),
-                    ready_source = COALESCE(ready_source, 'pos'),
-                    updated_at=NOW() WHERE order_no=$1`, [r.order_no, a]);
-          emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } });
-        }
+        await withOrderLock(r.order_no, async () => {
+          const pm = await posMilestonesOf(r.pos_order_id);
+          const a = await readyStep(r, pm, { via: "sweep" });
+          emitSweepApplied(r, pm, a);
+        });
       } catch { /* tsp_webhooks مش متاح — نجرّب الدورة الجاية */ }
     }
 
@@ -2734,55 +2995,19 @@ export function register(app, ctx, deps = {}) {
     // بيبعت approval_status=delivered / order_status=completed لما الطلب يتقفل،
     // واحنا ماكناش بنقراهم — فالطلب W1789590376537 فضل «مقبول» في شاشة المتابعة
     // بعد ما العميل استلمه. التوصيل مش هنا: الطلب بيتقفل بتحديثات المندوب.
+    // ⚡ RT1: بنقرا pos_ready_at كمان عشان «جاهز» اللي ١ب سجّلها لسه ماتتكتبش تاني؛ الجسم في pickupCloseStep
     const pickupOpen = (await pool.query(
-      `SELECT order_no, pos_order_id FROM shop_orders
+      `SELECT order_no, pos_order_id, option, pos_ready_at FROM shop_orders
         WHERE option='pickup' AND pos_order_id IS NOT NULL
           AND status IN ('pos_created','accepted')
           AND created_at > NOW() - INTERVAL '48 hours'`)).rows;
     for (const r of pickupOpen) {
       try {
-        /* ١٠/١٠: أوقات «جاهز» و«استلم» من الويبهوكات نفسها (مش وقت الكنس)،
-           و«استلم» بتتسجّل في collected_at. الإشارة لسه هي هي: completed. */
-        const pm = await posMilestonesOf(r.pos_order_id);
-        if (pm && pm.n) {
-          if (pm.closedAt) {
-            await pool.query(
-              `UPDATE shop_orders SET pos_approval = 'delivered',
-                      pos_ready_at = COALESCE(pos_ready_at, $2::timestamptz),
-                      ready_source = COALESCE(ready_source, $3),
-                      collected_at = COALESCE(collected_at, $4::timestamptz)
-                WHERE order_no = $1`,
-              [r.order_no, pm.readyAt || pm.closedAt, pm.readyBasis || "pos_closed", pm.closedAt]);
-            await setStatus(r.order_no, "delivered", { note: "الكاشير سلّم الطلب (تاب سينس)" });
-          }
-          continue;
-        }
-        const wh = await pool.query(
-          `SELECT payload->'resource'->'statuses_slugs'->>'approval_status' AS a,
-                  payload->'resource'->'statuses_slugs'->>'order_status' AS o,
-                  payload->'resource'->'statuses_slugs'->>'payment_status' AS pay,
-                  event
-             FROM tsp_webhooks
-            WHERE payload->'resource'->'order'->>'id' = $1
-            ORDER BY received_at DESC LIMIT 1`, [r.pos_order_id]);
-        const a = String(wh.rows[0]?.a || "").toLowerCase();
-        const o = String(wh.rows[0]?.o || "").toLowerCase();
-        const pay = String(wh.rows[0]?.pay || "").toLowerCase();
-        /* عمر (17 سبتمبر): «استلمت طلبك» تظهر بعد ما الطلب يتدفع على نقطة البيع —
-           ده دليل إن العميل استلم (الكاشير بيقفل الفاتورة وقت التسليم) — مش مجرد
-           «جاهز». فالإشارة هي payment_status=fully_paid (حدث order-paid) أو
-           order_status=completed؛ approval «delivered» لوحده مابيكفيش. */
-        /* ١٩/٩ مساءً: طلبات الموقع بتنزل تاب سينس «مدفوعة مسبقاً» (already_paid)
-           فـfully_paid/order-paid بيوصلوا لحظة إنشاء الطلب — الطلب W1789839510561
-           اتعلّم «استلم» بعد دقيقتين من الدفع ورسالة التقييم وصلت قبل ما العميل
-           يستلم. الإشارة الوحيدة الصح دلوقتي: الكاشير قفل الطلب (completed). */
-        void pay;
-        if (o === "completed") {
-          await pool.query(
-            "UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()) WHERE order_no=$1",
-            [r.order_no, a || o]);
-          await setStatus(r.order_no, "delivered", { note: "الكاشير سلّم الطلب (تاب سينس)" });
-        }
+        await withOrderLock(r.order_no, async () => {
+          const pm = await posMilestonesOf(r.pos_order_id);
+          const a = await pickupCloseStep(r, pm, { via: "sweep" });
+          emitSweepApplied(r, pm, a);
+        });
       } catch { /* الدورة الجاية */ }
     }
 
@@ -2792,66 +3017,13 @@ export function register(app, ctx, deps = {}) {
          FROM shop_orders
         WHERE status='pos_created' AND pos_order_id IS NOT NULL
           AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
+    // ⚡ RT1: الجسم في inboxStep (نفس الدالة اللي الويبهوك الفوري بيناديها)
     for (const r of watching) {
-      let approval = null;
-      try {
-        const posOrder = await tsstore.getOrder(r.pos_order_id, r.branch_id);
-        approval = tsstore.approvalOf(posOrder);
-      } catch { /* طلبات API الشريك (مدفوعة مسبقاً) مالهاش getOrder — بنقرا من الـwebhook تحت */ }
-      // طلبات الشريك (already_paid) بتبلّغ حالتها عبر webhook مش عبر getOrder،
-      // فبنقرا آخر approval_status اتسجّل لنفس رقم طلب الـPOS من tsp_webhooks.
-      if (!approval) {
-        try {
-          const wh = await pool.query(
-            `SELECT jsonb_build_object('resource', jsonb_build_object('statuses_slugs',
-                      payload->'resource'->'statuses_slugs')) AS payload
-               FROM tsp_webhooks
-              WHERE payload->'resource'->'order'->>'id' = $1
-              ORDER BY received_at DESC LIMIT 1`, [r.pos_order_id]);
-          approval = approvalFromWebhook(wh.rows[0]?.payload);
-        } catch { /* tsp_webhooks لسه ماتعملتش */ }
-      }
-      if (!approval) continue;
-      await pool.query("UPDATE shop_orders SET pos_approval=$2, updated_at=NOW() WHERE order_no=$1",
-        [r.order_no, approval]);
-      const a = String(approval || "").toLowerCase();
-      // «مقبول» عند الشريك بيمر بمراحل: accepted → pickup_ready → …؛ كلها
-      // معناها إن الكاشير قَبِل الطلب، فنطلب الكابتن. «rejected/cancelled» رفض.
-      const acceptedLike = a.includes("accept") || a.includes("pickup_ready")
-        || a.includes("preparing") || a.includes("processing") || a.includes("ready");
-      const rejectedLike = a.includes("reject") || a.includes("cancel");
-      // «جاهز للاستلام»: أول ما الكاشير يسجّلها، بنثبّت وقت الجهوزية مرة واحدة.
-      // ("pickup_ready" وأي "ready" تدخل؛ accepted/preparing/processing مش منها.)
-      const pm = await posMilestonesOf(r.pos_order_id);
-      if (acceptedLike) {
-        /* وقت القبول = لحظة ضغطة الكاشير (الويبهوك)، مش لحظة ما الكنس شافها
-           (فرق وسيطه ١٫١ د ولحد دقيقتين) — وقت التحضير بيبدأ منها. */
-        await pool.query(
-          "UPDATE shop_orders SET accepted_at = COALESCE(accepted_at, $2::timestamptz) WHERE order_no=$1",
-          [r.order_no, (pm && pm.acceptedAt) || new Date().toISOString()])
-          .catch((e) => console.error(`[shop] accepted_at failed for ${r.order_no}:`, e.message));
-      }
-      if (pm && pm.n && !rejectedLike) {
-        await applyPosMilestones(r, pm);
-      } else if (a.includes("ready")) {
-        await pool.query(
-          "UPDATE shop_orders SET pos_ready_at = COALESCE(pos_ready_at, NOW()), ready_source = COALESCE(ready_source, 'pos'), updated_at=NOW() WHERE order_no=$1",
-          [r.order_no]);
-        if (!r.pos_ready_at) emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } });
-      }
-      if (acceptedLike) {
-        await setStatus(r.order_no, "accepted", { from: "pos_created" });
-        // طلب الكابتن اتنقل للخطوة 2b تحت: بعد «جاهز» أو بعد مهلة التحضير.
-      } else if (rejectedLike) {
-        // لو كنا طلبنا كابتن قبل الرفض, نلغي عندهم — رسوم الإلغاء أرخص من
-        // توصيلة كاملة لطلب المطعم اعتذر عنه.
-        if (r.option === "delivery" && delivery.cancelShipment) {
-          delivery.cancelShipment(r.order_no, `order ${r.order_no} rejected by restaurant`)
-            .catch((e) => console.error(`[shop] courier cancel failed for ${r.order_no}:`, e.message));
-        }
-        // Omar's rule: automatic refund, exactly once.
-        await refundOrder(await getOrderRow(r.order_no), `rejected by cashier`);
-      }
+      await withOrderLock(r.order_no, async () => {
+        const pm = await posMilestonesOf(r.pos_order_id);
+        const a = await inboxStep(r, pm, { via: "sweep" });
+        emitSweepApplied(r, pm, a);
+      });
     }
 
     // 2b) طلب المندوب في وقته — بعد ما الكاشير يسجّل «جاهز» (الخطوة 1b بتقراها)
@@ -2936,10 +3108,29 @@ export function register(app, ctx, deps = {}) {
     await watchdog().catch((e) => console.error("[shop] watchdog failed:", e.message));
   }
 
-  const sweepSec = Number(env("SHOP_SWEEP_SECONDS", "120"));
-  if (sweepSec > 0) {
-    setInterval(() => sweep().catch((e) => console.error("[shop] sweep failed:", e.message)), sweepSec * 1000);
+  /* ⚡ RT1 (١٧/١٠): الكنس بقى شبكة أمان — فترته من اللوحة (shop.sweepSec، ٣٠–٦٠٠ ث،
+     افتراضي ١٢٠) وبتتقري كل دورة من غير ريستارت. SHOP_SWEEP_SECONDS احتياطي بس
+     لو الخانة فاضية، و"0" بيقفل المؤقّت خالص (الاختبارات / طوارئ). الدورة الجاية
+     بتتحجز بعد ما الحالية تخلص فمفيش تداخل، والمؤقّت unref فمابيمسكش العملية. */
+  const envRead = (k) => process.env[k];
+  async function nextSweepSec() {
+    try { return sweepSecOf(await getSettingsData(), envRead); }
+    catch { return sweepSecOf({}, envRead); }
+  }
+  let _sweepTimer = null;
+  async function sweepLoop() {
+    try { await sweep(); } catch (e) { console.error("[shop] sweep failed:", e.message); }
+    const sec = await nextSweepSec();
+    _sweepTimer = setTimeout(sweepLoop, sec * 1000);
+    if (_sweepTimer && typeof _sweepTimer.unref === "function") _sweepTimer.unref();
+  }
+  if (env("SHOP_SWEEP_SECONDS", "") !== "0") {
+    nextSweepSec().then((sec) => {
+      _sweepTimer = setTimeout(sweepLoop, sec * 1000);
+      if (_sweepTimer && typeof _sweepTimer.unref === "function") _sweepTimer.unref();
+    });
   }
 
-  return { confirmOrder, onShipmentEvent, sweep, refundOrder, watchdog, setStatus, getOrderRow, createPosOrder, prepWatch, posMilestonesOf, applyPosMilestones };
+  return { confirmOrder, onShipmentEvent, sweep, refundOrder, watchdog, setStatus, getOrderRow, createPosOrder, prepWatch, posMilestonesOf, applyPosMilestones,
+    processPosOrder, applyWebhookFor, nextSweepSec };   // ⚡ RT1
 }

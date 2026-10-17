@@ -70,6 +70,8 @@ export const SERVER_OWNED_PATHS = [
   "shop.recommendations",       // recs.js
   "shop.checkout2Default",      // recs.js (مفتاح «التجربة الجديدة لكل العملاء»)
   "shop.addressFirst",          // recs.js (مفتاح «العنوان قبل رقم الجوال» — G2)
+  "shop.sweepSec",              // deliverycontrol.js (⚡ RT1: PUT /api/delivery/control بـjsonb_set — شاشة المتجر القديمة ماتدوسش عليه)
+  "shop.readyNotifyGraceMin",   // deliverycontrol.js (⚡ RT1)
   "freeBar",                    // freebar.js (شريط التوصيل المجاني — /api/delivery/free-bar)
   "portals",                    // portalsessions.js (جلسات البوابات — POST /api/portals/settings، المالك)
   "staffKpi",                   // staffkpi.js (KP1: أهداف أداء الفريق — POST /api/cms/staff-kpis/settings، المالك)

@@ -47,7 +47,33 @@ test("المفاتيح اللي عمر سمّاها موجودة كلها", () =
     "delivery.leajlakContract.kmTolerance", "delivery.leajlakContract.cancelFeeExVat",
     "delivery.alertPhones", "delivery.newOrderPhones", "delivery.pickupAddress",
     "delivery.districtCouriers.enabled",
+    "shop.sweepSec", "shop.readyNotifyGraceMin",      // ⚡ RT1 (١٧/١٠)
   ]) assert.ok(spec(p), `ناقص: ${p}`);
+});
+
+/* ⚡ RT1 (١٧/١٠): الكنس الاحتياطي ومهلة إشعار «جاهز» — خانتين في اللوحة بحدود وافتراضيات، وenv احتياطي بس */
+test("RT1: shop.sweepSec و shop.readyNotifyGraceMin في مجموعة «توقيت طلب المندوب» بحدودهم وافتراضياتهم", () => {
+  const sw = spec("shop.sweepSec"), gr = spec("shop.readyNotifyGraceMin");
+  assert.deepEqual([sw.group, sw.type, sw.min, sw.max], ["dispatch", "int", 30, 600]);
+  assert.deepEqual([gr.group, gr.type, gr.min, gr.max], ["dispatch", "int", 0, 120]);
+  assert.ok(/ثانية/.test(sw.label) && sw.hint.length > 40 && /SHOP_SWEEP_SECONDS/.test(sw.hint));
+  assert.ok(/جاهز/.test(gr.label) && gr.hint.length > 40);
+  // فاضي ⇒ ١٢٠ / ١٠ من الكود
+  assert.equal(effectiveOf("shop.sweepSec", {}, noEnv), 120);
+  assert.equal(effectiveOf("shop.readyNotifyGraceMin", {}, noEnv), 10);
+  assert.equal(sourceOf("shop.sweepSec", {}, noEnv).kind, "default");
+  // env احتياطي لو الخانة فاضية (ومتعلّم إنه من Coolify)، واللوحة بتكسبه
+  const env45 = (k) => (k === "SHOP_SWEEP_SECONDS" ? "45" : "");
+  assert.equal(effectiveOf("shop.sweepSec", {}, env45), 45);
+  assert.equal(sourceOf("shop.sweepSec", {}, env45).kind, "env");
+  assert.equal(effectiveOf("shop.sweepSec", { shop: { sweepSec: 300 } }, env45), 300);
+  assert.equal(sourceOf("shop.sweepSec", { shop: { sweepSec: 300 } }, env45).kind, "settings");
+  // بره المدى ⇒ الافتراضي (والحفظ أصلاً بيرفضها)
+  assert.equal(effectiveOf("shop.sweepSec", { shop: { sweepSec: 5 } }, noEnv), 120);
+  assert.equal(effectiveOf("shop.readyNotifyGraceMin", { shop: { readyNotifyGraceMin: 999 } }, noEnv), 10);
+  assert.equal(coerceField(sw, 10).ok, false);
+  assert.equal(coerceField(gr, 0).ok, true, "٠ مسموح = السلوك القديم");
+  assert.equal(validatePatch({ "shop.sweepSec": 60, "shop.readyNotifyGraceMin": 15 }).ok, true);
 });
 
 /* ── العنونة ────────────────────────────────────────────────────────────── */

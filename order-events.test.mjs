@@ -43,6 +43,7 @@ test("ORDER_EVENTS matches master plan §4-1 (+ محطّتا المندوب، ١
     "courier_arrived", "courier_picked",
     "sla_alert", "notify_sent", "refund", "staff_note", "staff_call", "staff_action",
     "customer_note",      // MJ1 (١٧/١٠): ملاحظة العميل على طلبه الشغّال من واتساب
+    "webhook_applied",    // ⚡ RT1 (١٧/١٠): ويبهوك نقطة البيع اتطبّق على الطلب (الفرق بين وصوله وتطبيقه)
   ].sort());
   assert.equal(new Set(ORDER_EVENTS).size, ORDER_EVENTS.length);
   assert.ok(Object.isFrozen(ORDER_EVENTS));

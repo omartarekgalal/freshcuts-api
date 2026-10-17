@@ -61,6 +61,14 @@ export function overallOf(components) {
   return { tone, counts: n, line };
 }
 
+/** ⚡ RT1: لون مكوّن «سرعة تطبيق جاهز» — وسيط ≤ ٥ ث أخضر، ≤ ٦٠ أصفر، فوقها أحمر؛ وأصفر لو الكنس لمّ أكتر من خُمس التحديثات. صافية. */
+export function readyLagTone({ n = 0, bySweep = 0, p50 = null } = {}) {
+  if (!n || p50 == null) return "unknown";
+  if (p50 > 60) return "bad";
+  if (p50 > 5 || bySweep > n / 5) return "warn";
+  return "good";
+}
+
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData } = ctx;
   const tsp = deps.tsp || (() => null);
@@ -154,6 +162,28 @@ export function register(app, ctx, deps = {}) {
         r.last ? `آخر حدث ${ago(minsSince(r.last))} — ${ar(r.n24)} حدث في ٢٤ ساعة لـ${ar(o.n)} طلب أونلاين.` : "عمرنا ما استلمنا حدث.",
         { last: r.last, detail: { events24h: r.n24, onlineOrders24h: o.n },
           fix: st === "bad" ? "الطلبات بتتقفل «جاهز» بالمسح الاحتياطي كل دقيقتين — كلّم تاب سينس لو الأحداث وقفت." : null });
+    });
+
+    /* ⚡ RT1 (١٧/١٠): «زمن وصول جاهز من نقطة البيع» — كام ثانية بين وصول ويبهوك تاب سينس
+       (قبول/جاهز/قفل) وتطبيقه على طلب أونلاين (shop_order_events.webhook_applied.lagSec).
+       قبل RT1 كان ٥٦–٧٩ ث (الكنس). via=sweep = الويبهوك الفوري فاته وشبكة الأمان لمّته. */
+    add("ts_ready_lag", "tabsense", "تاب سينس — سرعة تطبيق «جاهز/قبول/قفل» على الطلب", async () => {
+      const r = await q1(`SELECT count(*)::int AS n,
+                                 count(*) FILTER (WHERE data->>'via' = 'sweep')::int AS by_sweep,
+                                 percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'lagSec')::numeric) AS p50,
+                                 max((data->>'lagSec')::numeric) AS mx, max(at) AS last
+                            FROM shop_order_events
+                           WHERE name = 'webhook_applied' AND at > NOW() - interval '24 hours'
+                             AND (data->>'lagSec') ~ '^[0-9]+(\\.[0-9]+)?$'`);
+      const n = Number(r.n) || 0, bySweep = Number(r.by_sweep) || 0;
+      const p50 = r.p50 == null ? null : Math.round(Number(r.p50) * 10) / 10;
+      const mx = r.mx == null ? null : Math.round(Number(r.mx) * 10) / 10;
+      const st = readyLagTone({ n, bySweep, p50 });
+      const line = !n ? "مفيش ويبهوك اتطبّق على طلب أونلاين في آخر ٢٤ ساعة (طبيعي لو مفيش طلبات)."
+        : `وسيط ${ar(p50)} ث وأقصى ${ar(mx)} ث لـ${ar(n)} تحديث في ٢٤ ساعة${bySweep ? ` — ${ar(bySweep)} منهم لمّهم الكنس مش الويبهوك الفوري` : ""}.`;
+      return comp("ts_ready_lag", "tabsense", "تاب سينس — سرعة تطبيق «جاهز/قبول/قفل» على الطلب", st, line,
+        { last: r.last, detail: { n24: n, bySweep, p50Sec: p50, maxSec: mx },
+          fix: st === "bad" ? "الويبهوك الفوري واقف والكنس هو اللي شغّال — راجع لوج الـapi على [tspartner] webhook apply، وقصّر «الكنس الاحتياطي» من لوحة التوصيل لحد ما يتصلّح." : null });
     });
 
     add("ts_sync", "tabsense", "سحب طلبات نقطة البيع (ts_orders)", async () => {
@@ -395,7 +425,10 @@ export function register(app, ctx, deps = {}) {
     });
 
     const components = await Promise.all(checks);
-    return { ok: true, at: new Date().toISOString(), open, overall: overallOf(components), components,
+    // ⚡ RT1: رقم قراءة بس للوحة — p50/max لآخر ٢٤ ساعة (نفس تفاصيل مكوّن ts_ready_lag)
+    const lagC = components.find((x) => x && x.id === "ts_ready_lag");
+    const posReadyLag = lagC && lagC.detail ? { p50Sec: lagC.detail.p50Sec ?? null, maxSec: lagC.detail.maxSec ?? null, n24: lagC.detail.n24 ?? 0, bySweep: lagC.detail.bySweep ?? 0 } : null;
+    return { ok: true, at: new Date().toISOString(), open, overall: overallOf(components), components, posReadyLag,
       groups: { core: "الأساس", tabsense: "تاب سينس", ops: "التشغيل والدفع", marketing: "الإعلانات والنشر", customers: "العملاء والرسايل" } };
   }
 

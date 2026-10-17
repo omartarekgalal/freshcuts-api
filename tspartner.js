@@ -109,8 +109,10 @@ export function partnerPurchase(it, defaultTax) {
   };
 }
 
-export function register(app, ctx) {
+export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, jb } = ctx;
+  // ⚡ RT1 (١٧/١٠): shop.js بيتسجّل قبلنا في index.js، بس الربط late-bound زي باقي الموديولات
+  const shop = typeof deps.shop === "function" ? deps.shop : () => null;
 
   async function ensureSchema() {
     await pool.query(`
@@ -528,16 +530,53 @@ export function register(app, ctx) {
   /* استقبال إشعارات تاب سينس بحالة الطلبات (order-paid/updated/refunded…).
      المسجّل عندهم: freshcutspos.o2m8.me/webhooks/. بنسجّل ونرجّع 200 دايماً
      عشان مايعيدوش الإرسال. الربط بحالة shop_orders بيتبني بعد أول payload حقيقي. */
+  /* ⚡ RT1 (عمر ١٧/١٠): «التحديثات موصلتش فوري … وموصلتش رسايل واتساب إن الطلب جاهز».
+     قبل كده الويبهوك كان بيتسجّل وبس، والكنس (كل ١٢٠ ث) هو اللي بيطبّقه — القياس
+     النهارده: pickup_ready وصل ١٩:١٨:٥٨ واتطبّق ١٩:٢٠:١٧ (٧٩ ث)، وتاني ٥٦ ث.
+     دلوقتي بعد التسجيل بننادي shop.applyWebhookFor لنفس الطلب فوراً (نفس منطق
+     الكنس بالظبط — دالة واحدة). في الخلفية: الرد 200 بيطلع زي ما هو من غير ما
+     يستنى، وأي خطأ في التطبيق بيتسجّل في اللوج بس — عمره ما يغيّر الرد ولا يخلّي
+     تاب سينس يعيد الإرسال. الويبهوكات اللي مش لطلب أونلاين (طلبات الكاشير)
+     بترجع order_not_found بالسكات. */
+  const inflight = new Set();
+  function applyNow(body, stored) {
+    let p = null;
+    try {
+      const o = body && body.resource && body.resource.order;
+      const posOrderId = o && o.id != null ? String(o.id).trim() : "";
+      if (!posOrderId) return null;
+      const s = shop();
+      if (!s || typeof s.applyWebhookFor !== "function") return null;
+      const slugs = (body.resource && body.resource.statuses_slugs) || {};
+      const receivedAt = (stored && stored.received_at) || new Date();
+      p = Promise.resolve().then(() => s.applyWebhookFor({
+        posOrderId, tenantOrderId: o.tenant_order_id ?? null, receivedAt,
+        event: body.event || body.type || body.event_type || null,
+        approval: slugs.approval_status ?? null, orderStatus: slugs.order_status ?? null,
+      }));
+    } catch (e) { console.error("[tspartner] webhook apply setup failed:", e && e.message); return null; }
+    const done = p.then(
+      (r) => { if (r && r.ok && (r.ready || r.handed || r.closed || r.accepted || r.rejected)) console.log(`[tspartner] webhook applied ${r.orderNo}: ${JSON.stringify({ ready: r.ready, handed: r.handed, closed: r.closed, accepted: r.accepted, rejected: r.rejected, lagMs: r.lagMs })}`); },
+      (e) => console.error("[tspartner] webhook apply failed:", e && e.message));
+    inflight.add(done);
+    done.then(() => inflight.delete(done));
+    return done;
+  }
+
   const webhook = async (c) => {
     let body = null;
     try { body = await c.req.json(); } catch { try { body = await c.req.text(); } catch {} }
+    let stored = null;
     try {
       await pool.query(
         `CREATE TABLE IF NOT EXISTS tsp_webhooks (id BIGSERIAL PRIMARY KEY, received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), event TEXT, payload JSONB)`);
       const ev = (body && (body.event || body.type || body.event_type)) || null;
-      await pool.query("INSERT INTO tsp_webhooks(event, payload) VALUES ($1,$2)", [ev, jb(body)]);
+      const ins = await pool.query("INSERT INTO tsp_webhooks(event, payload) VALUES ($1,$2) RETURNING id, received_at", [ev, jb(body)]);
+      stored = (ins && ins.rows && ins.rows[0]) || null;
       console.log(`[tspartner] webhook: ${ev || "?"} ${JSON.stringify(body).slice(0, 200)}`);
     } catch (e) { console.error("[tspartner] webhook store failed:", e.message); }
+    // ⚡ RT1: التطبيق الفوري — من غير await، ومن غير ما يقدر يلمس الرد
+    try { if (body && typeof body === "object") applyNow(body, stored); } catch { /* الرد 200 دايماً */ }
     return c.json({ ok: true });
   };
   app.post("/webhooks/", webhook);
@@ -635,5 +674,7 @@ export function register(app, ctx) {
     const { byTenant } = await loadProducts();
     return [...byTenant.values()];
   }
-  return { api, accessToken, status, authorizeUrl, exchangeCode, refresh, createExternalOrder, catalog, keepTokenFresh, listProducts };
+  // ⚡ RT1: الاختبارات بتستنى معالجات الويبهوك اللي في الخلفية
+  const drainWebhooks = () => Promise.all([...inflight]).then(() => undefined);
+  return { api, accessToken, status, authorizeUrl, exchangeCode, refresh, createExternalOrder, catalog, keepTokenFresh, listProducts, drainWebhooks };
 }
