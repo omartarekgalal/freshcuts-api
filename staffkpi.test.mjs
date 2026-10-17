@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   TARGET_DEFS, kpiTargets, parseTargets, kpiRange, directoryOf, makeIndex, AUTO_BY, SQL, SOURCE_AR, shapeKpis, collect, register,
-  PRESENCE_DAY_UPSERT, PRESENCE_DAY_DDL, presenceDayParams, MAX_DAYS,
+  PRESENCE_DAY_UPSERT, PRESENCE_DAY_DDL, presenceDayParams, MAX_DAYS, PAID_AT,
 } from "./staffkpi.js";
 import { SERVER_OWNED_PATHS } from "./settings-guard.js";
 
@@ -60,8 +60,32 @@ test("SQL: كله قراية، معلّم، على $1/$2، ومن غير أرق�
   }
   for (const k of ["ack", "handed", "handovers", "firstReply", "reviewFirst", "notices", "tableCalls"]) assert.match(SQL[k], /make_interval\(mins => \$3::int\)/, k);
   assert.match(SQL.orders, /\$4::int/);
-  assert.match(SQL.handovers, /NOT test/); assert.match(SQL.ack, /NOT COALESCE\(is_test, false\)/); assert.match(SQL.firstReply, /NOT x\.test/);
+  assert.match(SQL.handovers, /NOT test/); assert.match(SQL.ack, /NOT COALESCE\(o\.is_test, false\)/); assert.match(SQL.firstReply, /NOT x\.test/);
   assert.match(SQL.pos, /ILIKE '%void%'/);
+});
+
+test("مراجعة ١٧/١٠: «شفته» وقبول نقطة البيع من لحظة الدفع (history status='paid') مش من إنشاء الطلب — واليوم التشغيلي والنافذة لسه على created_at", () => {
+  assert.equal(PAID_AT, "COALESCE(pd.paid_at, o.created_at)", "لو مفيش صف «paid» في السجل ⇒ إنشاء الطلب");
+  const base = "COALESCE\\(pd\\.paid_at, o\\.created_at\\)";
+  for (const k of ["ack", "orders"]) {
+    assert.match(SQL[k], /LEFT JOIN LATERAL \(SELECT min\(\(h->>'at'\)::timestamptz\) AS paid_at/, `${k}: أول «paid»`);
+    assert.match(SQL[k], /jsonb_typeof\(o\.history\)='array'/, `${k}: history مش مصفوفة مايوقّعش الاستعلام`);
+    assert.match(SQL[k], /h->>'status'='paid' AND \(h->>'at'\) ~ '\^\[0-9\]\{4\}-\[0-9\]\{2\}-\[0-9\]\{2\}\[T \]\[0-9\]\{2\}:\[0-9\]\{2\}'/, `${k}: حماية الـcast بالـregex`);
+    assert.match(SQL[k], /o\.created_at >= \$1 AND o\.created_at < \$2/, `${k}: النافذة على created_at`);
+    assert.equal((SQL[k].match(/LEFT JOIN LATERAL \(SELECT min\(\(h->>'at'\)::timestamptz\)/g) || []).length, 1, `${k}: الـLATERAL مرة واحدة`);
+  }
+  // «شفته»: الوسيط و٩٠٪ و«خلال الهدف» كلهم من الدفع، واليوم من created_at
+  assert.match(SQL.ack, new RegExp(`percentile_cont\\(0\\.5\\) WITHIN GROUP \\(ORDER BY \\(EXTRACT\\(EPOCH FROM \\(o\\.portal_ack_at - ${base}\\)\\)`));
+  assert.match(SQL.ack, new RegExp(`percentile_cont\\(0\\.9\\) WITHIN GROUP \\(ORDER BY \\(EXTRACT\\(EPOCH FROM \\(o\\.portal_ack_at - ${base}\\)\\)`));
+  assert.match(SQL.ack, new RegExp(`FILTER \\(WHERE o\\.portal_ack_at <= ${base} \\+ make_interval\\(mins => \\$3::int\\)\\)`));
+  assert.doesNotMatch(SQL.ack, /portal_ack_at - o\.created_at\b/, "مفيش زمن من إنشاء الطلب");
+  assert.doesNotMatch(SQL.ack, /portal_ack_at <= o\.created_at\b/);
+  assert.match(SQL.ack, /GROUPING SETS \(\(o\.portal_ack_by\), \(o\.portal_ack_by, \(\(o\.created_at AT TIME ZONE/, "اليوم التشغيلي من created_at");
+  // قبول نقطة البيع (مستوى الفريق): من الدفع؛ «جاهز» لسه من القبول
+  assert.match(SQL.orders, new RegExp(`ORDER BY \\(EXTRACT\\(EPOCH FROM \\(o\\.accepted_at - ${base}\\)\\)`));
+  assert.doesNotMatch(SQL.orders, /o\.accepted_at - o\.created_at/);
+  assert.match(SQL.orders, /o\.pos_ready_at - o\.accepted_at/);
+  assert.match(TARGET_DEFS.find((d) => d.key === "ackMin").hint, /لحظة دفع/);
 });
 
 const DIR = directoryOf(SETTINGS);

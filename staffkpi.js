@@ -10,7 +10,7 @@
        نداءات الطاولات (table_calls.done_by) · ملاحظات العملاء على طلب شغّال (MJ1: wa_handovers.reason=order_note) · الشكاوى.
      • حضور البوابة: دفتر يومي جديد (portal_presence_day) بيتكتب مع كل كتابة حضور (wahandover.js) — دقايق «متوصّلة» ودقايق «ظاهرة».
        الأيام اللي قبل النشر «غير متاح» (portal_presence القديم بيحتفظ بآخر ظهور بس).
-     • مستوى الفريق (مش لشخص): قبول نقطة البيع، «جاهز» قصاد الهدف ووعد الوقت المتوقع (eta_shown)، طلب المندوب من «جاهز»، الاستلام،
+     • مستوى الفريق (مش لشخص): قبول نقطة البيع (من لحظة الدفع)، «جاهز» قصاد الهدف ووعد الوقت المتوقع (eta_shown)، طلب المندوب من «جاهز»، الاستلام،
        تنبيهات «البورتال مقفول» بالدور (wa_team_log)، المفتوح من كل حاجة، ونقطة البيع باسم كاشير تاب سينس (ts_orders.staff_name).
    القواعد: قراءة بس · كل مصدر لوحده (مصدر وقع ⇒ «غير متاح» للي بيعتمد عليه، مش صفر) · مفيش تخمين: اللي مالوش مصدر بيتقال صراحة
    (إقفال الكاش، ضغطات المطبخ على الـKDS) · الأهداف من اللوحة (settings.staffKpi.targets — المالك بس).
@@ -31,7 +31,7 @@ const pctOf = (n, d) => (d > 0 ? Math.round((n / d) * 1000) / 10 : null);
 /* ── الأهداف (settings.staffKpi.targets) ─────────────────────────────────────
    كلها بالدقايق. اللوحة بتعرض label وhint، والسيرفر بيقصّ القيم على [min, max]. */
 export const TARGET_DEFS = Object.freeze([
-  { key: "ackMin", def: 2, min: 1, max: 60, label: "«شفته» خلال", hint: "من دفع العميل لحد ما حد يضغط «شفته» على البوابة" },
+  { key: "ackMin", def: 2, min: 1, max: 60, label: "«شفته» خلال", hint: "من لحظة دفع العميل (مش من فتح الدفع) لحد ما حد يضغط «شفته» على البوابة" },
   { key: "readyMin", def: 30, min: 5, max: 180, label: "«جاهز» خلال", hint: "من قبول نقطة البيع لحد «جاهز» (مستوى الفريق — الـKDS مابيسجّلش مين)" },
   { key: "handedMin", def: 5, min: 1, max: 60, label: "التسليم للمندوب خلال", hint: "من «جاهز» لحد «سلّمت الطلب للمندوب»" },
   { key: "courierMin", def: 5, min: 1, max: 60, label: "طلب المندوب خلال", hint: "من «جاهز» لحد أول شحنة اتطلبت (تلقائي أو من البوابة)" },
@@ -103,6 +103,14 @@ const p90 = (expr) => `percentile_cont(0.9) WITHIN GROUP (ORDER BY ${expr})::flo
 const within = (a, b, p = "$3") => `count(*) FILTER (WHERE ${a} <= ${b} + make_interval(mins => ${p}::int))::int`;
 const D = (col) => `${bizDaySql(col)}::text`;
 const sets = (name, day) => `GROUP BY GROUPING SETS ((${name}), (${name}, ${day}))`;
+/* لحظة الدفع = أول صف status='paid' في history (نفس ما بيعمله تقرير البوابة portal-reports.js) — مش created_at اللي بيتكتب عند الـcheckout
+   قبل OTP وماي فاتورة (مراجعة ١٧/١٠: الفرق وسيطه ٠٫٨ د وبيوصل ٢١ د، وكان بيتحسب على الموظف). لو مفيش صف «paid» (مسار من غير دفع أونلاين) ⇒ created_at.
+   الـregex بيحمي الـcast من صف at مش تاريخ. اليوم التشغيلي والنافذة ($1/$2) لسه على created_at عشان الطلب يفضل في يومه. */
+const TS_OK = `'^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}'`;
+const PAID_JOIN = `LEFT JOIN LATERAL (SELECT min((h->>'at')::timestamptz) AS paid_at
+      FROM jsonb_array_elements(CASE WHEN jsonb_typeof(o.history)='array' THEN o.history ELSE '[]'::jsonb END) h
+      WHERE h->>'status'='paid' AND (h->>'at') ~ ${TS_OK}) pd ON TRUE`;
+export const PAID_AT = `COALESCE(pd.paid_at, o.created_at)`;
 
 export const HO_KIND = `CASE WHEN reason = 'order_note' THEN 'note' WHEN reason IN ('review_low','review_note') THEN 'review'
   WHEN reason IN ('complaint','order_late','order_issue','problem','order_change','allergy_severe') THEN 'complaint' ELSE 'other' END`;
@@ -110,10 +118,11 @@ export const SQL = Object.freeze({
   audit: `/*kpi:audit*/ SELECT staff_id, staff_name, role, action, ${D("at")} AS day,
       count(*)::int AS n, count(*) FILTER (WHERE ok IS DISTINCT FROM false)::int AS ok
     FROM portal_audit WHERE at >= $1 AND at < $2 GROUP BY 1,2,3,4,5`,
-  ack: `/*kpi:ack*/ SELECT portal_ack_by AS name, ${D("created_at")} AS day, count(*)::int AS n,
-      ${med(minsOf("portal_ack_at", "created_at"))} AS med, ${p90(minsOf("portal_ack_at", "created_at"))} AS p90, ${within("portal_ack_at", "created_at")} AS within
-    FROM shop_orders WHERE portal_ack_at IS NOT NULL AND portal_ack_by IS NOT NULL AND NOT COALESCE(is_test, false)
-      AND status NOT IN ('pending_payment','expired') AND created_at >= $1 AND created_at < $2 ${sets("portal_ack_by", D("created_at"))}`,
+  ack: `/*kpi:ack*/ SELECT o.portal_ack_by AS name, ${D("o.created_at")} AS day, count(*)::int AS n,
+      ${med(minsOf("o.portal_ack_at", PAID_AT))} AS med, ${p90(minsOf("o.portal_ack_at", PAID_AT))} AS p90, ${within("o.portal_ack_at", PAID_AT)} AS within
+    FROM shop_orders o ${PAID_JOIN}
+    WHERE o.portal_ack_at IS NOT NULL AND o.portal_ack_by IS NOT NULL AND NOT COALESCE(o.is_test, false)
+      AND o.status NOT IN ('pending_payment','expired') AND o.created_at >= $1 AND o.created_at < $2 ${sets("o.portal_ack_by", D("o.created_at"))}`,
   handed: `/*kpi:handed*/ SELECT handed_by AS name, ${D("created_at")} AS day, count(*)::int AS n,
       count(pos_ready_at)::int AS timed, ${med(minsOf("handed_at", "pos_ready_at"))} AS med, ${within("handed_at", "pos_ready_at")} AS within
     FROM shop_orders WHERE handed_at IS NOT NULL AND handed_by IS NOT NULL AND COALESCE(handed_source,'portal') = 'portal' AND NOT COALESCE(is_test, false)
@@ -161,7 +170,7 @@ export const SQL = Object.freeze({
   offline: `/*kpi:offline*/ SELECT ${D("at")} AS day, kind, count(*)::int AS n
     FROM wa_team_log WHERE topic = 'portal_offline' AND ok AND kind IN ('cashier','manager','back') AND at >= $1 AND at < $2 GROUP BY 1,2`,
   orders: `/*kpi:orders*/ SELECT ${D("o.created_at")} AS day, count(*)::int AS n,
-      count(o.accepted_at)::int AS accepted, ${med(minsOf("o.accepted_at", "o.created_at"))} AS accept_med,
+      count(o.accepted_at)::int AS accepted, ${med(minsOf("o.accepted_at", PAID_AT))} AS accept_med,
       count(o.pos_ready_at) FILTER (WHERE o.accepted_at IS NOT NULL)::int AS ready, ${med(minsOf("o.pos_ready_at", "o.accepted_at"))} AS ready_med,
       ${p90(minsOf("o.pos_ready_at", "o.accepted_at"))} AS ready_p90, ${within("o.pos_ready_at", "o.accepted_at")} AS ready_within,
       count(o.portal_ack_at)::int AS acked, count(o.collected_at)::int AS collected,
@@ -171,7 +180,7 @@ export const SQL = Object.freeze({
       count(*) FILTER (WHERE o.option = 'delivery' AND o.pos_ready_at IS NOT NULL AND s.first_at IS NOT NULL)::int AS courier_timed,
       ${med(minsOf("s.first_at", "o.pos_ready_at"))} AS courier_med,
       count(*) FILTER (WHERE s.first_at - o.pos_ready_at <= make_interval(mins => $4::int))::int AS courier_within
-    FROM shop_orders o
+    FROM shop_orders o ${PAID_JOIN}
     LEFT JOIN eta_shown e ON e.order_no = o.order_no
     LEFT JOIN LATERAL (SELECT min(created_at) AS first_at, max(delivered_at) AS delivered_at FROM dl_shipments d WHERE d.shop_order_no = o.order_no) s ON TRUE
     WHERE NOT COALESCE(o.is_test, false) AND o.status NOT IN ('pending_payment','expired') AND o.created_at >= $1 AND o.created_at < $2
