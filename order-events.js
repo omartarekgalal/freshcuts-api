@@ -40,6 +40,7 @@ export const ORDER_EVENTS = Object.freeze([
   "notify_sent",       // {stage,channel,ok}         notify.orderStatusChanged
   "refund",            // {ok,amount}                orders_hub.js
   "staff_note",
+  "customer_note",     // {kind,text,…}            MJ1: ملاحظة العميل على طلبه الشغّال من واتساب (wabotrun.js)
   "staff_call",        // {outcome}
   "staff_action",      // {action}
 ]);
@@ -67,6 +68,7 @@ export const DEFAULT_SUMMARY = Object.freeze({
   notify_sent: "إشعار للعميل",
   refund: "استرجاع",
   staff_note: "ملاحظة من الفريق",
+  customer_note: "ملاحظة من العميل",
   staff_call: "مكالمة للعميل",
   staff_action: "إجراء من الفريق",
 });

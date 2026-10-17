@@ -12,6 +12,7 @@ import * as C from "./waconsent.js";
 import { CTX_RULES } from "./waassistrun.js";
 import * as AIC from "./waaicost.js";
 import * as BC from "./wabotcart.js";
+import * as OE from "./order-events.js";      // MJ1: سجل الطلب (customer_note)
 const W = await import("./whatsapp.js");
 const R = await import("./wabotrun.js");
 const LLM = await import("./wabotllm.js");
@@ -53,7 +54,7 @@ const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
 function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
-  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null, team = null, flow = null, fav = null, expandBundle = null, campReply = null } = {}) {
+  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null, team = null, flow = null, fav = null, expandBundle = null, campReply = null, courierWa = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, sttKey: null, liveDay: [], marketingTo: [], settings: null };
@@ -148,6 +149,16 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^CREATE TABLE|^DELETE FROM wa_bot_log|wa_webhook_health|wa_contact_names|wa_threads/i.test(s)) return { rows: [], rowCount: 0 };
       /* FU1: «متابعة اللي ردّ» — كل جمل wafollow.FU_SQL بتبدأ بعلامة /*fu:<الاسم>*\/ */
       { const fm = /^\/\*fu:([a-z_]+)\*\//.exec(s); if (fm) return fuFake(fm[1], p); }
+      /* MJ1: الطلب الشغّال أولاً — نفس منطق الجمل على orders / db.log / db.msgs / db.chats */
+      { const mm = /^\/\*mj1:([a-z_]+)\*\//.exec(s);
+        if (mm && mm[1] === "active") return { rows: orders.filter((o) => o.phone_norm === p[0] && !o.is_test && p[1].includes(o.status) && nowMs - T0(o.created_at) < p[2] * 3600_000).sort((a, b) => T0(b.created_at) - T0(a.created_at)).slice(0, 1)
+          .map((o) => ({ order_no: o.order_no, status: o.status, option: o.option, total: o.total, created_at: o.created_at, pos_ready_at: o.pos_ready_at || null, handed_at: o.handed_at || null })) };
+        if (mm && mm[1] === "recent") return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.reply_key === "order_note" && ["replied", "dry"].includes(l.decision) && nowMs - T0(l.at) < p[1] * 1000).slice(0, 1).map(() => ({})) };
+        if (mm && mm[1] === "thread_order") { const c = db.chats.get(p[0]) || {}; const cands = [...db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "out" && m.order_no && nowMs - T0(m.created_at) < 7 * 86400_000).map((m) => [m.order_no, T0(m.created_at)]),
+          ...(c.review_order && c.review_asked_at && nowMs - T0(c.review_asked_at) < 7 * 86400_000 ? [[c.review_order, T0(c.review_asked_at)]] : []), ...(c.follow_order && c.follow_at && nowMs - T0(c.follow_at) < 7 * 86400_000 ? [[c.follow_order, T0(c.follow_at)]] : [])].sort((a, b) => b[1] - a[1]);
+          return { rows: cands.slice(0, 1).map(([order_no]) => ({ order_no })) }; }
+        if (mm && mm[1] === "order_by_no") return { rows: orders.filter((o) => o.order_no === p[0] && !["expired", "pending_payment"].includes(o.status)).slice(0, 1) };
+        if (mm) throw new Error(`mj1 fake: unknown statement ${mm[1]}`); }
       if (/^SELECT phone_norm, max\(created_at\) AS last_in FROM wa_messages WHERE direction='in'/i.test(s)) { const last = new Map(); for (const m of db.msgs) if (m.direction === "in" && m.source !== "history") last.set(m.phone_norm, m.created_at > (last.get(m.phone_norm) || "") ? m.created_at : last.get(m.phone_norm));
         return { rows: [...last.entries()].filter(([, at]) => nowMs - Date.parse(at) >= p[0] * 3600_000 && nowMs - Date.parse(at) < 23.5 * 3600_000).map(([phone_norm, last_in]) => ({ phone_norm, last_in })) }; }
       // ── EX6: رسالة مش مدعومة، تأكيد الدفع، متابعة المحادثة
@@ -439,7 +450,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const botCarts = { ensure: async () => {}, lastOrderCarts: async (ph, days, o) => { const v = typeof lastCart === "function" ? lastCart(ph, days, o) : lastCart; return (Array.isArray(v) ? v : v ? [v] : []).map((x, i) => ({ latest: i === 0, ...x })); },
     create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, created_at: iso(), ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
   const portalEvents = [];
-  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}), ...(flow ? { flow: () => flow } : {}), ...(fav ? { fav: () => fav } : {}), ...(campReply ? { campReply } : {}),
+  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}), ...(flow ? { flow: () => flow } : {}), ...(fav ? { fav: () => fav } : {}), ...(campReply ? { campReply } : {}), ...(courierWa ? { courierWa: () => courierWa } : {}),
     assist: { expandBundle: expandBundle || (async () => ({ ok: false, error: "bundle_not_found" })), modifiersCatalog: async () => ({ cfg: { enabled: true }, catalog: {} }), modifiersResolve: async () => ({ ok: true, shown: 0 }),
       quote: async (x) => (typeof quote === "function" ? quote(x.lat, x.lng) : quote), buildProfile: async () => ({ identity: { name: "أحمد" }, summary: { orders: 2, status: "repeat" }, orders: [], favorites: { items: [] }, addresses: [] }) }, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
@@ -2758,9 +2769,14 @@ test("assistant: «خلها بدون طحينة» while building a cart is a not
   assert.equal(R.classify({ text: "طيب خلها بدون طحينة", type: "text" }, {}).key, "change");
   assert.deepEqual([r.log.reply_key, r.log.handoff], ["assist", null]); assert.equal(w.m.used(), 1);
   assert.match(w.m.seen[0].messages[0].content[0].text, /"hint":\{"intent":"note_or_change_to_the_cart_being_built"\}/);
+  /* MJ1 (١٧/١٠): with an order IN PROGRESS (paid 20 min ago, in the kitchen) the same words are a note on that order — kitchen + portal card, no staff handover, no model */
   const paid = aWorld([], { orders: [order()] });
   const p = await paid.say("طيب خلها بدون طحينة");
-  assert.equal(paid.m.used(), 0); assert.equal(p.log.handoff, "order_change"); assert.match(bodyOf(msgs(p)[0]), /تعديل الطلب أو إلغاؤه يحتاج موظف/);
+  assert.equal(paid.m.used(), 0); assert.deepEqual([p.log.reply_key, p.log.handoff], ["order_note", null]); assert.match(bodyOf(msgs(p)[0]), /^وصلتنا ملاحظتك على طلبك رقم W1790011111111 ✅ وبلّغنا المطبخ\.$/);
+  // a paid order of today that is already delivered (not in progress): still an order change for staff, as before
+  const done = aWorld([], { orders: [order({ status: "delivered" })] });
+  const dp = await done.say("طيب خلها بدون طحينة");
+  assert.equal(done.m.used(), 0); assert.equal(dp.log.handoff, "order_change"); assert.match(bodyOf(msgs(dp)[0]), /تعديل الطلب أو إلغاؤه يحتاج موظف/);
   // cancelling is always the rules' (staff), order or not
   const c = aWorld([]); const x = await c.say("ابي الغي طلبي"); assert.equal(c.m.used(), 0); assert.equal(x.log.handoff, "order_change");
   // inside the assistant's conversation a question about hours stays with it; outside, the rules answer it
@@ -6105,4 +6121,179 @@ test("CR2 رسالة اتمسحت من غير مرجع ⇒ تقدير بس لو 
   w.clock.advanceSec(30);
   const e = await w.say(null, { raw: { type: "revoke", revoke: {} } });
   assert.equal(w.db.msgs.find((m) => m.wamid === e.wamid).body, "[رسالة اتمسحت]", "آخر رسالة من ٣٠ ثانية ⇒ مفيش تقدير");
+}));
+
+/* ═══ MJ1 (١٧/١٠) — الطلب الشغّال أولاً + لغة الرابط + رسالة تحويل واحدة للشكوى (تقرير ماجد يوم ١٦/١٠) ═══════════════════════════════════════ */
+const AO = (o = {}) => order({ order_no: "W1790016140048", status: "on_the_way", created_at: new Date(Date.parse(OPEN_AT) - 9 * 60_000).toISOString(), ...o });
+const NOTE_OK = (no, who) => txt(ME, `وصلتنا ملاحظتك على طلبك رقم ${no} ✅ وبلّغنا ${who}.`);
+const watchEvents = () => { const events = []; const off = OE.subscribe((e) => events.push(e)); return { events, off }; };
+
+test("MJ1 #١ صلاح (١٦/١٠ ١٤:٠٨، طلبه في الطريق): موقع + «دور 3. شقه 9» + صورة = ملاحظات على طلبه (سجل الطلب + كارت البوابة) وتأكيد واحد — لا «تبيه نفسه؟» ولا رسوم ولا مساعد", withEnv(CONFIGURED, async () => {
+  const { events, off } = watchEvents();
+  try {
+    const w = aWorld([], { orders: [AO()], quote: { ok: true, deliverable: true, fee: 15 } });
+    const l1 = await w.say(null, { raw: { type: "location", location: { latitude: 21.58, longitude: 39.15 } } });
+    assert.deepEqual(msgs(l1), [NOTE_OK("W1790016140048", "الفريق ويوصّلها للمندوب")], "no courier on WhatsApp for this order ⇒ honest wording: the team passes it to the courier");
+    assert.deepEqual([l1.log.reply_key, l1.log.decision, l1.log.handoff, l1.log.alert], ["order_note", "replied", null, null]);
+    assert.match(l1.log.detail, /^order_note:location W1790016140048 on_the_way · timeline ok · portal ok · courier no_courier_api$/);
+    assert.equal(w.m.used(), 0, "the assistant never sees a note on an active order");
+    assert.deepEqual(events.map((e) => [e.name, e.orderNo, e.source, e.channel, e.data.kind, e.data.wamid, "lat" in e.data]), [["customer_note", "W1790016140048", "whatsapp", "wa", "location", l1.wamid, false]], "coordinates as keys are dropped by the event sanitizer by design; the map link in the text is what staff see");
+    assert.equal(events[0].summary, "موقع من العميل على واتساب: 📍 موقع من العميل: https://maps.google.com/?q=21.58000,39.15000");
+    assert.deepEqual(w.portal.map(([e, d]) => [e, d.reason, d.reasonAr, d.orderNo, d.urgent, d.test, d.note]), [["wa_handover", "order_note", "ملاحظة على طلب شغّال — موقع", "W1790016140048", false, true, "📍 موقع من العميل: https://maps.google.com/?q=21.58000,39.15000"]]);
+    assert.equal(w.db.chats.get("512345678").handoff_at, undefined, "a note is not a handover: the bot keeps answering, no «نبّهنا الفريق مرة ثانية» later");
+    assert.deepEqual([w.db.chats.get("512345678").last_loc.lat, w.db.chats.get("512345678").last_loc.via], [21.58, "location"], "the pin is still remembered for the chat");
+    // 20 s later the floor and flat, then a photo of the building: attached to the same order, no second or third message, the cashier's card for each
+    w.clock.advanceSec(20);
+    const l2 = await w.say("دور 3. شقه 9");
+    assert.deepEqual([msgs(l2).length, l2.log.decision, l2.log.reason, l2.log.reply_key], [0, "silent", "order_note_merged", "order_note"]);
+    assert.deepEqual([events.at(-1).data.kind, events.at(-1).data.text, events.at(-1).data.status], ["address", "🏠 عنوان من العميل: «دور 3. شقه 9»", "on_the_way"]);
+    w.clock.advanceSec(15);
+    const l3 = await w.say(null, { raw: { type: "image", image: { id: "900000000001", mime_type: "image/jpeg" } } });
+    assert.deepEqual([msgs(l3).length, l3.log.reason, events.at(-1).data.kind, events.at(-1).data.media_id, events.at(-1).summary], [0, "order_note_merged", "photo", "900000000001", "صورة من العميل على واتساب: 🖼 صورة من العميل في محادثة واتساب"]);
+    assert.deepEqual([w.portal.length, w.m.used(), w.sms.length, w.db.ai.length], [3, 0, 0, 0], "three cards for the cashier, no model, no vision cost, no SMS");
+    // after the merge window a new note is confirmed again; a message that is not a note («وين طلبي») is answered as before
+    w.clock.advance(3);
+    assert.deepEqual(msgs(await w.say("بدون بصل لو سمحت")), [NOTE_OK("W1790016140048", "الفريق ويوصّلها للمندوب")]);
+    w.clock.advance(1);
+    assert.equal((await w.say("وين طلبي")).log.reply_key, "status");
+  } finally { off(); }
+}));
+
+test("MJ1 — the courier gets the note on WhatsApp when the external courier has a live run (courierwa.noteToCourier), and the customer is told so; dry run writes nothing", withEnv(CONFIGURED, async () => {
+  const { events, off } = watchEvents();
+  try {
+    const toCourier = [];
+    const w = aWorld([], { orders: [AO()], courierWa: { noteToCourier: async (orderNo, text) => { toCourier.push([orderNo, text]); return { sent: true, reason: null }; } } });
+    const r = await w.say("العمارة اللي جنب الصيدلية، دور 3");
+    assert.deepEqual(msgs(r), [NOTE_OK("W1790016140048", "المندوب")]);
+    assert.deepEqual(toCourier, [["W1790016140048", "🏠 عنوان من العميل: «العمارة اللي جنب الصيدلية، دور 3»"]]);
+    assert.match(r.log.detail, /courier sent$/);
+    // in the kitchen (not on the way): the kitchen is told, the courier is not called
+    const k = aWorld([], { orders: [AO({ status: "accepted" })], courierWa: { noteToCourier: async () => { throw new Error("must not be called"); } } });
+    assert.deepEqual(msgs(await k.say("زود الخبز")), [NOTE_OK("W1790016140048", "المطبخ")]);
+    // the courier API refuses (no live run) ⇒ the honest wording
+    const n = aWorld([], { orders: [AO()], courierWa: { noteToCourier: async () => ({ sent: false, reason: "no_run" }) } });
+    assert.deepEqual(msgs(await n.say("زود الخبز")), [NOTE_OK("W1790016140048", "الفريق ويوصّلها للمندوب")]);
+    // dry run: the decision is logged with the exact payload, nothing is written anywhere and nobody is pinged
+    const before = events.length;
+    const d = world({ waBot: { mode: "dry" }, orders: [AO()] });
+    const dr = await d.say("دور 3. شقه 9");
+    assert.deepEqual([dr.sent.length, dr.log.decision, dr.log.reply_key, dr.log.replies[0].text.body, d.portal.length, events.length - before], [0, "dry", "order_note", "وصلتنا ملاحظتك على طلبك رقم W1790016140048 ✅ وبلّغنا الفريق ويوصّلها للمندوب.", 0, 0]);
+  } finally { off(); }
+}));
+
+test("MJ1 #٢ حماده (١٦/١٠ ١٩:٣٤، دفع وبعدها بثواني): «زود الخبز» = ملاحظة للمطبخ على الطلب المدفوع — لا «نفس طلبك السابق؟» ولا سلة؛ والمساعد لو اتكلم بعدها عارف إن له طلب ماشي ومفيش عرض إعادة طلب", withEnv(CONFIGURED, async () => {
+  const { events, off } = watchEvents();
+  try {
+    const paid = AO({ order_no: "W1790016140849", status: "paid", created_at: new Date(Date.parse(OPEN_AT) - 60_000).toISOString() });
+    const w = aWorld([mSay("تمام 👍 طلبك W1790016140849 في المطبخ. تحتاج شي عليه؟")], { orders: [paid], lastCart: SNAP() });
+    const r = await w.say("زود الخبز");
+    assert.deepEqual(msgs(r), [NOTE_OK("W1790016140849", "المطبخ")]);
+    assert.deepEqual([r.log.reply_key, w.m.used(), w.db.botCarts.length], ["order_note", 0, 0]);
+    assert.deepEqual([events.at(-1).name, events.at(-1).data.kind, events.at(-1).data.text], ["customer_note", "note", "📝 ملاحظة من العميل: «زود الخبز»"]);
+    assert.deepEqual(w.portal.map(([, d]) => [d.reason, d.orderNo]), [["order_note", "W1790016140849"]]);
+    // a real question goes to the assistant as usual — with the order in its context and WITHOUT the reorder offer
+    w.clock.advance(1);
+    const a = await w.say("ابي بيتزا");
+    assert.deepEqual([a.log.reply_key, w.m.used()], ["assist", 1]);
+    const cx = ctxOf(w.m.seen[0]);
+    assert.deepEqual(cx.customer_has_an_order_in_progress, { order_no: "W1790016140849", status: "paid", rule: CTX_RULES.activeOrder });
+    assert.equal("reorder_offer" in cx, false, "no «نفس طلبك السابق؟» while an order is in progress");
+    // control: the same customer with no order in progress gets the reorder offer as before
+    const c = aWorld([mSay("هلا 👋")], { lastCart: SNAP() });
+    await c.say("ابي بيتزا");
+    const cc = ctxOf(c.m.seen[0]);
+    assert.ok(cc.reorder_offer, "reorder offer unchanged without an active order"); assert.equal("customer_has_an_order_in_progress" in cc, false);
+  } finally { off(); }
+}));
+
+test("MJ1 — what is NOT a note on the active order: order number / «وين طلبي» (status), complaint, cancel, a question, a bare «عندي ملاحظة», a tap; no active order (delivered, older than the window) or switch off ⇒ the old path", withEnv(CONFIGURED, async () => {
+  const kitchen = AO({ order_no: "W1790016140362", status: "accepted" });
+  const w = aWorld([], { orders: [kitchen] });
+  assert.equal((await w.say("W1790016140362")).log.reply_key, "status", "#٦ الفقي: the order number is a status question, answered");
+  w.clock.advance(1); assert.equal((await w.say("الطلب وصل بارد وناقص")).log.handoff, "complaint", "a complaint is a complaint");
+  const c = aWorld([], { orders: [kitchen] }); assert.equal((await c.say("ابي الغي الطلب")).log.handoff, "order_change", "cancel stays an urgent staff handover");
+  const q = aWorld([mSay("رسوم التوصيل تظهر لك في صفحة الطلب قبل الدفع.")], { orders: [kitchen] }); assert.equal((await q.say("كم رسوم التوصيل؟")).log.reply_key, "assist", "a question is not a note");
+  const b = aWorld([], { orders: [kitchen] }); assert.equal((await b.say("عندي ملاحظة")).log.reply_key, "staff", "a bare «عندي ملاحظة» has no content yet: staff, as before");
+  const t = aWorld([], { orders: [kitchen] }); assert.equal((await t.press("m:cats", "x")).log.reply_key, "cats", "a tap is never a note");
+  const old = aWorld([], { orders: [AO({ status: "delivered" })], quote: { ok: true, deliverable: true, fee: 15 } });
+  assert.notEqual((await old.say("دور 3. شقه 9")).log.reply_key, "order_note", "delivered = no active order");
+  const late = aWorld([], { orders: [AO({ created_at: new Date(Date.parse(OPEN_AT) - 5 * 3600_000).toISOString() })] });
+  assert.notEqual((await late.say("دور 3. شقه 9")).log.reply_key, "order_note", "older than activeOrderHours (4)");
+  const wide = aWorld([], { orders: [AO({ created_at: new Date(Date.parse(OPEN_AT) - 5 * 3600_000).toISOString() })], waBot: { activeOrderHours: 6 } });
+  assert.equal((await wide.say("دور 3. شقه 9")).log.reply_key, "order_note", "the window is a setting");
+  const offw = aWorld([], { orders: [kitchen], waBot: { activeOrderFirst: false }, quote: { ok: true, deliverable: true, fee: 15 } });
+  assert.notEqual((await offw.say("دور 3. شقه 9")).log.reply_key, "order_note", "switch off = the old behaviour");
+  // the classifier itself
+  const K = (ev) => R.noteKindOf(ev, R.classify(ev, KNOW));
+  assert.deepEqual(["زود الخبز", "دور 3. شقه 9", "بدون بصل لو سمحت", "خلوها بدون شطة", "ابي اغير العنوان", "نسيت اقولكم بدون مخلل", "the building next to the pharmacy, floor 3"].map((text) => K({ phone: "512345678", text, type: "text" })), ["note", "address", "note", "note", "address", "note", "address"]);
+  assert.deepEqual(["ابي الغي الطلب", "وين طلبي", "W1790016140362", "الطلب وصل بارد وناقص", "ممكن بدون بصل؟", "عندي ملاحظة", "شكرا", "تمام", "ابي بيتزا", "ابي استرجاع المبلغ"].map((text) => K({ phone: "512345678", text, type: "text" })), [null, null, null, null, null, null, null, null, null, null]);
+  assert.equal(K({ phone: "512345678", text: "", type: "location", location: { lat: 21.58, lng: 39.15 } }), "location");
+  assert.equal(K({ phone: "512345678", text: "", type: "image", media: { kind: "image", id: "900000000001" } }), "photo");
+  assert.equal(K({ phone: "512345678", text: "الطلب وصل ناقص", type: "image", media: { kind: "image", id: "900000000001" } }), null, "a photo with a complaint caption is a complaint");
+  assert.equal(K({ phone: "512345678", text: "x", type: "text", interactiveId: "m:cats" }), null);
+  // settings exist in the dashboard schema with limits and Arabic labels
+  for (const [k, g] of [["activeOrderFirst", "orders"], ["activeOrderHours", "orders"], ["activeOrderMergeSec", "orders"], ["handoverBurstSec", "staff"]]) assert.ok(R.SCHEMA[k].ar && R.SCHEMA[k].group === g, k);
+  assert.deepEqual([R.botConfig({}).activeOrderFirst, R.botConfig({}).activeOrderHours, R.botConfig({}).activeOrderMergeSec, R.botConfig({}).handoverBurstSec], [true, 4, 120, 60]);
+  assert.equal(R.configFromBody({ activeOrderHours: 99 }).ok, false); assert.equal(R.configFromBody({ handoverBurstSec: -1 }).ok, false);
+  assert.deepEqual(R.configFromBody({ activeOrderFirst: false, activeOrderMergeSec: 0 }).value, { activeOrderFirst: false, activeOrderMergeSec: 0 });
+  assert.deepEqual(R.botConfig({ waBot: { activeOrderHours: 99, activeOrderMergeSec: -5 } }).activeOrderHours, 24);
+}));
+
+test("MJ1 #٣ هشام (١٦/١٠ ٠١:٢٥): a Facebook link alone is NOT English — the rules bot logs Arabic and the assistant answers in Arabic (the 20-minute nudge too)", withEnv(CONFIGURED, async () => {
+  assert.deepEqual(["https://www.facebook.com/reel/1234567890/", "https://fb.watch/abc?mibextid=x", "👍", "5"].map((t) => R.classify({ phone: "512345678", text: t, type: "text" }).lang), ["ar", "ar", "ar", "ar"]);
+  const w = aWorld([mSay("وصلني الرابط بس ما يفتح عندي 🙏 لو عرض من إعلاننا قل لي اسمه وأجهّزه لك.")]);
+  const r = await w.say("https://www.facebook.com/reel/1234567890/?mibextid=abc");
+  assert.deepEqual([r.log.reply_key, r.log.lang, w.m.used()], ["assist", "ar", 1]);
+  assert.equal(ctxOf(w.m.seen[0]).reply_language, "Arabic");
+  assert.equal(w.store.turns[0].lang, "ar");
+  // an English conversation stays English when the next message is only a link
+  const e = aWorld([mSay("Hi! What would you like today?"), mSay("I could not open the link, sorry. Tell me the offer's name and I will prepare it.")]);
+  await e.say("Hi I want to order"); e.clock.advance(1);
+  const l = await e.say("https://fb.watch/abc");
+  assert.equal(ctxOf(e.m.seen[1]).reply_language, "English"); assert.equal(e.store.turns[1].lang, "en");
+}));
+
+test("MJ1 #٥ سالم وحسام (١٦/١٠): complaint + photo + «عندي ملاحظة» within 60 s = ONE handover message and one alert; the order number already in the thread is used, never asked for", withEnv(LOCKS_OPEN, async () => {
+  const w = world({ waBot: { mode: "live" }, orders: [order({ order_no: "W1790016140126", status: "delivered" })] });
+  const c1 = await w.say("الطلب وصل بارد وناقص");
+  assert.deepEqual(c1.sent, [txt(ME, `نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\nطلبك رقم W1790016140126 قدّامنا.${SOON}`)]);
+  assert.deepEqual([c1.log.handoff, w.sms.length, w.portal.length], ["complaint", 2, 1]);
+  w.clock.advanceSec(10);
+  const ph = await w.say(null, { raw: { type: "image", image: { id: "900000000002", mime_type: "image/jpeg" } } });
+  assert.deepEqual([ph.sent.length, ph.log.decision, ph.log.reason], [0, "silent", "handover_burst"]);
+  w.clock.advanceSec(20);
+  const nt = await w.say("عندي ملاحظة");
+  assert.deepEqual([nt.sent.length, nt.log.reason], [0, "handover_burst"]);
+  w.clock.advanceSec(15);
+  assert.equal((await w.say("الريش كلها دهون")).sent.length, 0, "more words of the same complaint: still nothing from the bot");
+  assert.deepEqual([w.calls.length, w.sms.length, w.portal.length], [1, 2, 1], "one message to the customer, one alert, one card");
+  // facts are still answered inside the burst («إيقاف» / status), and after the window the old rule applies (one reminder, then silence)
+  w.clock.advanceSec(5); assert.equal((await w.say("وين طلبي")).log.reply_key, "status");
+  w.clock.advance(2); const later = await w.say("وكمان الرز ناقص"); assert.equal(later.log.reply_key, "handoff_remind");
+  // «عندي ملاحظة» on the review message first, then the complaint text 20 s later: the manager was already told — no «اكتب رقم الطلب», no second message
+  const v = world({ waBot: { mode: "live", reviewFlow: { enabled: false } }, orders: [order({ order_no: "W1790016140126", status: "delivered" })] });
+  await v.say("شكراً"); v.clock.advance(1);
+  await v.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790016140126", code: "ab12cd34" });
+  v.clock.advance(30);
+  const n1 = await v.say("عندي ملاحظة");
+  assert.deepEqual([n1.log.reply_key, n1.log.handoff, n1.sent.length], ["review_note", "review_note", 1]); assert.match(n1.sent[0].text.body, /W1790016140126/);
+  v.clock.advanceSec(20);
+  const n2 = await v.say("الكميات قليلة والشيش طاووق كله افخاذ");
+  assert.deepEqual([n2.sent.length, n2.log.reason], [0, "handover_burst"]);
+  // the thread knows the order even when it was placed under another number: the review was for it ⇒ «طلبك رقم … قدّامنا», not «اكتب رقم الطلب»
+  const t = world({ waBot: { mode: "live" }, orders: [order({ order_no: "W1790016140126", status: "delivered", phone_norm: "555555555" })] });
+  t.db.chats.set("512345678", { phone_norm: "512345678", unknown_streak: 0, last_disclosed_at: t.clock.now().toISOString(), review_order: "W1790016140126", review_asked_at: new Date(t.clock.now().getTime() - 3600_000).toISOString() });
+  const tc = await t.say("الطلب وصل بارد وناقص");
+  assert.deepEqual(tc.sent, [txt(ME, `نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\nطلبك رقم W1790016140126 قدّامنا.${SOON}`)]);
+  assert.match(t.sms[0].body, /order W1790016140126/);
+  // the last order update we sent carries the number too
+  const u = world({ waBot: { mode: "live" }, orders: [order({ order_no: "W1790016140999", status: "delivered", phone_norm: "555555555" })] });
+  u.db.msgs.push({ wamid: "wamid.UPD1", direction: "out", phone_norm: "512345678", template: "fc_order_delivered", order_no: "W1790016140999", stage: "delivered", status: "sent", created_at: new Date(u.clock.now().getTime() - 1800_000).toISOString() });
+  assert.match((await u.say("الطلب وصل بارد وناقص")).sent[0].text.body, /طلبك رقم W1790016140999 قدّامنا/);
+  // nothing in the thread ⇒ the question as before; switch off ⇒ the old three messages
+  const z = world({ waBot: { mode: "live" } }); assert.match((await z.say("الطلب وصل بارد وناقص")).sent[0].text.body, /اكتب رقم الطلب/);
+  const o = world({ waBot: { mode: "live", handoverBurstSec: 0 }, orders: [order({ status: "delivered" })] });
+  await o.say("الطلب وصل بارد وناقص"); o.clock.advanceSec(10);
+  assert.equal((await o.say("وكمان الرز ناقص")).log.reply_key, "handoff_remind", "burst guard off: the old reminder");
 }));

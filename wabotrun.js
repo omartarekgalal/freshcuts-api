@@ -55,6 +55,7 @@ import { teamConfig, staffRoleOf, nonCustomerKind } from "./wateam.js";
 import { silentMap as listSilentMap, listsOf as phoneListsOf, whereIs as phoneListOf, reasonLabel as phoneReasonAr } from "./phonelists.js";      // SX1: قايمة «موظفين / فريق» (عمرها ما فيها المستثنين من الإعلانات)
 import { ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import { makeStt, STT_PROVIDERS } from "./wasttkey.js";
+import { emitOrder } from "./order-events.js";      // MJ1 (١٧/١٠): ملاحظة العميل على طلبه الشغّال ⇒ سطر في سجل الطلب
 const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
 import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
 import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, noteCampaignTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro, heardContext, planReminder } from "./waassistrun.js";
@@ -158,6 +159,11 @@ export const DEFAULTS = Object.freeze({
   maxRepliesPerMinute: 6,      // أي ردود في الدقيقة (حلقة سريعة)
   orderLookbackHours: 72,
   lateAfterMinutes: 70,        // «وين طلبي» على طلب نشط أقدم من كده ⇒ الحالة + تحويل
+  /* MJ1 (١٧/١٠ — تقرير ماجد ١٦/١٠: ٣ عملاء عندهم طلب شغّال اتعاملوا كطلب جديد: عنوان للمندوب ×٢ و«زود الخبز») — الطلب الشغّال أولاً */
+  activeOrderFirst: true,      // عميل عنده طلب شغّال وبعت موقع / عنوان / صورة / «زوّد-بدون-ملاحظة» ⇒ ملاحظة على الطلب ده (سجل الطلب + كارت البوابة + المندوب لو في الطريق) وتأكيد قصير — مش طلب جديد ولا بيع ولا مساعد
+  activeOrderHours: 4,         // …«شغّال» = مدفوع / في نقطة البيع / في المطبخ / جاهز / مع المندوب خلال الساعات دي (مش متسلّم ولا مسترجع)
+  activeOrderMergeSec: 120,    // …موقع + عنوان + صورة ورا بعض = تأكيد واحد للعميل خلال الثواني دي (الباقي بيتسجّل على الطلب من غير رسالة). صفر = تأكيد لكل رسالة
+  handoverBurstSec: 60,        // MJ1 #٥: بعد تحويل شكوى/ملاحظة، أي صورة أو نص أو «عندي ملاحظة» خلال الثواني دي = نفس الشكوى: بتوصل للموظف في المحادثة من غير رسالة تانية من البوت ولا تنبيه تاني. صفر = مقفول
   interactive: true,           // أزرار/رابط بزر؛ false = نص عادي والرابط في آخره
   staffAlert: true,            // SMS للفريق عند التحويل (live؛ وفي test لو alertInTest)
   alertInTest: false,
@@ -504,6 +510,11 @@ export const TEXTS = Object.freeze({
   when_open_assist: t("سطر «الرد قريب» والمساعد مكمل معاه", "يرد عليك موظف هنا في أقرب وقت، وأنا معك لو تحتاج شي ثاني.", "A staff member will reply here shortly, and I'm here if you need anything else.", [], [], 200),
   wait_line_assist: t("سطر «الرد لما نفتح» والمساعد مكمل معاه", "المطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح {opens}، وأنا معك لو تحتاج شي ثاني.", "We're closed now. A staff member will reply here once we open {opens}, and I'm here if you need anything else.", ["opens"], [], 300),
   transfer_note: t("سطر للعميل: الكاشير حوّل المحادثة للمدير (ST2)", "حوّلت محادثتك لمدير الفرع، ويكمل معك هنا 🙏", "I've passed your chat to the branch manager, who will continue with you here 🙏", [], [], 300),
+  /* MJ1: ملاحظة على طلب شغّال — التأكيد للعميل (لهجة بيضاء) */
+  order_note: t("ملاحظة على طلب شغّال: وصلت (موقع / عنوان / صورة / «زوّد…»)", "وصلتنا ملاحظتك على طلبك رقم {order_no} ✅ وبلّغنا {who}.", "Got your note on order {order_no} ✅ and passed it on to {who}.", ["order_no", "who"], [], 300),
+  note_who_kitchen: t("…«بلّغنا»: الطلب في المطبخ", "المطبخ", "the kitchen", [], [], 60),
+  note_who_courier: t("…«بلّغنا»: الطلب في الطريق والمندوب وصلته على واتساب", "المندوب", "the courier", [], [], 60),
+  note_who_team: t("…«بلّغنا»: الطلب في الطريق والفريق يوصّلها للمندوب", "الفريق ويوصّلها للمندوب", "the team, who will pass it to the courier", [], [], 60),
   handover_note: t("متابعة للعميل: الموظف اتأخر (مرة واحدة)", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.", [], [], 300),
   handover_note_assist: t("متابعة للعميل: الموظف اتأخر، والمساعد معاه", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.\nوأنا معك لو تحتاج شي في المنيو أو الطلب.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.\nMeanwhile I'm here for anything about the menu or your order.", [], [], 300),
   media_flood_line: t("سيل صور: سطر للعميل قبل الكتم", "وصلتنا صورك 🙏 حوّلتها لواحد من الفريق يراجعها ويرد عليك هنا.", "We got your pictures 🙏 I passed them to someone from the team, who will reply here.", [], [], 300),
@@ -560,6 +571,33 @@ const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "h
 const MENU_IDS = { main: "main", boxes: "boxes", cats: "cats", offers: "offers", delivery: "delivery", pickup: "pickup", status: "status", hours: "hoursloc", location: "location", packs: "packs", pay: "payment", human: "human", channel: "channel" };
 const IGNORED_TYPES = new Set(["reaction", "sticker", "system", "ephemeral", "request_welcome", "order", "revoke"]);      // PK1: رسالة العميل مسحها (revoke) كانت بتوصل للمساعد كنص «[revoke]» وبيرد عليها بالإنجليزي (١٣/١٠)
 const MEDIA_TYPES = new Set(["image", "audio", "voice", "video", "document", "contacts", "location"]);
+/* ═══ MJ1 (١٧/١٠) — الطلب الشغّال أولاً ═══
+   يوم ١٦/١٠: صلاح (طلبه في الطريق: موقع + «دور 3. شقه 9» + صورة ⇒ «تبيه نفسه؟» و«نعم نوصل لك 👍 الرسوم…») · حماده (دفع وبعدها بثواني موقع + «زود الخبز» ⇒ «نفس طلبك السابق؟»).
+   الطلب الشغّال = مدفوع / في نقطة البيع / في المطبخ / جاهز / مع المندوب (ACTIVE_ORDER_STATUSES) خلال activeOrderHours. الرسالة اللي بتتحسب ملاحظة عليه: موقع (pin أو رابط خرايط)،
+   نص عنوان، صورة/ملف، أو نص تعديل/ملاحظة. مش ملاحظة (بتمشي في طريقها العادي): شكوى، مشكلة دفع، إلغاء، «وين طلبي»، إيقاف، موظف، التقييم، الشكر، المواعيد، الضغطات، والأسئلة. */
+export const ACTIVE_ORDER_STATUSES = Object.freeze(["paid", "pos_created", "accepted", "preparing", "ready", "courier_requested", "courier_assigned", "on_the_way"]);
+export const NOTE_MOD_RE = /(^| )(زود|زودوا|زودو|زودلي|زودولي|زيد|زيدوا|زيدو|زياده|اكسترا|extra|بدون|من غير|بلا|ما ابي|ما ابغى|ما ابغا|مابي|مابغى|مابغا|لا تحط|لا تحطوا|لا تحطو|ماتحط|ماتحطوا|حطوا|حطو|حطولي|حطلي|ضيفوا|ضيفو|ضيف|ضيفلي|ضيفولي|اضيفوا|اضف|اضيف|خلوها|خليها|خلها|خلوه|خليه|خله|بدلوا|بدلو|بدل|ملاحظه|ملاحظات|ملاحظتي|تنبيه|نسيت|without|add|more|less)( |$)/;
+export const NOTE_ADDR_RE = /(^| )(دور|الدور|طابق|الطابق|شقه|شقتي|عماره|عمارتي|فيلا|بيت|بيتي|مبنى|مبني|المبنى|بوابه|البوابه|مدخل|المدخل|مكتب|برج|حي|شارع|عنوان|عنواني|العنوان|موقعي|لوكيشن|الموقع|بجوار|بجنب|جنب|جمب|قدام|مقابل|وراء|ورا|خلف|قريب|المجمع|مجمع|سكن|استراحه|فندق|شاليه|الرقم الاضافي|رقم المبنى|floor|flat|apartment|apt|building|villa|gate|entrance|next to|behind|opposite)( |$)/;
+const NOTE_HARD_KEYS = new Set(["complaint", "problem", "status", "eta", "stop", "start", "stop_updates", "cancel_what", "human", "reorder", "thanks", "greet", "hours", "hoursloc", "location", "payment", "secret", "whoami", "main", "nack", "rf_yes", "rf_no", "optin_yes", "optin_no",
+  "resume_all", "resume_updates", "review_ok", "review_note", "review_star", "review_reason", "channel", "custom_offer", "delivery_time", "other_city", "repeat_short", "unsupported"]);
+const CANCEL_WORD_RE = /(^| )(الغ|الغي|الغيه|الغاء|كنسل|كانسل|cancel|استرجاع|استرداد|refund)/;
+/* ⇒ "location" | "address" | "photo" | "note" | null — بعد التصنيف. الضغطات والأسئلة (؟) مش ملاحظات (إلا لو فيها عنوان). */
+export function noteKindOf(ev, cls) {
+  if (!ev || ev.interactiveId || !cls || !cls.key || NOTE_HARD_KEYS.has(cls.key)) return null;
+  if (cls.key === "area") return "location";
+  const raw = String(ev.text || "").trim(), text = /^\[[^\]]*\]$/.test(raw) ? "" : raw, n = normalize(text);      // «[صورة]» / «[موقع]» = نوع الرسالة مش كلام العميل (زي classify)
+  if (cls.key === "change" && cls.rawIntent === "cancel_order") return null;
+  if (CANCEL_WORD_RE.test(n) || (/[?؟]/.test(text) && !NOTE_ADDR_RE.test(n))) return null;
+  if (REVIEW_NOTE_RE.test(n)) return null;      // «عندي ملاحظة» لوحدها = لسه ماقالهاش (مسار التقييم / الموظف)
+  const media = ev.media && typeof ev.media === "object" ? ev.media : null;
+  if (media && ["image", "video", "document"].includes(String(media.kind || "")) && (!text || NOTE_MOD_RE.test(n) || NOTE_ADDR_RE.test(n))) return "photo";
+  if (!text) return null;
+  if (NOTE_ADDR_RE.test(n)) return "address";
+  if (NOTE_MOD_RE.test(n)) return "note";
+  return null;
+}
+/* MJ1 #٥: التحويلات اللي اللي بعدها بثواني = نفس الشكوى (مش رسالة تانية) */
+const BURST_REASONS = new Set(["complaint", "problem", "order_change", "order_late", "order_issue", "allergy_severe", "review_note", "review_low"]);
 /* intents اللي مايتعدّاش عليها بحث المنيو/البوكس/الأسئلة الشائعة */
 const HARD_INTENTS = new Set(["complaint", "refund", "payment_issue", "site_issue", "cancel_order", "modify_order", "cancel_or_stop", "coupon_help", "human", "stop", "start", "order_status", "special_request"]);
 /* RG1 (١٤/١٠): «ابغي اتواصل مع احد المسؤولين» ⇒ مش «طلب موظف» عادي: طلب مسؤول (asked_manager) — بيروح للمدير على طول مع الكاشير
@@ -709,6 +747,8 @@ export function botConfig(settings) {
     maxRepliesPerMinute: num(x.maxRepliesPerMinute, 3, 30, DEFAULTS.maxRepliesPerMinute),
     orderLookbackHours: num(x.orderLookbackHours, 1, 336, DEFAULTS.orderLookbackHours),
     lateAfterMinutes: num(x.lateAfterMinutes, 20, 600, DEFAULTS.lateAfterMinutes),
+    activeOrderFirst: x.activeOrderFirst !== false, activeOrderHours: num(x.activeOrderHours, 1, 24, DEFAULTS.activeOrderHours), activeOrderMergeSec: num(x.activeOrderMergeSec, 0, 600, DEFAULTS.activeOrderMergeSec),      // MJ1
+    handoverBurstSec: num(x.handoverBurstSec, 0, 600, DEFAULTS.handoverBurstSec),      // MJ1 #٥
     interactive: x.interactive !== false,
     staffAlert: x.staffAlert !== false,
     alertInTest: x.alertInTest === true,
@@ -769,10 +809,10 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback", "campaignReplyHours",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "followBannerSkipHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS)]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "followBannerSkipHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "activeOrderHours", "activeOrderMergeSec", "handoverBurstSec", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS)]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "followBanner", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", "campaignReply", ...FU_BOOLS]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "followBanner", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", "campaignReply", "activeOrderFirst", ...FU_BOOLS]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -1019,6 +1059,7 @@ export const SCHEMA = Object.freeze({
   closedEchoPauseMin: S("staff", "number", "سكوت البوت لو الموظف رد والمطعم مقفول", "سكوت قصير بس.", { min: 0, max: 120, unit: "دقيقة" }),
   handoverRealertMin: S("staff", "number", "تحويل ومحدش رد: نبّه الفريق تاني بعد", "من وقت التحويل، لو مفيش موظف كتب للعميل ولا ضغط «تم». صفر = مفيش تنبيه تاني.", { min: 0, max: 60, unit: "دقيقة" }),
   handoverCustomerNoteMin: S("staff", "number", "ولسه محدش رد: رسالة اعتذار واحدة للعميل بعد", "من وقت التحويل. مرة واحدة لكل تحويل، في وقت الدوام بس. صفر = مفيش.", { min: 0, max: 120, unit: "دقيقة" }),
+  handoverBurstSec: S("staff", "number", "رسالة تحويل واحدة للشكوى: اللي بعدها خلال", "بعد تحويل شكوى أو «عندي ملاحظة»: الصورة أو النص أو الضغطة اللي بتيجي خلال الثواني دي = نفس الشكوى، بتوصل للموظف في المحادثة من غير رد تاني من البوت ولا تنبيه تاني («محادثتك عند الموظف» ×٣ يوم ١٦/١٠). حالة الطلب والمواعيد و«إيقاف» بيتردّ عليهم عادي. صفر = مقفول.", { min: 0, max: 600, unit: "ثانية" }),
   unknownHandoverAfter: S("staff", "number", "تحويل لموظف بعد كام رسالة مش مفهومة ورا بعض", "٢ = أول مرة القائمة، تاني مرة تحويل.", { min: 1, max: 5, unit: "رسالة" }),
   manualMuteHours: S("staff", "number", "مدة الكتم اليدوي", "المدة الافتراضية لزر «كتم البوت في المحادثة دي».", { min: 1, max: 168, unit: "ساعة" }),
   handoffOpenHours: S("staff", "number", "التحويل لموظف يفضل مفتوح", "طول المدة دي البوت بيرد على المواعيد والموقع وحالة الطلب بس، ومفيش تنبيه مكرر.", { min: 1, max: 168, unit: "ساعة" }),
@@ -1036,6 +1077,9 @@ export const SCHEMA = Object.freeze({
   intentsOff: S("limits", "keys", "ردود مقفولة", "أي رد هنا بيتحوّل لموظف بدل ما البوت يجاوب."),
   orderLookbackHours: S("orders", "number", "«وين طلبي» بيدوّر في آخر", "طلبات رقم المرسل نفسه بس.", { min: 1, max: 336, unit: "ساعة" }),
   lateAfterMinutes: S("orders", "number", "الطلب يعتبر متأخر بعد", "طلب نشط أقدم من كده: الحالة + تحويل لموظف.", { min: 20, max: 600, unit: "دقيقة" }),
+  activeOrderFirst: S("orders", "boolean", "الطلب الشغّال أولاً: موقع / عنوان / صورة / «زوّد-بدون-ملاحظة» = ملاحظة على طلبه", "العميل اللي عنده طلب مدفوع أو في المطبخ أو مع المندوب وبعت موقعه أو عنوانه («دور 3 شقة 9») أو صورة أو تعديل («زود الخبز»، «بدون بصل»): البوت مايتعاملش معاها كطلب جديد ولا يفتح المساعد — بيسجّلها ملاحظة على الطلب ده (سجل الطلب في اللوحة)، كارت على بوابة الكاشير والمدير، وللمندوب الخارجي على واتساب لو الطلب في الطريق، ويرد للعميل بسطر واحد «وصلتنا ملاحظتك على طلبك رقم … وبلّغنا المطبخ/المندوب». الشكوى والإلغاء و«وين طلبي» بيمشوا في طريقهم العادي. (١٦/١٠: ٣ حالات)"),
+  activeOrderHours: S("orders", "number", "الطلب الشغّال: خلال", "طلب أقدم من كده (أو اتسلّم / اتسترجع) مابيتحسبش شغّال، والرسالة بتمشي عادي.", { min: 1, max: 24, unit: "ساعة" }),
+  activeOrderMergeSec: S("orders", "number", "ملاحظات ورا بعض على نفس الطلب: تأكيد واحد خلال", "موقع + عنوان + صورة في دقيقة = رسالة تأكيد واحدة؛ الباقي بيتسجّل على الطلب ويوصل للفريق من غير رسالة للعميل. صفر = تأكيد لكل رسالة.", { min: 0, max: 600, unit: "ثانية" }),
   reorderEnabled: S("orders", "boolean", "«نفس طلبي الأخير» بضغطة", "للعميل اللي طلب من الموقع قبل كده: صف في التحية، وبضغطة يوصله رابط سلة جاهزة بنفس طلبه (بعد التأكد إن الأصناف متاحة)."),
   reorderMaxDays: S("orders", "number", "آخر طلب يتعرض لو عمره أقل من", "", { min: 1, max: 365, unit: "يوم" }),
   reorderLinkDays: S("orders", "number", "صلاحية رابط السلة الجاهزة", "", { min: 1, max: 30, unit: "يوم" }),
@@ -2149,10 +2193,10 @@ export function decide(ev, ctx) {
 }
 
 /* نص تنبيه الفريق — رسالة SMS واحدة (fitOneSms حارس أخير). مفيش اسم العميل ولا نص رسالته. */
-const REASON_EN = { review_low: "LOW RATING, please call", review_note: "note on their order", repeated_card: "the bot repeated the same card and the customer kept asking", loop_guard: "automatic messages in a loop, bot muted", repeated_question: "repeated the same question", late_message: "message arrived late", media_flood: "many files with no text", complaint: "complaint", problem: "payment/site problem", order_change: "change/cancel order", asked_human: "asked for staff", asked_manager: "asked for a MANAGER", needs_staff: "question for staff",
+const REASON_EN = { order_note: "note on an active order", review_low: "LOW RATING, please call", review_note: "note on their order", repeated_card: "the bot repeated the same card and the customer kept asking", loop_guard: "automatic messages in a loop, bot muted", repeated_question: "repeated the same question", late_message: "message arrived late", media_flood: "many files with no text", complaint: "complaint", problem: "payment/site problem", order_change: "change/cancel order", asked_human: "asked for staff", asked_manager: "asked for a MANAGER", needs_staff: "question for staff",
   media: "sent photo/voice", not_understood_twice: "not understood", rate_limit: "many messages", data_missing: "bot could not answer", order_not_found: "order not found",
   allergy_severe: "SEVERE ALLERGY question", custom_offer: "wants a tailored group offer", order_late: "LATE order", order_issue: "order issue", send_failed: "bot reply failed" };
-const REASON_AR = { staff_silent: "رقم في قايمة الموظفين كتب ومحدش رد", review_low: "تقييم منخفض", review_note: "ملاحظة على طلب", repeated_card: "البوت كرر نفس الرد والعميل لسه بيسأل", loop_guard: "رسايل آلية متكررة من الرقم — البوت اتكتم", repeated_question: "كرر نفس السؤال", late_message: "رسالة وصلت متأخرة", media_flood: "صور/ملفات كتير من غير نص", allergy_severe: "حساسية شديدة", custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", asked_manager: "طلب مسؤول", needs_staff: "سؤال", media: "صورة/صوت",
+const REASON_AR = { order_note: "ملاحظة على طلب شغّال", staff_silent: "رقم في قايمة الموظفين كتب ومحدش رد", review_low: "تقييم منخفض", review_note: "ملاحظة على طلب", repeated_card: "البوت كرر نفس الرد والعميل لسه بيسأل", loop_guard: "رسايل آلية متكررة من الرقم — البوت اتكتم", repeated_question: "كرر نفس السؤال", late_message: "رسالة وصلت متأخرة", media_flood: "صور/ملفات كتير من غير نص", allergy_severe: "حساسية شديدة", custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", asked_manager: "طلب مسؤول", needs_staff: "سؤال", media: "صورة/صوت",
   not_understood_twice: "غير مفهوم", rate_limit: "رسائل كثيرة", data_missing: "البوت لم يجب", order_not_found: "طلب غير موجود", order_late: "طلب متاخر", order_issue: "مشكلة طلب", send_failed: "فشل رد البوت" };
 export function alertText({ phone, reason, orderNo = null }, lang = "en") {
   const ph = `0${phone}`;
@@ -2421,6 +2465,17 @@ export function register(app, ctx, deps = {}) {
                     AND created_at > NOW() - make_interval(hours => $2::int) ORDER BY created_at DESC LIMIT 1`, [phone, Math.ceil(cfg.orderLookbackHours)]);
       if (r === null) data.orderDbFailed = true;        // القاعدة ماردّتش ⇒ مانقولش «مافيه طلب» — نحوّل لموظف
       data.order = r && r[0] ? r[0] : null;
+      /* MJ1 #٥ (سالم ١٦/١٠: «لو تكرّمت اكتب رقم الطلب» ورقمه في رسالة التقييم اللي قبلها): مفيش طلب على رقم المرسل ⇒ رقم الطلب من المحادثة نفسها —
+         آخر رسالة طلب بعتناها له (تحديث / تقييم) أو طلب رسالة التقييم أو زر «تابع طلبك»، خلال ٧ أيام. الطلب نفسه بيتقري برقمه (الرسالة راحت للرقم ده أصلاً). */
+      if (!data.order && !orderNo && !data.orderDbFailed && need("complaint", "change") && /^5\d{8}$/.test(String(phone || ""))) {
+        const th = await q(`/*mj1:thread_order*/ SELECT order_no FROM (
+            SELECT order_no, created_at AS at FROM wa_messages WHERE phone_norm=$1 AND direction='out' AND order_no IS NOT NULL AND created_at > NOW() - INTERVAL '7 days'
+            UNION ALL SELECT review_order, review_asked_at FROM wa_bot_chats WHERE phone_norm=$1 AND review_order IS NOT NULL AND review_asked_at > NOW() - INTERVAL '7 days'
+            UNION ALL SELECT follow_order, follow_at FROM wa_bot_chats WHERE phone_norm=$1 AND follow_order IS NOT NULL AND follow_at > NOW() - INTERVAL '7 days') x
+          ORDER BY at DESC NULLS LAST LIMIT 1`, [phone]);
+        const tno = th && th[0] && /^[A-Za-z0-9-]{3,30}$/.test(String(th[0].order_no || "")) ? String(th[0].order_no) : null;
+        if (tno) { const r2 = await q(`/*mj1:order_by_no*/ SELECT ${cols} FROM shop_orders WHERE order_no=$1 AND status NOT IN ('expired','pending_payment') LIMIT 1`, [tno]); if (r2 && r2[0]) { data.order = r2[0]; data.orderFromThread = true; } }
+      }
     }
     /* FD1: رد على رسالة «طبقك المفضل» (الضغطة أو «نعم» أول رد — القرار في work) ⇒ العرض المخزّن للرقم ده بس */
     data.campaign = key === "order" && campaign && campaign.fav ? campaign : null;
@@ -2925,6 +2980,26 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       const dctx = { cfg: assistOn ? { ...cfg, humanPauseMin: cfg.assist.staffStepBackMin } : cfg, now, chat: assistOn && !held ? { ...chat, handoff_at: null, handoff_reason: null } : chat,
         lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, sameTextAt: afterWait ? null : rc.sameTextAt, sameTextKey: rc.sameTextKey, failedRecently: rc.failedRecently, data, cls, afterWait, assistOn, cardRun, neverReply: gate5.never, outOfScope: gate5.out };
       let d = decide(ev, dctx);
+      /* ═══ MJ1 #٥ — رسالة تحويل واحدة للشكوى (١٦/١٠: سالم ٣ رسايل في دقيقتين، حسام ٣ رسايل في ٤٠ ثانية) ═══
+         تحويل شكوى/ملاحظة اتفتح من ثواني (handoverBurstSec) ⇒ الصورة أو النص أو «عندي ملاحظة» اللي بعده = نفس الشكوى: بتوصل للموظف في المحادثة من غير رد تاني ولا تنبيه تاني،
+         والمساعد مابيشوفهاش. الحقايق (حالة الطلب / المواعيد / إيقاف) ونجوم التقييم بيتردّ عليهم عادي. */
+      if (ok && !afterWait && cfg.handoverBurstSec > 0 && chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoverBurstSec * 1000 && BURST_REASONS.has(String(chat.handoff_reason || ""))
+        && !FACTUAL_KEYS.has(cls.key) && !["review_star", "review_reason", "review_ok"].includes(cls.key) && d.act !== "silent") {
+        await finish({ decision: "silent", reason: "handover_burst", key: cls.key, detail: `${chat.handoff_reason} ${Math.round((now.getTime() - Date.parse(chat.handoff_at)) / 1000)}s ago — same complaint, staff see it in the chat` });
+        return;
+      }
+      /* ═══ MJ1 — الطلب الشغّال أولاً: موقع / عنوان / صورة / «زوّد-بدون-ملاحظة» من عميل عنده طلب شغّال = ملاحظة على الطلب ده (مش طلب جديد ولا بيع ولا مساعد) ═══ */
+      let noteDone = false;
+      if (ok && cfg.activeOrderFirst && !afterWait && !ev.autoWaited && !ev.burstSeen && !ev.heard && !gate5.never && !gate5.out
+        && (cfg.mode === "live" || cfg.mode === "dry" || (cfg.mode === "test" && cfg.testPhones.includes(phone))) && !(d.act === "silent" && ["outside_window", "stale", "recent_send_failure", "test_mode_not_listed"].includes(d.reason))) {
+        const kind = noteKindOf(ev, cls);
+        const ao = kind ? await activeOrderOf(phone, cfg) : null;
+        if (ao) {
+          const nr = await noteOnActiveOrder({ ev, cls, kind, order: ao, cfg, phone, now, d });
+          if (nr.silent) { await finish({ decision: "silent", reason: nr.reason, key: "order_note", detail: nr.detail }); return; }
+          d = nr.d; noteDone = true;
+        }
+      }
       /* «يشوف ويسمع» (١٢/١٠): صورة أو رسالة صوتية كانت هتاخد رد «ما أقدر أفتح الصور…» + تحويل. لو المساعد شغّال للرقم ده والمفتاح مفتوح والسقف يسمح:
          - الصوت بيتحوّل لنص، والصورة (منيو/إعلان) لملخص مقنّع ⇒ الرسالة بتتعالج من الأول كأنها نص (ومعاها علامة heard للمساعد).
          - صورة دفع / طلب فيه مشكلة ⇒ تحويل لموظف بنص ثابت + اللي اتفهم في ملاحظة الموظف. صورة موقع ⇒ نطلب الموقع نفسه.
@@ -2932,14 +3007,14 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       let mediaDone = false, seenEv = null;
       /* PS5 — كذا صورة ورا بعض: كل صورة بتتسجّل «مستنية» وبتتعمل لها شغلة media_burst؛ آخر شغلة في السلسلة بتشوفهم كلهم وتبعت للمساعد وصف واحد (runMediaBurst ⇒ ev.burstSeen). */
       if (ev.burstSeen) seenEv = { ...ev, text: String(ev.burstSeen), type: "text", media: null, heard: "image" };
-      else if (assistOn && !held && !afterWait && !ev.heard && !ev.noBurst && ev.media && ev.media.kind === "image" && ev.type === "image" && cfg.assist.imagesEnabled && cfg.assist.imageBurstSec > 0 && (d.act === "reply" || (d.act === "wait" && d.waitKind === "unknown_wait"))) {
+      else if (assistOn && !held && !noteDone && !afterWait && !ev.heard && !ev.noBurst && ev.media && ev.media.kind === "image" && ev.type === "image" && cfg.assist.imagesEnabled && cfg.assist.imageBurstSec > 0 && (d.act === "reply" || (d.act === "wait" && d.waitKind === "unknown_wait"))) {
         const due = now.getTime() + cfg.assist.imageBurstSec * 1000;
         const evLite = { phone, phoneNorm: phone, wamid: ev.wamid || null, text: String(ev.text || "").slice(0, 1000), type: "image", interactiveId: null, referral: ev.referral || null, location: null, media: { id: ev.media.id, kind: "image", mime: ev.media.mime || null, caption: ev.media.caption || null }, at: ev.at || now.toISOString(), intent: null };
         const jb2 = await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`mb:${ev.wamid || logId}`, phone, "media_burst", new Date(due).toISOString(), jb(evLite), logId]);
         if (jb2 && jb2.length) { await finish({ decision: "waiting", reason: "media_burst", key: "media", resumeAt: new Date(due).toISOString() }); soon(cfg.assist.imageBurstSec * 1000 + 250); return; }
       }
       /* صورة معاها تعليق: التعليق اتصنّف كنص عادي، بس الصورة لازم تتشاف برضه (الفشل ⇒ الرد على التعليق لوحده زي الأول). */
-      if (!seenEv && assistOn && !held && !ev.heard && ev.media && (d.act === "reply" || (d.act === "wait" && d.waitKind === "unknown_wait")) && (d.key === "media" || (ev.media.kind === "image" && ev.type === "image"))) {
+      if (!seenEv && assistOn && !held && !noteDone && !ev.heard && ev.media && (d.act === "reply" || (d.act === "wait" && d.waitKind === "unknown_wait")) && (d.key === "media" || (ev.media.kind === "image" && ev.type === "image"))) {
         let mu = null;
         try { mu = await understandMedia({ ev, cfg, phone, logId, lang: cls.lang === "en" ? "en" : "ar", data }); } catch (e) { console.error("[assist] media:", e.message); mu = null; }
         if (mu && mu.ev) return work(mu.ev, logId, settings, cfg, afterWait);
@@ -2949,7 +3024,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       /* مساعد الطلبات (وضع التجربة، أرقام التجربة بس): لو الرسالة من نصيبه ومفيش مانع، ردّه بيبدّل قرار القواعد. أي فشل (مهلة، سقف، خطأ، رد اترفض
          مرتين) ⇒ ar.d = null ⇒ قرار القواعد زي ما هو. ar.done بيتنادى بعد التنفيذ عشان الجلسة والسجل والمتابعة يتكتبوا **بعد** ما الرسالة تتبعت فعلاً. */
       let ar = null;
-      if (assistOn && !mediaDone) { try { ar = await assistTurn({ ev: seenEv || ev, logId, settings, cfg, d, cls: seenEv ? { ...cls, key: "seen", rawIntent: "picture", arg: null, entities: {} } : cls, chat, data, know, now, echoAt, phone, held, allowed: assistOn }); } catch (e) { console.error("[assist] turn:", e.message); ar = null; } }
+      if (assistOn && !mediaDone && !noteDone) { try { ar = await assistTurn({ ev: seenEv || ev, logId, settings, cfg, d, cls: seenEv ? { ...cls, key: "seen", rawIntent: "picture", arg: null, entities: {} } : cls, chat, data, know, now, echoAt, phone, held, allowed: assistOn }); } catch (e) { console.error("[assist] turn:", e.message); ar = null; } }
       if (ar && ar.d) d = ar.d;
       const assistDone = async (x) => { if (ar && ar.done) { try { await ar.done(x); } catch (e) { console.error("[assist] done:", e.message); } } };
       /* رسالة القواعد مافهمتهاش (هترد «ما فهمت» الحين أو بعد انتظار الموظف) ⇒ تنزل في طابور أسئلة المدير لو فيها كلمتين معنى على الأقل
@@ -3084,6 +3159,52 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     }
     if (cfg.mode === "test" && !cfg.alertInTest) return "would";
     return alertStaff(settings, cfg, { phone, reason: handoff[0], orderNo, urgent: handoff[1] === "urgent", stage: "new" });
+  }
+
+  /* ═══ MJ1 (١٧/١٠) — الطلب الشغّال أولاً ═══════════════════════════════════════
+     الطلب الشغّال للرقم (أحدث طلب مدفوع/في المطبخ/جاهز/مع المندوب خلال activeOrderHours، مش تجربة). */
+  const ACTIVE_ORDER_SQL = `/*mj1:active*/ SELECT order_no, status, option, total, created_at, pos_ready_at, to_jsonb(shop_orders)->>'handed_at' AS handed_at FROM shop_orders
+    WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status = ANY($2::text[]) AND created_at > NOW() - make_interval(hours => $3::int) ORDER BY created_at DESC LIMIT 1`;
+  async function activeOrderOf(phone, cfg) {
+    if (!/^5\d{8}$/.test(String(phone || ""))) return null;
+    const r = await q(ACTIVE_ORDER_SQL, [phone, [...ACTIVE_ORDER_STATUSES], Math.max(1, Math.ceil(cfg.activeOrderHours))]);
+    return r && r[0] ? r[0] : null;
+  }
+  const courierWaApi = () => { try { return (typeof deps.courierWa === "function" ? deps.courierWa() : deps.courierWa) || null; } catch { return null; } };
+  const NOTE_KIND_AR = { location: "موقع", address: "عنوان", photo: "صورة", note: "ملاحظة" };
+  function noteTextOf(ev, cls, kind) {
+    const text = String(ev.text || "").replace(/^\[[^\]]*\]$/, "").replace(/\s+/g, " ").trim().slice(0, 300);      // «[موقع]» / «[صورة]» = نوع الرسالة مش كلام العميل
+    if (kind === "location") { const a = cls.arg || {}; return `📍 موقع من العميل: https://maps.google.com/?q=${Number(a.lat).toFixed(5)},${Number(a.lng).toFixed(5)}${text && !coordsFromText(text) && !shortMapsLink(text) ? ` — «${text}»` : ""}`; }
+    if (kind === "photo") return `🖼 صورة من العميل في محادثة واتساب${text ? ` — «${text}»` : ""}`;
+    return `${kind === "address" ? "🏠 عنوان" : "📝 ملاحظة"} من العميل: «${text}»`;
+  }
+  /* الملاحظة بتتسجّل على الطلب (سجل الطلب: customer_note) + كارت على البوابة (نفس كارت التحويل، سبب order_note، من غير فتح تحويل على المحادثة: البوت مابيسكتش بعدها
+     ومفيش «نبّهنا الفريق مرة ثانية») + للمندوب الخارجي على واتساب لو الطلب في الطريق وله تشغيلة حيّة (courierwa.noteToCourier). التجربة الصامتة: ولا حاجة بتتكتب.
+     ⇒ { d } (رد التأكيد بيبدّل قرار القواعد) أو { silent: true, reason, detail } (اتسجّلت من غير رسالة: موظف في المحادثة / كتم / تأكيد اتبعت من ثواني). */
+  async function noteOnActiveOrder({ ev, cls, kind, order, cfg, phone, now, d }) {
+    const L = cls.lang === "en" ? "en" : "ar", orderNo = String(order.order_no), text = noteTextOf(ev, cls, kind), onWay = String(order.status) === "on_the_way", dry = cfg.mode === "dry";
+    let courier = { sent: false, reason: onWay ? "no_courier_api" : "not_on_the_way" }, portal = "skipped", timeline = "skipped";
+    if (!dry) {
+      try { emitOrder("customer_note", { orderNo, source: "whatsapp", channel: "wa", ok: true, summary: `${NOTE_KIND_AR[kind]} من العميل على واتساب: ${text}`.slice(0, 280),
+        data: { kind, text, via: "wa_bot", wamid: ev.wamid || null, status: String(order.status), ...(kind === "location" && cls.arg ? { lat: cls.arg.lat, lng: cls.arg.lng } : {}), ...(ev.media && ev.media.id ? { media_id: String(ev.media.id) } : {}) } }); timeline = "ok"; }
+      catch (e) { console.error("[wabot] order note event:", e.message); timeline = "failed"; }
+      if (typeof deps.portalEmit === "function") {
+        try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: "order_note", reasonAr: `${REASON_AR.order_note} — ${NOTE_KIND_AR[kind]}`, urgent: false, orderNo, at: now.toISOString(), test: cfg.mode === "test", note: text.slice(0, 200) }); portal = "ok"; }
+        catch (e) { console.error("[wabot] portal:", e.message); portal = "failed"; }
+      }
+      if (onWay) { const cw = courierWaApi(); if (cw && typeof cw.noteToCourier === "function") { try { courier = (await cw.noteToCourier(orderNo, text)) || { sent: false, reason: "no_answer" }; } catch (e) { courier = { sent: false, reason: String(e.message).slice(0, 60) }; } } }
+    }
+    const detail = `order_note:${kind} ${orderNo} ${order.status} · timeline ${timeline} · portal ${portal} · courier ${courier.sent ? "sent" : courier.reason || "no"}`.slice(0, 200);
+    if (d.act !== "reply") return { silent: true, reason: `order_note_${d.act === "wait" ? d.waitKind : d.reason}`.slice(0, 40), detail };      // سكوت القواعد (موظف في المحادثة، كتم…) بيفضل سكوت: اتسجّلت ومفيش كلام فوق إنسان
+    if (cfg.activeOrderMergeSec > 0) {      // تأكيد واحد للسلسلة: موقع + عنوان + صورة ورا بعض
+      const rc = await q(`/*mj1:recent*/ SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 AND reply_key='order_note' AND decision IN ('replied','dry') AND at > NOW() - make_interval(secs => $2::int) LIMIT 1`, [phone, Math.ceil(cfg.activeOrderMergeSec)]);
+      if (rc && rc.length) return { silent: true, reason: "order_note_merged", detail };
+    }
+    let pl;
+    try { const who = textOf(cfg, onWay ? (courier.sent ? "note_who_courier" : "note_who_team") : "note_who_kitchen", L); pl = toPayload({ body: fill("order_note", textOf(cfg, "order_note", L), { order_no: orderNo, who }) }, { cfg, lang: L, interactive: false, footer: false }); }
+    catch (e) { return { silent: true, reason: "order_note_text", detail: `${detail} · ${String(e.message).slice(0, 40)}`.slice(0, 200) }; }
+    if (payloadProblem(pl)) return { silent: true, reason: "order_note_payload", detail };
+    return { d: { act: "reply", reason: "active_order_first", key: "order_note", rawIntent: cls.rawIntent, lang: L, score: cls.score, payloads: [pl], fallback: [pl], handoff: null, detail, greet: false, resume: null, optout: null, link: null, unknown: false, disclose: false, factual: false, optinAsk: null, optinAnswer: null, channel: null, orderNo } };
   }
 
   /* ── الردود المؤجّلة (قواعد ٢ و٥) ─────────────────────────────────────────
@@ -3894,8 +4015,11 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       }
       if (ro) reorder = { day: orderDay(ro.at, lang), lines: ro.plan.lines.map((l) => ({ name: lang === "en" ? l.nameEn : l.name, qty: l.q })), note: "a one-tap button for the same order is attached under your message" };
     }
+    /* MJ1 (١٦/١٠: «تبي نفس طلبك السابق؟» لعميل طلبه لسه في المطبخ ×٢): طلب شغّال ⇒ مفيش عرض إعادة طلب، والموديل عارف إن له طلب ماشي */
+    let activeOrder = null;
+    if (cfg.activeOrderFirst) { try { const ao = await activeOrderOf(phone, cfg); if (ao) { activeOrder = { order_no: String(ao.order_no), status: String(ao.status) }; reorder = null; } } catch (e) { console.error("[assist] active order:", e.message); } }
     let branch = null; try { branch = fresh ? textOf(cfg, "location", lang) : null; } catch { branch = null; }
-    return { profile, personal, mem, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel, handback, later: laterOk(settings) }), handback: Boolean(handback) };
+    return { profile, personal, mem, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel, handback, later: laterOk(settings), activeOrder }), handback: Boolean(handback) };
   }
   const assistDeps = (cfg, settings, logId) => ({ tools: assist, callModel: assistCall, now: clock,
     knowOf: async () => ({ menu: await menuIndex(settings, clock()), boxes: (await bundles()) || [] }),
@@ -4022,7 +4146,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       session = r.session;
       await assistStore.saveSession(phone, session, now);
       if (cx.handback) { const fl = flowApi(); if (fl && typeof fl.handbackUsed === "function") { try { await fl.handbackUsed(phone); } catch (e) { console.error("[assist] handback used:", e.message); } } }
-      const turnId = await turnRow({ handledBy: "assistant", outcome, masked: tr.sent, text: r.handover ? reply.body : r.text, trace: tr, cartCode: r.cart ? r.cart.code : null, handover: r.handover ? r.handover.reason : null });
+      const turnId = await turnRow({ handledBy: "assistant", outcome, masked: tr.sent, text: r.handover ? reply.body : r.text, trace: tr, cartCode: r.cart ? r.cart.code : null, handover: r.handover ? r.handover.reason : null, lang: L });      // MJ1 #٣: لغة الدور زي ما اتردّ بيها فعلاً
       await assistStore.recordSuggestions(phone, session.id, turnId, tr.suggestions, r.cart ? r.cart.code : null);      // S1: المحسوب اللي ماتعرضش بيتسجّل كمان (بسببه)
       /* قاعدة المعرفة: الإجابة اللي اتستخدمت تتعدّ، والسؤال اللي المساعد ماعرفش يجاوبه (أو حوّله لموظف) ينزل في طابور المدير — مقنّع ومن غير أي ربط بالعميل. */
       { const kb = kbApi();

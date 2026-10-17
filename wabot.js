@@ -78,7 +78,7 @@ export function normalize(s) {
 const hasArabic = (s) => /[؀-ۿ]/.test(String(s || ""));
 /* إنجليزي = حروف لاتينية وكلمات إنجليزية معروفة، مو فرانكو (فيه أرقام داخل الكلمة) */
 export function detectLang(text) {
-  const t = String(text || "");
+  const t = String(text || "").replace(/https?:\/\/\S+|www\.\S+/gi, " ");      // MJ1 #٣: رابط لوحده (أو رابط + إيموجي) = عربي، مش إنجليزي
   if (!t.trim() || hasArabic(t)) return "ar";
   const n = normalize(t);
   if (/\b[a-z]*[2375689][a-z]+\b|\b[a-z]+[2375689]\b/.test(n)) return "ar"; // فرانكو

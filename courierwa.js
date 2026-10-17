@@ -450,5 +450,20 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, ...r });
   });
 
-  return { sendJob, sendCard, openerFor, onClaim, handleTap, ensureSchema };
+  /* MJ1 (١٧/١٠): ملاحظة من العميل على طلب في الطريق (عنوان / موقع / «زوّد…») ⇒ للمندوب الخارجي على واتساب لو له تشغيلة حيّة على الطلب ده. ⇒ { sent, reason } — عمرها ما بترمي. */
+  async function noteToCourier(orderNo, text) {
+    try {
+      if (!(await ensureSchema())) return { sent: false, reason: "schema" };
+      const run = await latestRun(orderNo);
+      if (!run || !isLive(run)) return { sent: false, reason: run ? "not_live" : "no_run" };
+      const pn = pn9(run.courier_phone);
+      if (!pn) return { sent: false, reason: "no_phone" };
+      const body = `📝 ملاحظة من عميل الطلب ${orderNo}:\n${cut(String(text || ""), 600)}`;
+      const r = await freeSend(pn, run, body, []);
+      const ok = r && r.ok === true;
+      timeline(orderNo, ok ? "ملاحظة العميل وصلت للمندوب على واتساب" : "ملاحظة العميل ماوصلتش للمندوب على واتساب", { ok, note: cut(String(text || ""), 200), error: ok ? null : String((r && (r.skipped || r.error)) || "failed").slice(0, 80) });
+      return { sent: ok, reason: ok ? null : String((r && (r.skipped || r.error)) || "failed").slice(0, 80) };
+    } catch (e) { return { sent: false, reason: String(e?.message || e).slice(0, 80) }; }
+  }
+  return { sendJob, sendCard, openerFor, onClaim, handleTap, ensureSchema, noteToCourier };
 }

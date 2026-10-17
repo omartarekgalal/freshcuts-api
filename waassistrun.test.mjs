@@ -120,6 +120,17 @@ test("language of a turn: Arabic script, Franco-Arabic, English, another script,
   assert.deepEqual([L("ابي pizza"), L("abi box crepe"), L("3ayez akl"), L("kam el burger"), L("Hi I want pizza"), L("delivery please")], ["ar", "ar", "ar", "ar", "en", "en"]);
   assert.deepEqual([L("Pickup", "en"), L("Pickup", "ar"), L("ok", "ar"), L("👍", "en"), L("📍", "ar"), L("2", "en")], ["en", "ar", "ar", "en", "ar", "en"]);
   assert.equal(L("नमस्ते, मुझे खाना चाहिए"), "en", "another script: a short English reply");
+  /* MJ1 #٣ (هشام ١٦/١٠: رابط فيسبوك لوحده ⇒ «Hi Hisham! I'm Majed…»): رابط / إيموجي / رقم / ملصق لوحدهم = لغة المحادثة، وإلا عربي — عمره ما إنجليزي */
+  assert.deepEqual([L("https://www.facebook.com/reel/1234567890/"), L("https://fb.watch/abc?mibextid=x", "en"), L("https://fb.watch/abc", "ar"), L("شوف https://www.facebook.com/share/v/1/"), L("https://x.y/z 👍", null), L("[sticker]", null), L("Hi https://fb.watch/abc")],
+    ["ar", "en", "ar", "ar", "ar", "ar", "en"]);
+});
+
+test("MJ1 — the context tells the model about an order in progress (no reorder, no selling), and the rule is in CTX_RULES", () => {
+  const c = AR.buildContext({ first: true, activeOrder: { order_no: "W1790016140849", status: "accepted" }, reorder: { day: "امبارح", lines: [] } });
+  assert.deepEqual(c.customer_has_an_order_in_progress, { order_no: "W1790016140849", status: "accepted", rule: AR.CTX_RULES.activeOrder });
+  assert.match(AR.CTX_RULES.activeOrder, /Do not sell, do not suggest a reorder/);
+  assert.equal("customer_has_an_order_in_progress" in AR.buildContext({ first: true }), false);
+  assert.equal("customer_has_an_order_in_progress" in AR.buildContext({ first: false, activeOrder: { order_no: "W1", status: "paid" } }), true, "every turn, not only the first");
 });
 
 test("the context block: minimal customer fields, never consent, refunds or what a low rating said", () => {
