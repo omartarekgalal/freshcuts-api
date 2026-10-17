@@ -77,7 +77,12 @@ export function availabilityBody(spuIds, available, onShelfMs, shopId = SHOP_ID)
    سعر العرض بيتحسب من سعر التوصيل في المنيو بنفس تقريب البوابة (قرشين).  */
 export const actPriceOf = (price, percent) => Math.round(Number(price) * (100 - Number(percent))) / 100;
 
-export function promoBody({ items, menuById, startSec, endSec, autoRenew = false, orderLimit = -1, shopId = SHOP_ID }) {
+/* KT2 (١٧/١٠، عمر: عرض استقطاب للعملاء الجداد بس، وحدة للطلب وسقف يومي): userType ١ = كل العملاء، ٢ = العملاء الجداد (زي عرض التوصيل «عميل جديد» الموجود)؛
+   dailyLimit لكل SKU (٠ = من غير سقف). الافتراضي زي الأول. */
+export const PROMO_AUDIENCE = Object.freeze({ all: 1, new: 2 });
+export function promoBody({ items, menuById, startSec, endSec, autoRenew = false, orderLimit = -1, shopId = SHOP_ID, userType = 1, dailyLimit = 0 }) {
+  const ut = [1, 2].includes(Number(userType)) ? Number(userType) : 1;
+  const dl = Number.isInteger(Number(dailyLimit)) && Number(dailyLimit) > 0 ? Math.min(1000, Number(dailyLimit)) : 0;
   const spuActSaveParam = items.map(({ spuId, percent }) => {
     const spu = menuById.get(Number(spuId));
     if (!spu) throw new Error(`الصنف ${spuId} مش في منيو كيتا`);
@@ -99,7 +104,7 @@ export function promoBody({ items, menuById, startSec, endSec, autoRenew = false
         originalPrice: String(k.price),
         actPrice: String(actPriceOf(k.price, percent)),
         discountValue: String(Number(percent)),
-        dailyLimit: 0,
+        dailyLimit: dl,
       })),
     };
   });
@@ -117,7 +122,7 @@ export function promoBody({ items, menuById, startSec, endSec, autoRenew = false
       benefitType: 5,
       isAutoDelay: !!autoRenew,
       needConfirm: 0,
-      userType: 1,
+      userType: ut,
     },
     spuActSaveParam,
   };
@@ -362,7 +367,8 @@ export function register(app, ctx) {
     if (endSec - startSec > 366 * 86400) return c.json({ ok: false, error: "أطول مدة سنة" });
     try {
       const menu = await readMenu(true);
-      const body = promoBody({ items, menuById: menu.byId, startSec, endSec, autoRenew: !!b.autoRenew, orderLimit: b.orderLimit });
+      const body = promoBody({ items, menuById: menu.byId, startSec, endSec, autoRenew: !!b.autoRenew, orderLimit: b.orderLimit,
+        userType: PROMO_AUDIENCE[String(b.audience || "all")] || 1, dailyLimit: b.dailyLimit });      // KT2
       const names = body.spuActSaveParam.map((x) => `${x.name} -${items.find((i) => i.spuId === x.spuId).percent}%`);
       const check = await keetaCall("/api/marketing/merchant/promotion/single-shop/act-batch-check", body);
       const rejected = (Array.isArray(check) ? check : []).filter((r) => r && r.codeSuccess === false);
