@@ -129,6 +129,14 @@ export function matchMirrors(posRows, shopRows, { minutes = 20, sar = 2 } = {}) 
   return mirrors;
 }
 
+/* RC2: يوم طلب نقطة البيع زي ما تاب سينس بتحسبه (calendar_day: DATE من pg بتيجي Date بنص ليل محلي) — وإلا يوم الطلب بقطع ٤:٠٠ */
+export function posDay(p) {
+  const c = p && p.calendar_day;
+  if (c instanceof Date && !isNaN(c)) { const z = new Date(c.getTime() - c.getTimezoneOffset() * 60000); return z.toISOString().slice(0, 10); }
+  if (typeof c === "string" && /^\d{4}-\d{2}-\d{2}/.test(c)) return c.slice(0, 10);
+  return bizDay(p.ts);
+}
+
 /** اقتصاديات طلب تطبيق: العمولة/رسوم الدفع/دعم التوصيل حسب عقده في يوم الطلب. */
 export function appEconomics(app, day, total, netRaw, rates, basis = "net") {
   const cfg = rates?.[app];
@@ -307,9 +315,13 @@ export function register(app, ctx, deps = {}) {
   async function loadWindow(startUtc, endUtc, cfg) {
     if (deps.mffees) await deps.mffees.ensure().catch(() => {});
     const pad = 30 * 60e3; // طلبات متجر حوالين الحدود عشان مطابقة المرايا
+    /* RC2 (١٧/١٠): يوم طلب نقطة البيع = يوم تاب سينس نفسه (calendar_day = يوم إقفال الشيفت)، مش وقت الطلب بقطع ٤:٠٠ —
+       ٨ طلبات في ١٤ يوم اتقفلت في يوم لاحق (مثلاً #4966 ٢٠٦ ر.س اتطلب ٣/١٠ ٢١:٢٦ واتقفل على ٤/١٠) فكانت اللوحة تخالف إقفال
+       الكاشير في ٧ من ١٤ يوم بفروق لحد ±٨٪. الحد الأعلى بوقت الطلب بيفضل عشان مقارنة «نفس الساعة» في اليوم الجزئي. */
+    const fromDay = bizDay(startUtc), toDay = bizDay(new Date(endUtc.getTime() - 1));
     const [pos, shop] = await Promise.all([
       pool.query(
-        `SELECT o.order_id, o.order_date AS ts, o.order_type, o.order_option, o.total, o.net,
+        `SELECT o.order_id, o.order_date AS ts, o.calendar_day, o.order_type, o.order_option, o.total, o.net,
                 COALESCE((SELECT array_agg(lower(k)) FROM jsonb_object_keys(COALESCE(o.payments,'{}'::jsonb)) k), '{}') AS pay_keys,
                 s.source, s.source_note,
                 COALESCE(NULLIF(s.phone_norm, ''), NULLIF(tc.phone_norm, '')) AS ident,
@@ -319,7 +331,7 @@ export function register(app, ctx, deps = {}) {
            FROM ts_orders o
            LEFT JOIN order_sources s ON s.order_id = o.order_id
            LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
-          WHERE o.order_date >= $1 AND o.order_date < $2`, [startUtc, endUtc]),
+          WHERE o.calendar_day >= $2::date AND o.calendar_day <= $3::date AND o.order_date < $1`, [endUtc, fromDay, toDay]),
       pool.query(
         // طلبات الاختبار بتتحمّل برضه — عشان مرآيتها في نقطة البيع تتشال — بس مابتتحسبش
         `SELECT so.order_no, so.created_at AS ts, so.accepted_at, so.pos_tenant_order_id, so.option, so.total, so.subtotal, so.delivery_fee, so.tip, so.coupon,
@@ -334,6 +346,15 @@ export function register(app, ctx, deps = {}) {
             AND so.status <> ALL($3::text[])`,
         [new Date(startUtc.getTime() - pad), new Date(endUtc.getTime() + pad), NOT_PAID, TEST_COUPONS]),
     ]);
+    /* RC2: مرآة طلب موقع اتقفلت في نقطة البيع في يوم تاني — طلب المتجر نفسه بره النافذة (±٣٠ د)، نجيبه للمطابقة بالرقم بس (مش للعدّ) */
+    const haveShop = new Set(shop.rows.map((s) => String(s.pos_tenant_order_id ?? "")));
+    const extIds = pos.rows.filter((p) => /external/i.test(String(p.order_type || "")) && !haveShop.has(String(p.order_id))).map((p) => String(p.order_id));
+    if (extIds.length) {
+      const extra = await pool.query(
+        `SELECT so.order_no, so.created_at AS ts, so.accepted_at, so.pos_tenant_order_id, so.option, so.total, so.subtotal, so.delivery_fee, TRUE AS mirror_only
+           FROM shop_orders so WHERE so.pos_tenant_order_id::text = ANY($1::text[])`, [extIds]).catch(() => ({ rows: [] }));
+      shop.rows.push(...extra.rows);
+    }
     return unify(pos.rows, shop.rows, startUtc, endUtc, cfg);
   }
 
@@ -350,10 +371,11 @@ export function register(app, ctx, deps = {}) {
       let ch = p._ch;
       if (ch === "mirror?") { ch = "app:external"; stats.unmatchedExternal++; }
       if (ch === "qr") { ch = "store"; stats.qrLegacy++; }
-      rows.push({ src: "pos", id: p.order_id, ch, ts: p.ts, day: bizDay(p.ts), total: num(p.total), net: num(p.net), ident: p.ident || null,
+      rows.push({ src: "pos", id: p.order_id, ch, ts: p.ts, day: posDay(p), total: num(p.total), net: num(p.net), ident: p.ident || null,
         opt: /deliver|توصيل/i.test(p.order_option || "") ? "delivery" : "pickup" });
     }
     for (const s of shopRows) {
+      if (s.mirror_only) continue;      // RC2: اتجاب للمطابقة بس
       const t = new Date(s.ts).getTime();
       if (t < s0 || t >= s1) continue;
       if (s.test) { stats.testExcluded = (stats.testExcluded || 0) + 1; continue; }

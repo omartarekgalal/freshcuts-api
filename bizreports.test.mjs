@@ -120,3 +120,10 @@ test("RC1: without an id the time window also accepts the manager's acceptance t
   const m2 = matchMirrors(pos, [{ order_no: "W1", ts: "2026-10-16T09:49:05Z", total: 250, subtotal: 250, delivery_fee: 0 }]);
   assert.equal(m2.size, 0);
 });
+
+test("RC2: a POS order's day is TabSense's calendar_day (the shift it was closed in), falling back to the 04:00 rule", async () => {
+  const { posDay } = await import("./bizreports.js");
+  assert.equal(posDay({ ts: "2026-10-03T18:26:00Z", calendar_day: new Date(2026, 9, 4) }), "2026-10-04");   // ordered 3/10 21:26 Riyadh, closed on 4/10
+  assert.equal(posDay({ ts: "2026-10-03T18:26:00Z", calendar_day: "2026-10-04T00:00:00.000Z" }), "2026-10-04");
+  assert.equal(posDay({ ts: "2026-10-16T22:36:00Z" }), "2026-10-16");                                        // 01:36 Riyadh ⇒ still 16/10
+});
