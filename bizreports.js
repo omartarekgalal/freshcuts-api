@@ -97,11 +97,24 @@ export function classifyPos(o, apps) {
 export function matchMirrors(posRows, shopRows, { minutes = 20, sar = 2 } = {}) {
   const cands = posRows.filter((p) => p._ch === "mirror?");
   const used = new Set(), mirrors = new Set();
+  /* RC1 (١٧/١٠، عمر: «في فرق بين إقفال الكاشير ومبيعات اليوم»): المطابقة الأكيدة الأول — رقم طلب نقطة البيع اللي
+     اتسجّل على طلب المتجر لما نزل الكاشير (shop_orders.pos_tenant_order_id = ts_orders.order_id). طلب W…144892 يوم ١٦/١٠
+     اتقبل بعد ٢١ دقيقة من الدفع فالمطابقة بالوقت (±٢٠ د من وقت الطلب) فشلت واتحسب مرتين (٢٥٠ ر.س «تطبيق غير محدد»). */
+  const byId = new Map();
+  for (const s of shopRows) { const id = s.pos_tenant_order_id == null ? "" : String(s.pos_tenant_order_id); if (id) byId.set(id, s.order_no); }
+  for (const p of cands) {
+    const sn = byId.get(String(p.order_id));
+    if (sn && !used.has(sn)) { mirrors.add(p.order_id); used.add(sn); }
+  }
   const pairs = [];
   for (const p of cands) {
+    if (mirrors.has(p.order_id)) continue;
     const pt = new Date(p.ts).getTime();
     for (const s of shopRows) {
-      const dt = Math.abs(new Date(s.ts).getTime() - pt) / 60000;
+      if (used.has(s.order_no)) continue;
+      // الوقت: من وقت الطلب أو من وقت قبول المدير (نسخة الكاشير بتتعمل عند القبول)
+      const times = [s.ts, s.accepted_at].filter(Boolean).map((x) => new Date(x).getTime());
+      const dt = Math.min(...times.map((x) => Math.abs(x - pt) / 60000));
       if (dt > minutes) continue;
       const amounts = [num(s.total), num(s.subtotal), num(s.subtotal) + num(s.delivery_fee)];
       if (!amounts.some((a) => Math.abs(a - num(p.total)) <= sar)) continue;
@@ -309,7 +322,7 @@ export function register(app, ctx, deps = {}) {
           WHERE o.order_date >= $1 AND o.order_date < $2`, [startUtc, endUtc]),
       pool.query(
         // طلبات الاختبار بتتحمّل برضه — عشان مرآيتها في نقطة البيع تتشال — بس مابتتحسبش
-        `SELECT so.order_no, so.created_at AS ts, so.option, so.total, so.subtotal, so.delivery_fee, so.tip, so.coupon,
+        `SELECT so.order_no, so.created_at AS ts, so.accepted_at, so.pos_tenant_order_id, so.option, so.total, so.subtotal, so.delivery_fee, so.tip, so.coupon,
                 NULLIF(so.phone_norm, '') AS ident, so.status, so.attrib_source,
                 (so.is_test IS TRUE OR upper(COALESCE(so.coupon, '')) = ANY($4::text[])) AS test,
                 -- رسوم ماي فاتورة الفعلية (mffees.js)

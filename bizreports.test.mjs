@@ -94,3 +94,29 @@ test("indicators: new vs returning, time to second order, first-channel cohorts"
   assert.equal(store.return30, 1);
   assert.equal(out.byFirstChannel.find((x) => x.group === "app:keeta").return30, 0);
 });
+
+test("RC1: a store order whose POS mirror was created 21 min after payment is matched by pos_tenant_order_id, not counted twice", () => {
+  const pos = [
+    { order_id: "5534", _ch: "mirror?", ts: "2026-10-16T10:10:14Z", total: 250.0215 },   // created at acceptance
+    { order_id: "5560", _ch: "mirror?", ts: "2026-10-16T15:40:00Z", total: 88 },        // a real app order, no store match
+  ];
+  const shop = [
+    { order_no: "W144892", ts: "2026-10-16T09:49:05Z", accepted_at: "2026-10-16T10:10:34Z", pos_tenant_order_id: "5534", total: 250, subtotal: 250, delivery_fee: 0 },
+  ];
+  const m = matchMirrors(pos, shop);
+  assert.deepEqual([...m], ["5534"]);
+});
+
+test("RC1: without an id the time window also accepts the manager's acceptance time; one store order can mirror only one POS row", () => {
+  const pos = [
+    { order_id: "9001", _ch: "mirror?", ts: "2026-10-16T10:10:14Z", total: 250 },
+    { order_id: "9002", _ch: "mirror?", ts: "2026-10-16T10:11:00Z", total: 250 },
+  ];
+  const shop = [{ order_no: "W1", ts: "2026-10-16T09:49:05Z", accepted_at: "2026-10-16T10:10:34Z", pos_tenant_order_id: null, total: 250, subtotal: 250, delivery_fee: 0 }];
+  const m = matchMirrors(pos, shop);
+  assert.equal(m.size, 1);
+  assert.ok(m.has("9001"));
+  // old behaviour (no accepted_at) still refuses a 21-minute gap
+  const m2 = matchMirrors(pos, [{ order_no: "W1", ts: "2026-10-16T09:49:05Z", total: 250, subtotal: 250, delivery_fee: 0 }]);
+  assert.equal(m2.size, 0);
+});
