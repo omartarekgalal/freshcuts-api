@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { Hono } from "hono";
 import {
   canSeeWaFile, parseOrderRef, campaignState, messageItem, campaignItem, mergePage, summaryOf, cardOf, webOrderOut, posOrderOut,
-  handoverItem, ownerItem, ratingItem, consentItem, register, currentOrderOut, etaOut, profileBrief, FINAL_ORDER_STATUSES,
+  handoverItem, ownerItem, ratingItem, consentItem, register, currentOrderOut, etaOut, profileBrief, FINAL_ORDER_STATUSES, ATTENTION_ORDER_STATUSES,
+  CURRENT_ORDER_SQL,
 } from "./c360wa.js";
 import { profileView, profileCfg } from "./custprofile.js";
 
@@ -272,6 +273,42 @@ test("IBX1a currentOrderOut: Arabic status + courier + pay + items; a finished o
   assert.equal(etaOut({ range: { from: T(10), to: T(20), fromMin: 10, toMin: 20 } }).text, "خلال 10~20 دقيقة تقريباً");
   assert.equal(etaOut(null), null);
   assert.ok(FINAL_ORDER_STATUSES.includes("delivered") && FINAL_ORDER_STATUSES.includes("rejected_refunded"));
+  assert.equal(o.attention, false); assert.equal(o.attentionLabel, null);
+});
+
+/* مراجعة ١٧/١٠: «التوصيل اتعثر» حالة قرار (البورتال بيعيد طلب مندوب منها) — لازم تفضل شغّالة في «الطلب الحالي» بعلامة ⚠️،
+   مش «خلص» ولا تختفي بعد ٣ ساعات ولا يبقى عليها وقت متوقّع. نفس الحكم على «فشل الاسترجاع» و«مدفوع ومش واصل لنقطة البيع». */
+test("IBX1a currentOrderOut: courier_cancelled stays ACTIVE with «⚠️ … محتاج قرار» — not done, no eta, still current after 3 h; same for refund_failed / paid_pos_failed", () => {
+  const now = Date.parse(T(0));
+  const stuck = { ...ACTIVE, status: "courier_cancelled", created_at: T(-200), ship_status: "cancelled", ship_driver: null, ship_assigned_at: null };
+  const o = currentOrderOut(stuck, { now, eta: { at: T(10), minutes: 10, soon: false } });
+  assert.ok(o, "an undecided courier_cancelled older than 3 h is still the current order");
+  assert.equal(o.done, false, "a decision state is not «finished»");
+  assert.equal(o.attention, true); assert.equal(o.statusLabel, "⚠️ التوصيل اتعثر — محتاج قرار"); assert.equal(o.attentionLabel, "⚠️ التوصيل اتعثر — محتاج قرار");
+  assert.equal(o.eta, null, "no promised time while the order waits for a decision");
+  assert.equal(o.courier.statusLabel, "اتلغى", "the courier leg still shows why");
+  assert.equal(o.paid, true);
+  const rf = currentOrderOut({ ...ACTIVE, status: "refund_failed", created_at: T(-300) }, { now });
+  assert.deepEqual([rf.done, rf.attention, rf.statusLabel], [false, true, "⚠️ فشل الاسترجاع — محتاج تدخّل الإدارة"]);
+  const pf = currentOrderOut({ ...ACTIVE, status: "paid_pos_failed", created_at: T(-30) }, { now, eta: { soon: true } });
+  assert.deepEqual([pf.done, pf.attention, pf.statusLabel, pf.eta], [false, true, "⚠️ مدفوع ومش واصل لنقطة البيع — بنعيد المحاولة", null]);
+  for (const s of Object.keys(ATTENTION_ORDER_STATUSES)) assert.ok(!FINAL_ORDER_STATUSES.includes(s), `${s} must not be final`);
+  for (const s of ["delivered", "collected", "rejected_refunded", "cancelled", "expired"]) assert.ok(FINAL_ORDER_STATUSES.includes(s), `${s} is a real end`);
+  assert.equal(currentOrderOut({ ...ACTIVE, status: "rejected_refunded", created_at: T(-100) }, { now }).done, true, "a refunded rejection IS finished");
+  assert.equal(currentOrderOut({ ...ACTIVE, status: "rejected_refunded", created_at: T(-200) }, { now }), null);
+  assert.match(CURRENT_ORDER_SQL, /\$3::text\[\]\) AND o\.created_at > NOW\(\) - INTERVAL '48 hours'/, "decision states stay listed for 48 h, not 12");
+});
+
+test("IBX1a customer route: courier_cancelled comes back as the current order (active, ⚠️, no eta) and the SQL gets the attention list", async () => {
+  const stuck = { ...ACTIVE, status: "courier_cancelled", created_at: T(-200), ship_status: "cancelled", ship_driver: null };
+  const app = makeApp({ current: stuck });
+  const r = await app.get(`/api/cms/wa/threads/${KEY}/customer`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.current.no, "W1790077"); assert.equal(r.body.current.done, false); assert.equal(r.body.current.attention, true);
+  assert.equal(r.body.current.statusLabel, "⚠️ التوصيل اتعثر — محتاج قرار"); assert.equal(r.body.current.eta, null);
+  assert.deepEqual(r.body.partial, [], "no eta attempt (and no eta failure) on a decision state");
+  const q = app.calls.find((x) => /FROM shop_orders o\s+LEFT JOIN LATERAL/.test(x.sql));
+  assert.deepEqual(q.p[1], [...FINAL_ORDER_STATUSES]); assert.deepEqual(q.p[2], ["courier_cancelled", "refund_failed", "paid_pos_failed"]);
 });
 
 test("IBX1a profileBrief: segments + short Arabic lines from the classification row, empty values dropped", () => {

@@ -175,7 +175,12 @@ export function cardOf(profile, pn, { owner = false, full = true } = {}) {
 /* ═══ IBX1a (عمر ١٧/١٠: «من الشات لو ضغطنا على العميل يبان التفاصيل بطريقة احترافية والطلبات ولو في طلب حالي أو طلبات سابقة») ═══
    كارت العميل جنب المحادثة في اللوحة: GET /api/cms/wa/threads/:key/customer — قراية بس.
    الطلب الحالي = آخر طلب موقع للرقم في آخر ١٢ ساعة لسه ماخلصش (أو خلص من أقل من ٣ ساعات ⇒ done:true)، بحالته والمندوب والدفع
-   والوقت المتوقّع (تقدير — نفس حساب صفحة التتبع). */
+   والوقت المتوقّع (تقدير — نفس حساب صفحة التتبع).
+   مراجعة ١٧/١٠: «خلص» = نهاية حقيقية بس (اتوصّل / اتسلّم / اترجّع / اتلغى / انتهى). «التوصيل اتعثر» (courier_cancelled) حالة **قرار** مش نهاية —
+   البورتال بيعيد طلب مندوب منها («قرّر: إعادة إرسال ولا استرجاع»)، و«فشل الاسترجاع» (refund_failed) بيفضل إنذار أحمر لحد ما حد يسترجع بإيده
+   (shop.js)، و«مدفوع ومش واصل لنقطة البيع» (paid_pos_failed) بنعيد المحاولة عليه. التلاتة ⇒ شغّالين (done:false)، بعلامة ⚠️ في الحالة
+   و`attention:true`، من غير وقت متوقّع، وبيفضلوا «الطلب الحالي» لحد ٤٨ ساعة (نافذة إعادة محاولة الاسترجاع في shop.js) مش ١٢ — لحد ما يتحوّلوا
+   لحالة نهاية. */
 export const ORDER_STATUS_AR = Object.freeze({
   pending_payment: "بانتظار الدفع", paid: "مدفوع", pos_created: "وصل نقطة البيع", accepted: "قبله الكاشير", preparing: "في المطبخ", pickup_ready: "جاهز للاستلام",
   courier_requested: "بنطلب مندوب", courier_assigned: "المندوب رايح للمحل", on_the_way: "في الطريق للعميل", delivered: "اتوصّل", collected: "العميل استلمه",
@@ -185,13 +190,21 @@ export const ORDER_STATUS_AR = Object.freeze({
 export const COURIER_STATUS_AR = Object.freeze({ pending: "لسه مفيش مندوب", requested: "بنطلب مندوب", assigned: "اتعيّن مندوب", arrived: "المندوب وصل المحل", picked: "المندوب استلم الطلب", delivered: "اتوصّل", cancelled: "اتلغى", failed: "اتعثر" });
 export const PROVIDER_AR = Object.freeze({ leajlak: "لاجلك", cervo: "سيرفو", flying_arrow: "فلاينج أرو", flyingarrow: "فلاينج أرو", external: "مندوب خارجي", manual: "يدوي", district: "مندوب الحي" });
 export const OPTION_AR = Object.freeze({ delivery: "توصيل", pickup: "استلام", takeaway: "استلام", dine_in: "صالة", table: "طاولة" });
-export const FINAL_ORDER_STATUSES = Object.freeze(["delivered", "collected", "rejected_refunded", "refund_failed", "payment_failed", "cancelled", "expired", "pending_payment", "courier_cancelled"]);
+/* نهاية حقيقية بس — نفس مفردات shop.js (STAGES) / portal-core.js: courier_cancelled و refund_failed مش هنا عمداً (حالات قرار، شوف فوق). */
+export const FINAL_ORDER_STATUSES = Object.freeze(["delivered", "collected", "rejected_refunded", "payment_failed", "cancelled", "expired", "pending_payment"]);
+/* حالات «محتاجة قرار/تدخّل»: شغّالة، بتطلع بالعلامة دي مكان الحالة العادية، ومن غير وقت متوقّع. */
+export const ATTENTION_ORDER_STATUSES = Object.freeze({
+  courier_cancelled: "⚠️ التوصيل اتعثر — محتاج قرار",
+  refund_failed: "⚠️ فشل الاسترجاع — محتاج تدخّل الإدارة",
+  paid_pos_failed: "⚠️ مدفوع ومش واصل لنقطة البيع — بنعيد المحاولة",
+});
 export const CURRENT_ORDER_SQL = `SELECT o.*, NULLIF(to_jsonb(o)->>'table_no','')::int AS table_no_i,
        s.status AS ship_status, s.driver AS ship_driver, s.provider AS ship_provider, s.updated_at AS ship_updated_at, s.arrived_at AS ship_arrived_at,
        s.picked_at AS ship_picked_at, s.delivered_at AS ship_delivered_at, to_jsonb(s)->>'assigned_at' AS ship_assigned_at, s.tracking_url AS ship_tracking_url
   FROM shop_orders o
   LEFT JOIN LATERAL (SELECT * FROM dl_shipments WHERE shop_order_no = o.order_no ORDER BY id DESC LIMIT 1) s ON TRUE
- WHERE o.phone_norm = $1 AND o.status NOT IN ('pending_payment','expired','payment_failed') AND o.created_at > NOW() - INTERVAL '12 hours'
+ WHERE o.phone_norm = $1 AND o.status NOT IN ('pending_payment','expired','payment_failed')
+   AND (o.created_at > NOW() - INTERVAL '12 hours' OR (o.status = ANY($3::text[]) AND o.created_at > NOW() - INTERVAL '48 hours'))
  ORDER BY (o.status = ANY($2::text[])) ASC, o.created_at DESC LIMIT 1`;
 /* الوقت المتوقّع من حساب التتبع ⇒ سطر للموظف (تقدير، معلّم كده) */
 export function etaOut(eta) {
@@ -205,6 +218,7 @@ export function currentOrderOut(o, { eta = null, now = Date.now() } = {}) {
   if (!o) return null;
   const status = String(o.status || "");
   const done = FINAL_ORDER_STATUSES.includes(status);
+  const attention = ATTENTION_ORDER_STATUSES[status] || null;   // حالة قرار ⇒ شغّالة مهما طال وقتها
   const ageMin = Math.max(0, Math.round((now - ms(o.created_at)) / 60_000));
   if (done && ageMin > 180) return null;      // خلص من أكتر من ٣ ساعات ⇒ مش «حالي» (بيظهر في آخر الطلبات)
   const drv = o.ship_driver && typeof o.ship_driver === "object" ? o.ship_driver : null;
@@ -220,13 +234,14 @@ export function currentOrderOut(o, { eta = null, now = Date.now() } = {}) {
   const items = Array.isArray(o.items) ? o.items : [];
   const a = o.address && typeof o.address === "object" ? o.address : null;
   return {
-    no: o.order_no, at: iso(o.created_at), ageMin, status, statusLabel: ORDER_STATUS_AR[status] || status || "—", done,
+    no: o.order_no, at: iso(o.created_at), ageMin, status, statusLabel: attention || ORDER_STATUS_AR[status] || status || "—", done,
+    attention: Boolean(attention), attentionLabel: attention,
     option, optionLabel: OPTION_AR[option] || option || null, tableNo: tableNo > 0 ? tableNo : null,
     total: num(o.total), deliveryFee: num(o.delivery_fee), discount: num(o.discount_amount), coupon: o.coupon || null, isTest: o.is_test === true,
     paid: !["pending_payment", "payment_failed", "expired"].includes(status), payGateway: o.pay_gateway || null,
     acceptedAt: iso(o.accepted_at), readyAt: iso(o.pos_ready_at), scheduledFor: iso(o.scheduled_for), area: a ? clip(a.area || a.district, 80) : null,
     items: items.slice(0, 8).map((i) => ({ name: i.name || i.product_name || `صنف ${i.product_id ?? ""}`, qty: Number(i.quantity ?? i.qty) || 1 })), itemsMore: Math.max(0, items.length - 8),
-    courier, eta: done ? null : etaOut(eta),
+    courier, eta: done || attention ? null : etaOut(eta),   // مفيش وعد بوقت على طلب خلص أو مستني قرار
   };
 }
 /* تصنيف العميل (cust_profile) ⇒ الشرايح + سطور قصيرة بالعربي للكارت */
@@ -370,7 +385,7 @@ export function register(app, ctx, deps = {}) {
       const T = now();
       const [profile, cur, pr, sms, wa, invalid] = await Promise.all([
         part("profile", x.buildProfile(pn), null),
-        part("current", Q(CURRENT_ORDER_SQL, [pn, [...FINAL_ORDER_STATUSES]]).then((r) => r[0] || null), null),
+        part("current", Q(CURRENT_ORDER_SQL, [pn, [...FINAL_ORDER_STATUSES], Object.keys(ATTENTION_ORDER_STATUSES)]).then((r) => r[0] || null), null),
         part("classification", (async () => { const P = profiles(); if (!P || typeof P.forPhone !== "function") return null; const row = await P.forPhone(pn); if (!row) return null;
           const cfg = typeof P.cfg === "function" ? await P.cfg() : {}; return profileBrief(profileView(row, cfg), row); })(), null),
         part("sms_optout", Q("SELECT opted_out_at, optout_source FROM cms_contacts WHERE phone_norm = $1", [pn]).then((r) => r[0] || null), null),
@@ -379,7 +394,7 @@ export function register(app, ctx, deps = {}) {
       ]);
       /* الوقت المتوقّع: نفس حساب صفحة التتبع (تقدير). أي خطأ ⇒ من غير وقت، الكارت بيطلع عادي. */
       let eta = null;
-      if (cur && !FINAL_ORDER_STATUSES.includes(String(cur.status || "")) && cur.option === "delivery") {
+      if (cur && !FINAL_ORDER_STATUSES.includes(String(cur.status || "")) && !ATTENTION_ORDER_STATUSES[String(cur.status || "")] && cur.option === "delivery") {
         try {
           const [{ computeTrackEta }, se] = await Promise.all([import("./tracketa.js"), import("./smarteta.js")]);
           const sh = cur.ship_status || cur.ship_provider ? { status: cur.ship_status, driver: cur.ship_driver, provider: cur.ship_provider, updated_at: cur.ship_updated_at, arrived_at: cur.ship_arrived_at, picked_at: cur.ship_picked_at, delivered_at: cur.ship_delivered_at, assigned_at: cur.ship_assigned_at } : null;
