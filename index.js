@@ -24,6 +24,8 @@ import * as keetaReports from "./keeta_reports.js";
 import * as keetaPayouts from "./keeta_payouts.js";
 import * as ninja from "./ninja.js";
 import * as chat from "./chat.js";
+import * as cancellations from "./cancellations.js";   // CR1 (١٧/١٠): الإلغاءات والارتجاع بالأيام — نقطة البيع + الموقع + كيتا
+import * as portalservice from "./portalservice.js";   // PS1 (١٧/١٠): «الخدمة» في بوابة المدير — شركة التوصيل/الإرسال الآلي/المهلة/تسليم المندوب/حساب لاجلك
 import * as dayreport from "./dayreport.js";
 import * as adspend from "./adspend.js";
 import * as bizreports from "./bizreports.js";
@@ -3354,6 +3356,8 @@ courierOpsApi = courierops.register(app, moduleCtx, { shop: () => shopApi, deliv
 courierLiveApi = courierlive.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, portal: () => portalApi, courierWa: () => courierWaApi });
 /* 🛵 CW1 (١٦/١٠): المندوب الخارجي بياخد رسالة واتساب من رقم المطعم بأزرار «استلمت / وصلت / تم التسليم» — نفس مراحل /d/ */
 courierWaApi = courierwa.register(app, moduleCtx, { wa: waApi, courierLive: () => courierLiveApi, shop: () => shopApi, portal: () => portalApi });
+/* PS1 (١٧/١٠): «الخدمة» في بوابة المدير — نفس مفاتيح «التوصيل والمندوبين» (deliverycontrol) بس اللي المدير محتاجه، بتوقيع المدير في السجل */
+portalservice.register(app, moduleCtx, { portal: () => portalApi, ljWatch: () => ljWatchApi });
 /* 🛵 LJ2a (١٦/١٠): لاجلك وقّفت الحساب — كل ١٠ د (settings.delivery.ljWatch) GET /shops بس، ولما يرجع SMS واحدة للمالك
    (+ واتساب حر لو نافذته مفتوحة). مابيكتبش في الإعدادات ومابيرجّعش الطلب الآلي. */
 ljWatchApi = ljwatch.register(app, moduleCtx, { wa: waApi, sendSms: (m) => accounts.sendSms(m) });
@@ -3368,6 +3372,7 @@ consent.register(app, moduleCtx, { requirePortal: portalApi.requirePortal });
 // تقرير الدخل اليومي + صرف الإعلانات (١٧ سبتمبر): جدول mk_daily_reports + SMS واحدة لعمر بعد القفل
 // صرف الإعلانات بالساعة (ad_spend_hourly) + قلب التقارير على اليوم التشغيلي
 const adspendApi = adspend.register(app, moduleCtx);
+cancellations.register(app, moduleCtx, { biz: () => bizApi });      // CR1: GET /api/reports/biz/cancellations (نفس فترات «مبيعات اليوم»)
 // رسوم ماي فاتورة الفعلية لكل طلب موقع (shop_order_fees)
 const mffeesApi = mffees.register(app, moduleCtx);
 const bizApi = bizreports.register(app, moduleCtx, { adspend: adspendApi, mffees: mffeesApi });

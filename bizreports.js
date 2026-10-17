@@ -35,6 +35,7 @@ import { bizDay, bizStart, bizEnd, bizRange, rangeJson, riyadhHour, bizHourIndex
 import { firstOrderDays } from "./identity.js";
 import { mergeRates, bandFor, nextBandFor, subsidyFor } from "./finance.js";
 import { makeMarketingCost } from "./marketingcost.js";
+import { cancellationsInWindow } from "./cancellations.js";
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const r2 = (v) => Math.round(num(v) * 100) / 100;
@@ -491,7 +492,17 @@ export function register(app, ctx, deps = {}) {
         };
       } catch (e) { marketing = { error: e.message }; }
     }
-    return { cards: out, totals, ads, marketing, stats: cur.stats };
+    /* CR1 (١٧/١٠): الإلغاءات والارتجاع في نفس النافذة — قبل الإلغاءات → الإلغاءات → الصافي (= المبيعات دي نفسها).
+       deps.cancellations === null بيقفلها (اختبارات). الفترة الحالية بس (المقارنات مالهاش لازمة هنا). */
+    let cancellations = null;
+    if (deps.cancellations !== null) {
+      cancellations = await cancellationsInWindow(pool, { startUtc: range.startUtc, endUtc: range.cutUtc, salesRevenue: totals.revenue });
+      if (cancellations && cancellations.totals) {
+        const ct = cancellations.totals;
+        totals.cancellations = { gross: ct.gross, deducted: ct.deducted, deductedN: ct.deductedN, net: ct.net, rate: ct.rate, notDeducted: ct.notDeducted, owed: ct.owed, unpaid: ct.unpaid };
+      }
+    }
+    return { cards: out, totals, ads, marketing, cancellations, stats: cur.stats };
   }
 
   const rangeOf = (c, cfg) => bizRange({ preset: c.req.query("preset"), from: c.req.query("from") || c.req.query("date"), to: c.req.query("to") || c.req.query("date"), weekStart: cfg.weekStart });
@@ -605,7 +616,7 @@ export function register(app, ctx, deps = {}) {
       }
       return c.json({
         ok: true, day, window: { startUtc: s.toISOString(), endUtc: e.toISOString(), riyadh: `${day} 04:00 → ${shiftDay(day, 1)} 04:00` },
-        report: { cards: d.cards.map((x) => ({ id: x.id, label: x.label, orders: x.orders, revenue: x.revenue, split: x.split || null, commission: x.commission || null })), totals: d.totals, ads: d.ads, marketing: d.marketing, stats: d.stats },
+        report: { cards: d.cards.map((x) => ({ id: x.id, label: x.label, orders: x.orders, revenue: x.revenue, split: x.split || null, commission: x.commission || null })), totals: d.totals, ads: d.ads, marketing: d.marketing, cancellations: d.cancellations, stats: d.stats },
         raw: { shopOrders: shopRaw.rows, posByType: posRaw.rows, posCalendarDay: posCal.rows[0], adSpendSync: spendRaw, campaigns },
       });
     } catch (e) {
