@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { register, hubRoles, botState, watchedValues, diffWatched, maskPhone, DEFAULT_INBOX_ROLES } from "./wahub.js";
+import { register, hubRoles, botState, watchedValues, diffWatched, maskPhone, DEFAULT_INBOX_ROLES, searchTerms, normSearchText, snippetOf, SEARCH_TRANSLATE_FROM, SEARCH_TRANSLATE_TO } from "./wahub.js";
 import { sectionOf, DEFAULT_PERMS } from "./cms.js";
 import { SERVER_OWNED_PATHS } from "./settings-guard.js";
 import * as W from "./whatsapp.js";
@@ -47,6 +47,19 @@ function world({ role = "owner", settings = {}, threads = [], messages = [], bot
       return { rows: rows.slice(0, p[2]) };
     }
     if (/^SELECT wamid, body FROM wa_messages WHERE wamid = ANY\(\$1::text\[\]\) AND phone_norm = \$2/i.test(s)) return { rows: messages.filter((m) => p[0].includes(m.wamid) && m.phone_norm === p[1]).map((m) => ({ wamid: m.wamid, body: m.body })) };      // CR2
+    /* IBX1a: البحث في نص الرسايل — نفس توحيد translate (أرقام هندية ⇒ لاتيني، أ/إ/آ ⇒ ا، ة ⇒ ه، ى ⇒ ي) على القاعدة الوهمية */
+    if (/^SELECT m\.id, m\.wamid, m\.direction, m\.body, m\.created_at, m\.source, m\.template, m\.phone_norm/i.test(s)) {
+      db.searchSql = s; db.searchArgs = p;
+      const needles = p.filter((x) => typeof x === "string" && /^%.*%$/.test(x)).map((x) => x.slice(1, -1).replace(/\\([\\%_])/g, "$1"));
+      const team = p.find((x) => Array.isArray(x)) || [];
+      const before = p.find((x, i) => typeof x === "number" && i < p.length - 1);
+      const lim = p[p.length - 1];
+      let rows = messages.filter((m) => m.body && (m.source || "api") !== "history" && db.threads.some((t) => t.phone_norm === m.phone_norm))
+        .filter((m) => needles.every((n) => normSearchText(m.body).includes(n)))
+        .filter((m) => (s.includes("NOT (m.phone_norm = ANY") ? !team.includes(m.phone_norm) : s.includes("m.phone_norm = ANY") ? team.includes(m.phone_norm) : true))
+        .filter((m) => (before ? m.id < before : true)).sort((a, b) => b.id - a.id);
+      return { rows: rows.slice(0, lim).map((m) => ({ id: m.id, wamid: m.wamid || null, direction: m.direction, body: m.body, created_at: m.created_at, source: m.source || "api", template: m.template || null, phone_norm: m.phone_norm, name: (db.threads.find((t) => t.phone_norm === m.phone_norm) || {}).name || null })) };
+    }
     if (/^SELECT wamid, at, decision, reason, reply_key, handoff FROM wa_bot_log/i.test(s)) return { rows: botLog.filter((l) => l.phone_norm === p[0]) };
     if (/^UPDATE wa_threads SET unread=0/i.test(s)) { const t = db.threads.find((x) => x.phone_norm === p[0]); if (t) { t.unread = 0; t.read_by = p[1]; } return { rows: [], rowCount: t ? 1 : 0 }; }
     if (/^SELECT template, count\(\*\) FILTER/i.test(s)) return { rows: [{ template: "fc_order_preparing", sent: 40, delivered: 38, read: 30, failed: 2, last_at: ago(60) }] };
@@ -551,4 +564,80 @@ test("CR2 thread: a revoke row stored before its original resolves to «مسحت
   assert.equal(by["wamid.A1"].revoked, true);
   assert.equal(by["wamid.R2"].text, "[رسالة اتمسحت]", "من غير مرجع ⇒ زي ما هو");
   assert.equal(by["wamid.R2"].revoked, undefined);
+});
+
+
+/* ═══ IBX1a (عمر ١٧/١٠): بحث في المحادثات بالكلمات والرقم — عربي أو إنجليزي ═══ */
+test("IBX1a search terms: Arabic-Indic / Persian digits ⇒ Latin, alef/taa/yaa unified, phone vs words, snippet around the match", () => {
+  assert.equal(normSearchText("٠٥٠١٢٣٤٥٦٧ ۹"), "0501234567 9");
+  assert.equal(normSearchText("أكلة إيه آخر ٣ مشاوى كيلو ة"), "اكله ايه اخر 3 مشاوي كيلو ه");
+  assert.equal(SEARCH_TRANSLATE_FROM.length, SEARCH_TRANSLATE_TO.length, "translate() maps char for char (nothing deleted) so snippet offsets match the SQL side");
+  const ph = searchTerms(" ٠٥٠ ١٢٣ ");
+  assert.deepEqual([ph.isPhone, ph.digits, ph.words], [true, "050123", []]);
+  assert.equal(searchTerms("+966 54 477").isPhone, true);
+  const w = searchTerms("كيلو  مشاوى");
+  assert.deepEqual([w.isPhone, w.words, w.latin], [false, ["كيلو", "مشاوي"], "كيلو مشاوي"]);
+  assert.deepEqual(searchTerms("W1790077").words, ["w1790077"], "an order number is a word search (letters + digits)");
+  assert.equal(searchTerms("").latin, "");
+  assert.equal(searchTerms("x".repeat(80)).term.length, 60);
+  const body = "السلام عليكم، " + "كلام طويل ".repeat(20) + "أبغى كيلو مشاوى مشكّل على الفحم" + " وبعدين كلام تاني ".repeat(10);
+  const sn = snippetOf(body, ["مشاوي"]);
+  assert.ok(sn.includes("كيلو مشاوى مشكّل"), sn);
+  assert.ok(sn.startsWith("…") && sn.endsWith("…") && sn.length < 140, sn);
+  assert.equal(snippetOf("قصير", ["مفيش"]), "قصير");
+});
+
+test("IBX1a search route: words hit message bodies (all words, normalised), digits search phones + bodies, team numbers out, hidden-number role masked, pages by mid", async () => {
+  const messages = [
+    { id: 1, wamid: "wamid.a1", phone_norm: "511111111", direction: "in", body: "أبغى كيلو مشاوي مشكّل", created_at: ago(50), source: "api" },
+    { id: 2, wamid: "wamid.a2", phone_norm: "511111111", direction: "out", body: "تمام، كيلو المشاوى بـ٩٦ ريال", created_at: ago(49), source: "bot" },
+    { id: 3, wamid: "wamid.b1", phone_norm: "522222222", direction: "in", body: "طلبي رقم W1790077 ما وصل", created_at: ago(30), source: "api" },
+    { id: 4, wamid: null, phone_norm: "533333333", direction: "in", body: "كيلو مشاوي للفريق", created_at: ago(20), source: "api" },
+    { id: 5, wamid: "wamid.h", phone_norm: "511111111", direction: "in", body: "كيلو مشاوي قديم مستورد", created_at: ago(5000), source: "history" },
+  ];
+  const w = world({ settings: { waTeam: { members: [{ phone: "0533333333", role: "cashier", name: "x" }] } },
+    threads: [T("511111111", { name: "أحمد" }), T("522222222", { name: "سارة", last_at: ago(30) }), T("533333333", { name: "كاشير", last_at: ago(20) })], messages });
+  /* كلمة بياء مقصورة ⇒ بتلاقي «مشاوي» و«المشاوى»؛ التاريخ المستورد ورقم الفريق بره */
+  let r = await w.call("GET", "/api/cms/wa/search", { query: { q: "كيلو مشاوى" } });
+  assert.equal(r.status, 200); assert.equal(r.body.ok, true); assert.equal(r.body.isPhone, false);
+  assert.deepEqual(r.body.hits.map((h) => h.mid), [2, 1]);
+  assert.deepEqual(Object.keys(r.body.hits[0]).sort(), ["at", "dir", "id", "key", "mid", "name", "phone", "phoneMasked", "snippet", "source", "template"]);
+  assert.equal(r.body.hits[0].id, "wamid.a2"); assert.equal(r.body.hits[0].name, "أحمد"); assert.equal(r.body.hits[0].phone, "0511111111");
+  assert.match(r.body.hits[0].key, /^[0-9a-f]{32}$/);
+  assert.ok(r.body.hits[1].snippet.includes("كيلو مشاوي"));
+  assert.ok(/translate\(lower\(m\.body\)/.test(w.db.searchSql) && /LIKE \$1 ESCAPE/.test(w.db.searchSql), "normalised on the SQL side too");
+  assert.deepEqual(w.db.searchArgs.slice(0, 2), ["%كيلو%", "%مشاوي%"], "the typed yaa-maqsura is normalised before it reaches SQL");
+  /* رقم بأرقام هندية وجزئي: المحادثات بالرقم (نفس القايمة) + الرسايل اللي فيها الرقم */
+  r = await w.call("GET", "/api/cms/wa/search", { query: { q: "٥١١١" } });
+  assert.equal(r.body.isPhone, true);
+  const listSql = w.db.sql.filter((x) => /^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.last_text/.test(x)).pop();
+  assert.ok(/t\.phone_norm LIKE '%' \|\| \$\d+ \|\| '%'/.test(listSql), "threads are matched by any part of the number (the fake list does not filter; the SQL does)");
+  assert.ok(r.body.threads.length >= 1 && r.body.threads.every((t) => /^0?5\d{8}$/.test(t.phone)));
+  /* رقم طلب = كلمة (حروف وأرقام) */
+  r = await w.call("GET", "/api/cms/wa/search", { query: { q: "w1790077" } });
+  assert.deepEqual(r.body.hits.map((h) => h.mid), [3]);
+  /* صفحات بـmid */
+  r = await w.call("GET", "/api/cms/wa/search", { query: { q: "كيلو", limit: "1" } });
+  assert.deepEqual(r.body.hits.map((h) => h.mid), [2]); assert.equal(r.body.nextBefore, 2);
+  r = await w.call("GET", "/api/cms/wa/search", { query: { q: "كيلو", limit: "1", before: "2" } });
+  assert.deepEqual(r.body.hits.map((h) => h.mid), [1]); assert.equal(r.body.nextBefore, null);
+  /* المالك بـteam=1 ⇒ أرقام الفريق بس */
+  r = await w.call("GET", "/api/cms/wa/search", { query: { q: "كيلو", team: "1" } });
+  assert.deepEqual(r.body.hits.map((h) => h.mid), [4]); assert.equal(r.body.hits[0].id, `in:${ago(20)}`, "no wamid ⇒ the same fallback id as the thread");
+  /* حرف واحد / فاضي ⇒ مفيش بحث */
+  r = await w.call("GET", "/api/cms/wa/search", { query: { q: "م" } });
+  assert.deepEqual([r.body.hits, r.body.threads], [[], []]);
+  /* دور الرقم مخفي عنده: الرقم مقنّع في النتايج، والبحث بالرقم بآخر ٤ بس */
+  const k = world({ role: "kitchen", settings: { waHub: { inboxRoles: ["operations", "kitchen"], phoneRoles: ["operations"] } }, threads: [T("511111111", { name: "أحمد" })], messages });
+  r = await k.call("GET", "/api/cms/wa/search", { query: { q: "مشاوي" } });
+  assert.equal(r.body.hits[0].phone, "…1111"); assert.ok(!JSON.stringify(r.body).includes("511111111"));
+  /* التسويق 403 زي القايمة */
+  assert.equal((await world({ role: "marketing", threads: [T("511111111")] }).call("GET", "/api/cms/wa/search", { query: { q: "مشاوي" } })).status, 403);
+});
+
+test("IBX1a thread messages carry mid (row id) next to the wamid id", async () => {
+  const w = world({ threads: [T("511111111")], messages: [{ id: 77, wamid: "wamid.x", phone_norm: "511111111", direction: "in", body: "هلا", created_at: ago(3), source: "api" }] });
+  const r = await w.call("GET", "/api/cms/wa/threads/:key", { params: { key: "0511111111" } });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.messages[0].id, "wamid.x"); assert.equal(r.body.messages[0].mid, 77);
 });

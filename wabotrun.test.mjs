@@ -2922,6 +2922,7 @@ test("AS4 delivery — a shared pin goes to the assistant even as the first mess
   assert.equal((await off.say(null, { raw: { type: "location", location: { latitude: 21.58, longitude: 39.15 } } })).log.reply_key, "area");
 }));
 
+const noRef = (calls) => calls.map(({ ref, ...x }) => x);      // IBX1a: queue() carries a message ref now (server-side only)
 test("AS4 knowledge base, wired: notes reach the first context, a used answer is counted, an unanswered question is queued with no customer link, and a message the rules do not understand is queued too", withEnv(CONFIGURED, async () => {
   const kb = fakeKb({ answers: [{ id: 7, question: "عندكم واي فاي؟", say: "نعم، عندنا واي فاي للضيوف في الصالة." }], notes: "الصالة فيها قسم عائلات." });
   const w = aWorld([mUse(tUse("ask_knowledge", { question: "عندكم واي فاي؟" })), mSay("نعم، عندنا واي فاي للضيوف في الصالة.\nتحب أجهّز لك طلب؟")], { kb });
@@ -2932,7 +2933,8 @@ test("AS4 knowledge base, wired: notes reach the first context, a used answer is
   const kb2 = fakeKb();
   const w2 = aWorld([mUse(tUse("ask_knowledge", { question: "فيه مصلى؟" })), mSay("ما عندي معلومة مؤكدة عن هذا، ولو تحب تسأل الفريق اكتب: موظف")], { kb: kb2 });
   await w2.say("فيه مصلى عندكم؟ رقمي 0512345678");
-  assert.deepEqual(kb2.calls.queue, [{ question: "فيه مصلى؟", lang: "ar", source: "no_answer" }]); assert.deepEqual(kb2.calls.used, []);
+  assert.deepEqual(noRef(kb2.calls.queue), [{ question: "فيه مصلى؟", lang: "ar", source: "no_answer" }]); assert.deepEqual(kb2.calls.used, []);
+  assert.ok(kb2.calls.queue[0].ref && /^5\d{8}$/.test(String(kb2.calls.queue[0].ref.phone)), "IBX1a: the asking message is referenced for the «open the message» link (phone + wamid stay inside the server; publicQuestion never shows them)");
   // the knowledge base is down ⇒ the assistant still answers
   const w3 = aWorld([mUse(tUse("ask_knowledge", { question: "فيه مصلى؟" })), mSay("ما عندي معلومة مؤكدة عن هذا، ولو تحب تسأل الفريق اكتب: موظف")], { kb: { search: async () => null, notesFor: async () => { throw new Error("down"); }, queue: async () => { throw new Error("down"); }, markUsed: async () => {} } });
   assert.equal((await w3.say("فيه مصلى عندكم؟")).log.reply_key, "assist");
@@ -2940,7 +2942,7 @@ test("AS4 knowledge base, wired: notes reach the first context, a used answer is
   const kb4 = fakeKb(); const lw = liveWorld({ kb: kb4 });
   const u = await lw.say("زبطوني بمصلى للحريم");
   assert.equal(u.log.reply_key, "unknown");
-  assert.deepEqual(kb4.calls.queue, [{ question: "زبطوني بمصلى للحريم", lang: "ar", source: "rules_unknown" }]);
+  assert.deepEqual(noRef(kb4.calls.queue), [{ question: "زبطوني بمصلى للحريم", lang: "ar", source: "rules_unknown" }]); assert.ok(kb4.calls.queue[0].ref && kb4.calls.queue[0].ref.phone, "ref on the rules path too");
   const kb5 = fakeKb(); const lw5 = liveWorld({ kb: kb5 }); await lw5.say("؟؟؟"); await lw5.say("زبطوني");
   assert.deepEqual(kb5.calls.queue, []);
 }));

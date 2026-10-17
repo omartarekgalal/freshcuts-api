@@ -35,6 +35,41 @@ const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
 const iso = (v) => (v instanceof Date ? v.toISOString() : v || null);
 export const maskPhone = (pn) => `…${String(pn || "").slice(-4)}`;
 
+/* ═══ IBX1a (١٧/١٠ — عمر: «بحث في المحادثات بالكلمات والرقم يتكتب عربي أو إنجليزي») ═══
+   توحيد النص للبحث: الأرقام الهندية والفارسية ⇒ لاتيني، أ/إ/آ/ٱ ⇒ ا، ة ⇒ ه، ى ⇒ ي، من غير تشكيل. نفس التحويل بيتعمل على نص الرسالة
+   في SQL (translate) عشان «٥٠١٢» تلاقي «5012» والعكس، و«مشاوى» تلاقي «مشاوي». */
+const AR_DIGITS = "٠١٢٣٤٥٦٧٨٩", FA_DIGITS = "۰۱۲۳۴۵۶۷۸۹";
+export const SEARCH_TRANSLATE_FROM = `${AR_DIGITS}${FA_DIGITS}أإآٱةى`;
+export const SEARCH_TRANSLATE_TO = "01234567890123456789ااااهي";
+export const SEARCH_SQL_NORM = (col) => `translate(lower(${col}), '${SEARCH_TRANSLATE_FROM}', '${SEARCH_TRANSLATE_TO}')`;
+/* حرف بحرف (من غير حذف) عشان مواضع المقتطف تفضل مطابقة للنص الأصلي، وعشان يطابق translate في SQL بالظبط */
+export function normSearchText(s) {
+  return String(s ?? "").toLowerCase()
+    .replace(/[٠-٩]/g, (d) => String(AR_DIGITS.indexOf(d))).replace(/[۰-۹]/g, (d) => String(FA_DIGITS.indexOf(d)))
+    .replace(/[أإآٱ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي");
+}
+/* نص البحث ⇒ { term (منظّف، ≤ ٦٠ حرف), latin (نفسه بأرقام لاتينية), digits, isPhone (كله أرقام/مسافات/+/-), words (≤ ٤) } */
+export function searchTerms(q) {
+  const term = String(q || "").trim().replace(/\s+/g, " ").slice(0, 60);
+  const latin = normSearchText(term);
+  const digits = latin.replace(/\D/g, "");
+  const isPhone = Boolean(digits) && digits === latin.replace(/[\s+\-()]/g, "");
+  const words = isPhone ? [] : latin.split(" ").filter((w) => w.length >= 2).slice(0, 4);
+  return { term, latin, digits, isPhone, words };
+}
+const likeEsc = (s) => String(s).replace(/[\\%_]/g, (c) => `\\${c}`);
+/* مقتطف حوالين أول كلمة من البحث (±span حرف) — المقارنة على النص الموحّد، والقص على النص الأصلي (نفس الأطوال: التحويل حرف بحرف) */
+export function snippetOf(body, words, span = 60) {
+  const text = String(body || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  const norm = normSearchText(text);
+  let at = -1;
+  for (const w of words || []) { const i = norm.indexOf(w); if (i >= 0 && (at < 0 || i < at)) at = i; }
+  if (at < 0) return text.length > span * 2 ? `${text.slice(0, span * 2)}…` : text;
+  const s = Math.max(0, at - span), e = Math.min(text.length, at + span);
+  return `${s > 0 ? "…" : ""}${text.slice(s, e)}${e < text.length ? "…" : ""}`;
+}
+
 /* أدوار مسموح لها تشوف المحادثات (المالك دايماً) + أدوار تشوف الرقم كامل */
 export function hubRoles(settings) {
   const x = (settings && settings.waHub) || {};
@@ -339,7 +374,7 @@ export function register(app, ctx, deps = {}) {
         const d = m.direction === "in" && m.wamid ? byWamid.get(m.wamid) : null;
         const pr = m.pricing && typeof m.pricing === "object" && "billable" in m.pricing ? { billable: m.pricing.billable === true, category: m.pricing.category || null } : null;
         const rref = revokeRef(m), rtext = rref && revBodies.has(rref) ? revokeText({ body: revBodies.get(rref), echo: m.source === "echo" }) : null;      // CR2
-        return { id: m.wamid || `${m.direction}:${iso(m.created_at)}`, dir: m.direction, text: rtext || m.body || (m.template ? `[قالب: ${m.template}]` : ""),
+        return { id: m.wamid || `${m.direction}:${iso(m.created_at)}`, mid: Number(m.id) || null, dir: m.direction, text: rtext || m.body || (m.template ? `[قالب: ${m.template}]` : ""),      // IBX1a: mid = رقم الصف (رابط «افتح الرسالة» من البحث وملف العميل)
           ...(rref ? { revokeOf: rref } : {}), ...(m.wamid && revRefs.has(String(m.wamid)) ? { revoked: true } : {}),      // CR2: صف المسح بيشاور على الأصل، والأصل عليه علامة «اتمسحت»
           template: m.template || null, category: m.category || null, status: m.status || null, error: m.error || null, errorAr: errorArOf(m), orderNo: m.order_no || null,
           source: m.source || "api", ...(m.source === "echo" ? { echoKind: autoIds.has(String(m.id)) ? "auto" : "staff" } : {}), at: iso(m.created_at), cost: pr, media: publicMedia(m),      // MD1: ملف الرسالة (من غير رقم ميتا)
@@ -412,6 +447,54 @@ export function register(app, ctx, deps = {}) {
       const st = await sendState();
       return c.json({ ...r, neverReplyWhy, send: st.ok && !r.window.open ? { ok: false, gate: "window_closed" } : st });
     } catch (e) { log.error("[wa-hub] thread:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
+  });
+  /* ═══ IBX1a: البحث في المحادثات — بالاسم/الرقم (نفس شروط القايمة) + في نص الرسايل (مقتطف + مفتاح المحادثة ورقم الرسالة ⇒ «افتح الرسالة») ═══
+     GET /api/cms/wa/search?q=&limit=&before=<mid>[&team=1]
+       ⇒ { ok, q, isPhone, threads: [صفوف زي القايمة], hits: [{ key, name, phone, phoneMasked, mid, id, dir, source, template, at, snippet }], nextBefore }
+     الأرقام الهندية/الفارسية/اللاتينية واحد، وجزء من الرقم كفاية؛ الدور اللي الرقم مخفي عنده بيدوّر بآخر ٤ أرقام بس (زي القايمة).
+     كلمتين فأكتر = لازم يكونوا كلهم في الرسالة. أرقام الفريق بره إلا للمالك بـteam=1. التاريخ المستورد مش بيتدوّر فيه. */
+  async function searchMessages({ q, limit = 30, before = null, full = false, team = false } = {}) {
+    const st = searchTerms(q);
+    const lim = Math.min(Math.max(Number(limit) || 30, 1), 100);
+    if (!st.latin || (st.isPhone ? st.digits.length < 3 : st.words.length === 0)) return { ok: true, q: st.term, hits: [], nextBefore: null, terms: st };
+    const needles = st.isPhone ? [st.digits] : st.words;
+    const p = [], where = ["m.body IS NOT NULL", "COALESCE(m.source, 'api') <> 'history'"];
+    for (const w of needles) { p.push(`%${likeEsc(w)}%`); where.push(`${SEARCH_SQL_NORM("m.body")} LIKE $${p.length} ESCAPE '\\'`); }
+    const tp = await teamPhones();
+    if (tp.length) { p.push(tp); where.push(team === true ? `m.phone_norm = ANY($${p.length}::text[])` : `NOT (m.phone_norm = ANY($${p.length}::text[]))`); }
+    else if (team === true) where.push("FALSE");
+    const b4 = Math.floor(Number(before));
+    if (Number.isFinite(b4) && b4 > 0) { p.push(b4); where.push(`m.id < $${p.length}`); }
+    p.push(lim + 1);
+    const rows = (await pool.query(
+      `SELECT m.id, m.wamid, m.direction, m.body, m.created_at, m.source, m.template, m.phone_norm, COALESCE(c.name, n.full_name, n.profile_name) AS name
+         FROM wa_messages m
+         JOIN wa_threads t ON t.phone_norm = m.phone_norm
+         LEFT JOIN cms_contacts c ON c.phone_norm = m.phone_norm
+         LEFT JOIN wa_contact_names n ON n.phone_norm = m.phone_norm AND NOT n.removed
+        WHERE ${where.join(" AND ")}
+        ORDER BY m.id DESC LIMIT $${p.length}`, p)).rows || [];
+    const page = rows.slice(0, lim);
+    return { ok: true, q: st.term, terms: st,
+      hits: page.map((m) => ({ key: keyOf(m.phone_norm), name: m.name || null, phone: full ? `0${m.phone_norm}` : maskPhone(m.phone_norm), phoneMasked: maskPhone(m.phone_norm),
+        mid: Number(m.id), id: m.wamid || `${m.direction}:${iso(m.created_at)}`, dir: m.direction, source: m.source || "api", template: m.template || null, at: iso(m.created_at),
+        snippet: snippetOf(m.body, needles) })),
+      nextBefore: rows.length > lim ? Number(page[page.length - 1].id) : null };
+  }
+  app.get("/api/cms/wa/search", async (c) => {
+    const a = await access(c); if (a.res) return a.res;
+    await ready;
+    try {
+      const q = String(c.req.query("q") || "");
+      const team = c.req.query("team") === "1" && a.user.role === "owner";
+      const st = searchTerms(q);
+      const [list, msgs] = await Promise.all([
+        st.term && (st.isPhone ? st.digits.length >= 3 : st.term.length >= 2)
+          ? listThreads({ filter: "all", q: st.isPhone ? st.digits : st.term, limit: 20, full: a.full, me: meOf(a.user), team }) : { threads: [] },
+        searchMessages({ q, limit: c.req.query("limit"), before: c.req.query("before") || null, full: a.full, team }),
+      ]);
+      return c.json({ ok: true, q: st.term, isPhone: st.isPhone, threads: list.threads || [], hits: msgs.hits, nextBefore: msgs.nextBefore });
+    } catch (e) { log.error("[wa-hub] search:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
   });
   app.post("/api/cms/wa/threads/:key/read", async (c) => {
     const a = await access(c); if (a.res) return a.res;
@@ -642,5 +725,5 @@ export function register(app, ctx, deps = {}) {
     catch (e) { log.error("[wa-hub] counts:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
   });
 
-  return { ready, listThreads, getThread, templatesView, sweep, sweepFor, masterCounts, keyOf, tick, markHandled };
+  return { ready, listThreads, getThread, searchMessages, templatesView, sweep, sweepFor, masterCounts, keyOf, tick, markHandled };
 }

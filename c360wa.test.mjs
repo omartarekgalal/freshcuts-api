@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import { Hono } from "hono";
 import {
   canSeeWaFile, parseOrderRef, campaignState, messageItem, campaignItem, mergePage, summaryOf, cardOf, webOrderOut, posOrderOut,
-  handoverItem, ownerItem, ratingItem, consentItem, register,
+  handoverItem, ownerItem, ratingItem, consentItem, register, currentOrderOut, etaOut, profileBrief, FINAL_ORDER_STATUSES,
 } from "./c360wa.js";
+import { profileView, profileCfg } from "./custprofile.js";
 
 const PN = "500000001";          // رقم وهمي
 const T = (min) => new Date(Date.UTC(2026, 9, 16, 12, 0) + min * 60_000).toISOString();
@@ -147,10 +148,14 @@ test("event items: handover / owner / rating / consent carry Arabic labels", () 
 
 /* ── المسارات ── */
 const ADMIN = "admin-token-c360-test";
-function makeApp({ role = "owner", settings = {}, portalUser = { role: "manager", admin: false } } = {}) {
+function makeApp({ role = "owner", settings = {}, portalUser = { role: "manager", admin: false }, current = null, profileRow = null, optout = null, waOptin = null } = {}) {
   const calls = [];
   const rows = (sql) => {
     if (/FROM wa_threads WHERE md5/.test(sql)) return [{ phone_norm: PN }];
+    if (/FROM shop_orders o\s+LEFT JOIN LATERAL/.test(sql)) return current ? [current] : [];      // IBX1a: الطلب الحالي
+    if (/SELECT opted_out_at, optout_source FROM cms_contacts/.test(sql)) return optout ? [optout] : [];
+    if (/FROM wa_optins o WHERE phone_norm/.test(sql)) return waOptin ? [waOptin] : [];
+    if (/FROM wa_invalid_numbers/.test(sql)) return [];
     if (/FROM wa_send_queue WHERE id=/.test(sql)) return [{ phone_norm: PN }];
     if (/FROM reviews r/.test(sql)) return [{ pn: PN }];
     if (/FROM shop_orders WHERE order_no/.test(sql)) return [{ order_no: "W1077", status: "delivered", total: 100, items: [], created_at: T(0), phone_norm: PN }];
@@ -177,8 +182,9 @@ function makeApp({ role = "owner", settings = {}, portalUser = { role: "manager"
     remember: async () => {}, refOf: (pn) => `c${String(pn).padStart(15, "0")}`, pnOfRef: async (ref) => (ref === "c000000500000001" ? PN : null),
     buildProfile: async () => ({ ref: "c000000500000001", identity: { name: "عميل" }, summary: { orders: 2, spend: 150 }, orders: [], reviews: [] }),
   };
+  const profiles = { forPhone: async () => profileRow, cfg: async () => profileCfg(settings) };
   register(app, { pool, requireAdmin, getSettingsData: async () => settings, canSeePhones: async () => true }, {
-    whoami: async () => ({ role }), c360, requirePortal, keySalt: "salt", log: { error() {} },
+    whoami: async () => ({ role }), c360, requirePortal, keySalt: "salt", log: { error() {} }, profiles: () => profiles,
   });
   const get = async (path, token = `Bearer ${ADMIN}`) => { const r = await app.request(path, { headers: { Authorization: token } }); return { status: r.status, body: await r.json() }; };
   return { get, calls };
@@ -239,4 +245,74 @@ test("portal card: manager gets the card without ref; owner (admin) gets ref; ca
   assert.equal(cashier.status, 403);
   const peek = await makeApp().get("/api/portal/order-peek/pos:88", "Bearer portal:ok");
   assert.equal(peek.body.order.channelLabel, "كيتا");
+});
+
+
+/* ═══ IBX1a (عمر ١٧/١٠): كارت العميل جنب المحادثة — الطلب الحالي، آخر الطلبات، القيمة، التصنيف، التقييمات، الإيقاف ═══ */
+const KEY = "c".repeat(32);
+const ACTIVE = { order_no: "W1790077", status: "courier_assigned", option: "delivery", total: "187.50", delivery_fee: "17", discount_amount: "0", coupon: null, is_test: false, pay_gateway: "myfatoorah",
+  created_at: T(-20), accepted_at: T(-18), pos_ready_at: null, scheduled_for: null, address: { area: "الروضة" }, table_no_i: null,
+  items: [{ name: "كيلو مشاوي", quantity: 1 }, { name: "رز بخاري", qty: 2 }],
+  ship_status: "assigned", ship_provider: "leajlak", ship_driver: { name: "محمد", phone: "0555555555" }, ship_assigned_at: T(-10), ship_arrived_at: null, ship_picked_at: null, ship_delivered_at: null, ship_updated_at: T(-9), ship_tracking_url: null };
+
+test("IBX1a currentOrderOut: Arabic status + courier + pay + items; a finished order older than 3 h is not «current»; eta is a labelled estimate", () => {
+  const now = Date.parse(T(0));
+  const o = currentOrderOut(ACTIVE, { now, eta: { at: T(25), minutes: 25, soon: false } });
+  assert.equal(o.no, "W1790077"); assert.equal(o.statusLabel, "المندوب رايح للمحل"); assert.equal(o.done, false); assert.equal(o.ageMin, 20);
+  assert.deepEqual([o.option, o.optionLabel, o.area, o.total, o.paid, o.payGateway], ["delivery", "توصيل", "الروضة", 187.5, true, "myfatoorah"]);
+  assert.deepEqual(o.items, [{ name: "كيلو مشاوي", qty: 1 }, { name: "رز بخاري", qty: 2 }]);
+  assert.equal(o.courier.providerLabel, "لاجلك"); assert.equal(o.courier.statusLabel, "اتعيّن مندوب"); assert.equal(o.courier.driverName, "محمد"); assert.equal(o.courier.assignedAt, T(-10));
+  assert.deepEqual(o.eta, { text: "خلال 25 دقيقة تقريباً", soon: false, at: T(25), minutes: 25 });
+  assert.equal(currentOrderOut({ ...ACTIVE, status: "delivered", created_at: T(-100), ship_status: "delivered" }, { now }).done, true, "finished < 3 h ⇒ shown as done");
+  assert.equal(currentOrderOut({ ...ACTIVE, status: "delivered", created_at: T(-100), ship_status: "delivered" }, { now, eta: { at: T(1), minutes: 1 } }).eta, null, "no eta on a finished order");
+  assert.equal(currentOrderOut({ ...ACTIVE, status: "delivered", created_at: T(-200) }, { now }), null, "finished > 3 h ⇒ not current");
+  assert.equal(currentOrderOut({ ...ACTIVE, option: "pickup", table_no_i: 4 }, { now }).optionLabel, "طاولة");
+  assert.equal(currentOrderOut({ ...ACTIVE, ship_status: null, ship_provider: null }, { now }).courier, null);
+  assert.deepEqual(etaOut({ soon: true }), { text: "قرّب يوصل", soon: true, at: null });
+  assert.equal(etaOut({ range: { from: T(10), to: T(20), fromMin: 10, toMin: 20 } }).text, "خلال 10~20 دقيقة تقريباً");
+  assert.equal(etaOut(null), null);
+  assert.ok(FINAL_ORDER_STATUSES.includes("delivered") && FINAL_ORDER_STATUSES.includes("rejected_refunded"));
+});
+
+test("IBX1a profileBrief: segments + short Arabic lines from the classification row, empty values dropped", () => {
+  const row = { phone_norm: PN, main_channel: "web", daypart: "late", value_tier: "A", spend_pct: 95, recency_band: "active", days_since: 3, freq_band: "regular", fav_dish: "مشكل مشاوي",
+    service_pref: "delivery", district: "الروضة", lang: "ar", wa_reach: "reachable", price_sensitivity: "unknown", loyalty_left: 2, reward_code: null, segments: ["late_night"], computed_at: T(0), is_staff: false };
+  const b = profileBrief(profileView(row, profileCfg({})), row);
+  const by = Object.fromEntries(b.lines.map((l) => [l.key, l.value]));
+  assert.equal(by.main_channel, "الموقع"); assert.equal(by.daypart, "آخر الليل"); assert.equal(by.value_tier, "A · أعلى 5٪"); assert.equal(by.recency_band, "نشط · من 3 يوم");
+  assert.equal(by.fav_dish, "مشكل مشاوي"); assert.equal(by.loyalty, "فاضل 2 طلب للمكافأة"); assert.equal(by.price_sensitivity, undefined, "unknown is dropped");
+  assert.equal(b.computedAt, T(0)); assert.equal(b.isStaff, false);
+  assert.ok(Array.isArray(b.segments));
+  assert.equal(profileBrief(null, row), null);
+});
+
+test("IBX1a customer route: inbox roles only, phone per phoneRoles, card + current + optouts + reviews + ref; unknown key 404", async () => {
+  const profileRow = { phone_norm: PN, main_channel: "pos", daypart: "dinner", value_tier: "B", spend_pct: 70, recency_band: "active", days_since: 1, segments: [], computed_at: T(0) };
+  const own = makeApp({ current: ACTIVE, profileRow, optout: { opted_out_at: T(-500), optout_source: "sms_reply" }, waOptin: { updates: true, marketing: false, stopped_at: null, marketing_off_at: T(-400) } });
+  let r = await own.get(`/api/cms/wa/threads/${KEY}/customer`);
+  assert.equal(r.status, 200); assert.equal(r.body.ok, true);
+  assert.equal(r.body.card.orders, 2); assert.equal(r.body.card.phone, "0" + PN); assert.equal(r.body.full, true);
+  assert.equal(r.body.current.no, "W1790077"); assert.equal(r.body.current.courier.providerLabel, "لاجلك");
+  assert.equal(r.body.profile.lines.find((l) => l.key === "daypart").value, "عشا");
+  assert.deepEqual(r.body.optouts.sms, { at: T(-500), source: "sms_reply" });
+  assert.deepEqual(r.body.optouts.wa, { updates: true, marketing: false, stopped: false, stoppedAt: null, marketingOff: true });
+  assert.equal(r.body.optouts.notOnWhatsapp, false);
+  assert.deepEqual(r.body.reviews, []); assert.equal(r.body.ref, "c000000500000001"); assert.deepEqual(r.body.partial, []);
+  assert.ok(!own.calls.some((x) => /^\s*(INSERT|UPDATE|DELETE)/i.test(x.sql)), "read-only");
+  /* مفيش طلب حالي ولا تصنيف ⇒ null من غير خطأ */
+  r = await makeApp().get(`/api/cms/wa/threads/${KEY}/customer`);
+  assert.equal(r.status, 200); assert.equal(r.body.current, null); assert.equal(r.body.profile, null); assert.equal(r.body.optouts.sms, null);
+  /* الكاشير بيشوف المحادثات والرقم مخفي عنده ⇒ الكارت من غير رقم */
+  r = await makeApp({ role: "kitchen", settings: { waHub: { inboxRoles: ["operations", "kitchen"], phoneRoles: ["operations"] } }, current: ACTIVE }).get(`/api/cms/wa/threads/${KEY}/customer`);
+  assert.equal(r.status, 200); assert.equal(r.body.full, false); assert.equal(r.body.card.phone, null); assert.equal(r.body.card.phoneMasked, "…0001");
+  assert.ok(!JSON.stringify({ ...r.body.card, ref: undefined }).includes(PN), "the number is nowhere in the card (the fake ref of this harness is built from it)");
+  /* التسويق 403، مفتاح غلط 404، من غير دخول 401 */
+  assert.equal((await makeApp({ role: "marketing" }).get(`/api/cms/wa/threads/${KEY}/customer`)).status, 403);
+  assert.equal((await makeApp().get("/api/cms/wa/threads/nothex/customer")).status, 404);
+  assert.equal((await makeApp().get(`/api/cms/wa/threads/${KEY}/customer`, "Bearer wrong")).status, 401);
+});
+
+test("IBX1a messageItem carries mid + wamid for «open this message in the chat»", () => {
+  const m = messageItem({ id: 41, wamid: "wamid.z", direction: "in", body: "هلا", created_at: T(1), source: "api" });
+  assert.equal(m.id, "m41"); assert.equal(m.mid, 41); assert.equal(m.wamid, "wamid.z");
 });

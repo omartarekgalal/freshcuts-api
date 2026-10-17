@@ -3323,9 +3323,9 @@ waHandoverApi = wahandover.register(app, moduleCtx, { requirePortal: portalApi.r
 /* ⭐ RV1 (عمر ١٥/١٠: «التقييمات لازم تظهر ف البورتال عند المدير عشان يقفلها من عنده») — نفس صف التقييم اللي الوارد في اللوحة بيقراه */
 portalReviews.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, audit: portalApi.audit, broadcast: portalApi.broadcast, ready: () => reviewsApi.ready });
 staffkpi.register(app, moduleCtx, { requirePortal: portalApi.requirePortal });      // KP1: GET /api/cms/staff-kpis + /api/portal/kpis
-c360wa.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), c360: () => c360Api, requirePortal: portalApi.requirePortal });
+c360wa.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), c360: () => c360Api, requirePortal: portalApi.requirePortal, profiles: () => profileApi });      // IBX1a: كارت العميل جنب المحادثة (التصنيف من custprofile)
 let waKbApi = null;         // wakb.register: assistant knowledge base (manager answers) - portal manager + dashboard
-waKbApi = wakb.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, actor: async (c) => { const u = await cmsApi.whoami(c); return (u && (u.name || u.username)) || null; } });
+waKbApi = wakb.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, whoami: (c) => cmsApi.whoami(c), actor: async (c) => { const u = await cmsApi.whoami(c); return (u && (u.name || u.username)) || null; } });      // IBX1a: whoami ⇒ روابط «افتح الرسالة» لأدوار المحادثات
 let waStaffApi = null;      // wastaff.register: رد الموظف على محادثة واتساب من اللوحة ومن البورتال (نفس حارس الإرسال)
 waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi, staff: () => waStaffApi, flow: () => waFlowApi });
 waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit, bot: () => wabotApi, broadcast: portalApi.broadcast, flow: () => waFlowApi });

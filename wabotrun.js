@@ -3035,7 +3035,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
          (مش «؟؟» ولا «تمام»). مرة واحدة: مش في الرد المؤجّل، وبس للمحادثات اللي البوت بيرد فيها فعلاً (live، أو رقم تجربة في وضع test)، ومش لو المساعد هو اللي رد. */
       if (!afterWait && (cfg.mode === "live" || (cfg.mode === "test" && cfg.testPhones.includes(phone))) && d.key === "unknown" && (d.act === "reply" || d.act === "wait") && ev.type === "text" && String(ev.text || "").trim()) {
         const kb = kbApi();
-        if (kb && kbTokens(maskText(ev.text)).size >= 2) { try { await kb.queue({ question: ev.text, lang: d.lang === "en" ? "en" : "ar", source: "rules_unknown" }); } catch (e) { console.error("[wabot] kb:", e.message); } }
+        if (kb && kbTokens(maskText(ev.text)).size >= 2) { try { await kb.queue({ question: ev.text, lang: d.lang === "en" ? "en" : "ar", source: "rules_unknown", ref: { phone, wamid: ev.wamid || null, at: ev.at || null } }); } catch (e) { console.error("[wabot] kb:", e.message); } }
       }
 
       /* زرار الرجوع تحت رسالة الإيقاف: اختيار صريح من العميل بنفسه. «تحديثات طلبي فقط» ⇒ موافقة تحديثات عن طريق waconsent (بتتغلب على الإيقاف
@@ -4181,8 +4181,8 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       { const kb = kbApi();
         if (kb) { try {
           if (tr.kb && tr.kb.used) await kb.markUsed(tr.kb.used);
-          for (const u of tr.unanswered || []) await kb.queue({ question: u.question, lang: L, source: u.source === "dish_fact" ? "dish_fact" : "no_answer" });
-          if (r.handover && r.handover.reason === "needs_staff" && !(tr.unanswered || []).length && !/موظف|انسان|إنسان|شخص|بشري|staff|human|agent|person/i.test(String(ev.text || ""))) await kb.queue({ question: tr.sent || maskText(ev.text), lang: L, source: "handover" });
+          for (const u of tr.unanswered || []) await kb.queue({ question: u.question, lang: L, source: u.source === "dish_fact" ? "dish_fact" : "no_answer", ref: { phone, wamid: ev.wamid || null, at: ev.at || null } });
+          if (r.handover && r.handover.reason === "needs_staff" && !(tr.unanswered || []).length && !/موظف|انسان|إنسان|شخص|بشري|staff|human|agent|person/i.test(String(ev.text || ""))) await kb.queue({ question: tr.sent || maskText(ev.text), lang: L, source: "handover", ref: { phone, wamid: ev.wamid || null, at: ev.at || null } });
         } catch (e) { console.error("[assist] kb:", e.message); } } }
       if (r.reminder) { try { if (r.reminder.cancel) await cancelReminder(phone, "customer_cancelled"); else if (r.reminder.at) await scheduleReminder(phone, { at: r.reminder.at, ref: r.reminder.ref || null, lang: L, setAt: clock().toISOString() }); } catch (e) { console.error("[assist] reminder:", e.message); } }
       /* PK1: الرد خلص بسؤال ومفيش سلة ولا تحويل ⇒ متابعة واحدة محددة لو العميل سكت (runNudge بيراجع كل الشروط وقتها). كل رد جديد بيأجّلها. */

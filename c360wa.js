@@ -33,6 +33,7 @@ import { windowState } from "./wainbox.js";
 import { CHANNEL_LABELS, posChannel, isVoid } from "./customer360.js";
 import { KIND_AR } from "./wareviews.js";
 import { phoneOut } from "./phones.js";
+import { profileView, ENUM_AR } from "./custprofile.js";      // IBX1a: تصنيف العميل في كارت المحادثة
 
 export const WA_FILE_ROLES = Object.freeze(["owner", "operations"]);
 export const PAGE_DEFAULT = 40, PAGE_MAX = 100;
@@ -81,7 +82,7 @@ export function messageItem(m) {
   const source = staff ? "staff" : (m.source || "api");
   const pr = m.pricing && typeof m.pricing === "object" && "billable" in m.pricing ? { billable: m.pricing.billable === true, category: m.pricing.category || null } : null;
   return {
-    type: "msg", id: `m${m.id}`, at: iso(m.created_at), dir: m.direction === "in" ? "in" : "out",
+    type: "msg", id: `m${m.id}`, mid: Number(m.id) || null, wamid: m.wamid || null, at: iso(m.created_at), dir: m.direction === "in" ? "in" : "out",      // IBX1a: mid/wamid ⇒ «افتح الرسالة في المحادثة»
     text: m.body || (m.template ? `[قالب: ${m.template}]` : ""), template: m.template || null, category: m.category || null,
     status: m.status || null, error: clip(m.error, 300), orderNo: m.order_no || null, stage: m.stage || null, msgType: m.msg_type || null,
     source, ...(m.source === "echo" && !staff ? { echoKind: m.echo_kind === "auto" ? "auto" : "staff" } : {}), staff, cost: pr,
@@ -169,6 +170,84 @@ export function cardOf(profile, pn, { owner = false, full = true } = {}) {
     tags: (p.tags || []).slice(0, 6),
     ...(owner && p.ref ? { ref: p.ref } : {}),
   };
+}
+
+/* ═══ IBX1a (عمر ١٧/١٠: «من الشات لو ضغطنا على العميل يبان التفاصيل بطريقة احترافية والطلبات ولو في طلب حالي أو طلبات سابقة») ═══
+   كارت العميل جنب المحادثة في اللوحة: GET /api/cms/wa/threads/:key/customer — قراية بس.
+   الطلب الحالي = آخر طلب موقع للرقم في آخر ١٢ ساعة لسه ماخلصش (أو خلص من أقل من ٣ ساعات ⇒ done:true)، بحالته والمندوب والدفع
+   والوقت المتوقّع (تقدير — نفس حساب صفحة التتبع). */
+export const ORDER_STATUS_AR = Object.freeze({
+  pending_payment: "بانتظار الدفع", paid: "مدفوع", pos_created: "وصل نقطة البيع", accepted: "قبله الكاشير", preparing: "في المطبخ", pickup_ready: "جاهز للاستلام",
+  courier_requested: "بنطلب مندوب", courier_assigned: "المندوب رايح للمحل", on_the_way: "في الطريق للعميل", delivered: "اتوصّل", collected: "العميل استلمه",
+  rejected_refunded: "مرفوض ومسترجع", refund_failed: "فشل الاسترجاع", courier_cancelled: "التوصيل اتعثر", paid_pos_failed: "مدفوع ومش واصل لنقطة البيع",
+  expired: "انتهى", cancelled: "ملغي", payment_failed: "الدفع فشل",
+});
+export const COURIER_STATUS_AR = Object.freeze({ pending: "لسه مفيش مندوب", requested: "بنطلب مندوب", assigned: "اتعيّن مندوب", arrived: "المندوب وصل المحل", picked: "المندوب استلم الطلب", delivered: "اتوصّل", cancelled: "اتلغى", failed: "اتعثر" });
+export const PROVIDER_AR = Object.freeze({ leajlak: "لاجلك", cervo: "سيرفو", flying_arrow: "فلاينج أرو", flyingarrow: "فلاينج أرو", external: "مندوب خارجي", manual: "يدوي", district: "مندوب الحي" });
+export const OPTION_AR = Object.freeze({ delivery: "توصيل", pickup: "استلام", takeaway: "استلام", dine_in: "صالة", table: "طاولة" });
+export const FINAL_ORDER_STATUSES = Object.freeze(["delivered", "collected", "rejected_refunded", "refund_failed", "payment_failed", "cancelled", "expired", "pending_payment", "courier_cancelled"]);
+export const CURRENT_ORDER_SQL = `SELECT o.*, NULLIF(to_jsonb(o)->>'table_no','')::int AS table_no_i,
+       s.status AS ship_status, s.driver AS ship_driver, s.provider AS ship_provider, s.updated_at AS ship_updated_at, s.arrived_at AS ship_arrived_at,
+       s.picked_at AS ship_picked_at, s.delivered_at AS ship_delivered_at, to_jsonb(s)->>'assigned_at' AS ship_assigned_at, s.tracking_url AS ship_tracking_url
+  FROM shop_orders o
+  LEFT JOIN LATERAL (SELECT * FROM dl_shipments WHERE shop_order_no = o.order_no ORDER BY id DESC LIMIT 1) s ON TRUE
+ WHERE o.phone_norm = $1 AND o.status NOT IN ('pending_payment','expired','payment_failed') AND o.created_at > NOW() - INTERVAL '12 hours'
+ ORDER BY (o.status = ANY($2::text[])) ASC, o.created_at DESC LIMIT 1`;
+/* الوقت المتوقّع من حساب التتبع ⇒ سطر للموظف (تقدير، معلّم كده) */
+export function etaOut(eta) {
+  if (!eta) return null;
+  if (eta.soon) return { text: "قرّب يوصل", soon: true, at: null };
+  if (eta.at && eta.minutes != null) return { text: `خلال ${Math.round(eta.minutes)} دقيقة تقريباً`, soon: false, at: eta.at, minutes: Math.round(eta.minutes) };
+  if (eta.range) return { text: `خلال ${eta.range.fromMin}~${eta.range.toMin} دقيقة تقريباً`, soon: false, at: eta.range.to || null, from: eta.range.from || null, to: eta.range.to || null };
+  return null;
+}
+export function currentOrderOut(o, { eta = null, now = Date.now() } = {}) {
+  if (!o) return null;
+  const status = String(o.status || "");
+  const done = FINAL_ORDER_STATUSES.includes(status);
+  const ageMin = Math.max(0, Math.round((now - ms(o.created_at)) / 60_000));
+  if (done && ageMin > 180) return null;      // خلص من أكتر من ٣ ساعات ⇒ مش «حالي» (بيظهر في آخر الطلبات)
+  const drv = o.ship_driver && typeof o.ship_driver === "object" ? o.ship_driver : null;
+  const tableNo = Number(o.table_no_i ?? o.table_no) || 0;
+  const option = tableNo > 0 ? "table" : (o.option || null);
+  const prov = String(o.ship_provider || "").toLowerCase();
+  const courier = o.ship_provider || o.ship_status ? {
+    provider: o.ship_provider || null, providerLabel: PROVIDER_AR[prov] || o.ship_provider || null,
+    status: o.ship_status || null, statusLabel: COURIER_STATUS_AR[String(o.ship_status || "")] || o.ship_status || null,
+    driverName: drv ? clip(drv.name || drv.driver_name || drv.full_name, 60) : null, driverPhone: drv ? clip(drv.phone || drv.mobile || drv.driver_phone, 20) : null,
+    assignedAt: iso(o.ship_assigned_at), arrivedAt: iso(o.ship_arrived_at), pickedAt: iso(o.ship_picked_at), deliveredAt: iso(o.ship_delivered_at), trackingUrl: o.ship_tracking_url || null,
+  } : null;
+  const items = Array.isArray(o.items) ? o.items : [];
+  const a = o.address && typeof o.address === "object" ? o.address : null;
+  return {
+    no: o.order_no, at: iso(o.created_at), ageMin, status, statusLabel: ORDER_STATUS_AR[status] || status || "—", done,
+    option, optionLabel: OPTION_AR[option] || option || null, tableNo: tableNo > 0 ? tableNo : null,
+    total: num(o.total), deliveryFee: num(o.delivery_fee), discount: num(o.discount_amount), coupon: o.coupon || null, isTest: o.is_test === true,
+    paid: !["pending_payment", "payment_failed", "expired"].includes(status), payGateway: o.pay_gateway || null,
+    acceptedAt: iso(o.accepted_at), readyAt: iso(o.pos_ready_at), scheduledFor: iso(o.scheduled_for), area: a ? clip(a.area || a.district, 80) : null,
+    items: items.slice(0, 8).map((i) => ({ name: i.name || i.product_name || `صنف ${i.product_id ?? ""}`, qty: Number(i.quantity ?? i.qty) || 1 })), itemsMore: Math.max(0, items.length - 8),
+    courier, eta: done ? null : etaOut(eta),
+  };
+}
+/* تصنيف العميل (cust_profile) ⇒ الشرايح + سطور قصيرة بالعربي للكارت */
+export function profileBrief(view, row) {
+  if (!view || !row) return null;
+  const en = (k, v) => (v == null || v === "" ? null : (ENUM_AR[k] && ENUM_AR[k][v]) || String(v));
+  const lines = [
+    ["main_channel", "بيطلب من", en("main_channel", row.main_channel)],
+    ["daypart", "وقته المعتاد", en("daypart", row.daypart)],
+    ["value_tier", "قيمته", row.value_tier && row.value_tier !== "none" ? `${en("value_tier", row.value_tier)}${row.spend_pct != null ? ` · أعلى ${100 - Number(row.spend_pct)}٪` : ""}` : null],
+    ["recency_band", "آخر نشاط", row.recency_band && row.recency_band !== "none" ? `${en("recency_band", row.recency_band)}${row.days_since != null ? ` · من ${row.days_since} يوم` : ""}` : null],
+    ["freq_band", "التكرار (٩٠ يوم)", en("freq_band", row.freq_band)],
+    ["fav_dish", "بيحب", row.fav_dish || null],
+    ["service_pref", "الخدمة", en("service_pref", row.service_pref)],
+    ["district", "الحي", row.district || null],
+    ["lang", "اللغة", en("lang", row.lang)],
+    ["wa_reach", "واتساب", en("wa_reach", row.wa_reach)],
+    ["price_sensitivity", "حساسية السعر", row.price_sensitivity && row.price_sensitivity !== "unknown" ? en("price_sensitivity", row.price_sensitivity) : null],
+    ["loyalty", "الولاء", row.loyalty_left != null && Number(row.loyalty_left) > 0 ? `فاضل ${row.loyalty_left} طلب للمكافأة` : row.reward_code ? `عنده مكافأة ${row.reward_code}` : null],
+  ].filter(([, , v]) => v).map(([key, label, value]) => ({ key, label, value: String(value) }));
+  return { segments: (view.segments || []).map((s) => ({ id: s.id, icon: s.icon, label: s.label, hint: s.hint })), lines, computedAt: view.computedAt || null, isStaff: Boolean(view.isStaff) };
 }
 
 /* تفاصيل طلب من صفّه (من غير I/O) */
@@ -268,6 +347,61 @@ export function register(app, ctx, deps = {}) {
       const full = await fullPhones(c);
       return c.json({ ok: true, order: f.order, ref: await refFor(f.pn), customer: f.pn ? phoneOut(f.pn, full) : null });
     } catch (e) { log.error("[c360wa] order:", e.message); return bad(c, "unavailable", 500); }
+  });
+
+  /* ═══ IBX1a: 👤 كارت العميل جنب المحادثة (اللوحة) — قراية بس ═══
+     GET /api/cms/wa/threads/:key/customer ⇒ { ok, key, card, current, profile, optouts, reviews, ref, full }
+     مين: نفس أدوار المحادثات (settings.waHub.inboxRoles)؛ الرقم كامل للأدوار اللي بتشوفه بس (phoneRoles). تحت /api/cms/wa/threads ⇒ قسم «الطلبات». */
+  const profiles = () => (typeof deps.profiles === "function" ? deps.profiles() : deps.profiles) || null;
+  app.get("/api/cms/wa/threads/:key/customer", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const u = await whoami(c).catch(() => null);
+    const settings = await getSettingsData().catch(() => ({}));
+    const roles = hubRoles(settings || {});
+    if (!u || !u.role || !roles.inbox.includes(u.role)) return bad(c, "role_not_allowed", 403, "المحادثات مش متاحة لدورك");
+    const full = roles.phone.includes(u.role);
+    let pn = null;
+    try { pn = await pnOfWaKey(c.req.param("key")); } catch (e) { log.error("[c360wa] customer key:", e.message); return bad(c, "unavailable", 500); }
+    if (!pn) return bad(c, "not_found", 404, "مفيش محادثة بالمفتاح ده");
+    const x = c360(); if (!x) return bad(c, "unavailable", 503);
+    const partial = [];
+    const part = (name, p, fallback = null) => Promise.resolve().then(() => p).catch((e) => { partial.push(name); log.error(`[c360wa] customer ${name}:`, e.message); return fallback; });
+    try {
+      const T = now();
+      const [profile, cur, pr, sms, wa, invalid] = await Promise.all([
+        part("profile", x.buildProfile(pn), null),
+        part("current", Q(CURRENT_ORDER_SQL, [pn, [...FINAL_ORDER_STATUSES]]).then((r) => r[0] || null), null),
+        part("classification", (async () => { const P = profiles(); if (!P || typeof P.forPhone !== "function") return null; const row = await P.forPhone(pn); if (!row) return null;
+          const cfg = typeof P.cfg === "function" ? await P.cfg() : {}; return profileBrief(profileView(row, cfg), row); })(), null),
+        part("sms_optout", Q("SELECT opted_out_at, optout_source FROM cms_contacts WHERE phone_norm = $1", [pn]).then((r) => r[0] || null), null),
+        part("wa_optin", Q("SELECT updates, marketing, to_jsonb(o)->>'stopped_at' AS stopped_at, to_jsonb(o)->>'marketing_off_at' AS marketing_off_at FROM wa_optins o WHERE phone_norm = $1", [pn]).then((r) => r[0] || null), null),
+        part("invalid", Q("SELECT at FROM wa_invalid_numbers WHERE phone_norm = $1", [pn]).then((r) => r[0] || null), null),
+      ]);
+      /* الوقت المتوقّع: نفس حساب صفحة التتبع (تقدير). أي خطأ ⇒ من غير وقت، الكارت بيطلع عادي. */
+      let eta = null;
+      if (cur && !FINAL_ORDER_STATUSES.includes(String(cur.status || "")) && cur.option === "delivery") {
+        try {
+          const [{ computeTrackEta }, se] = await Promise.all([import("./tracketa.js"), import("./smarteta.js")]);
+          const sh = cur.ship_status || cur.ship_provider ? { status: cur.ship_status, driver: cur.ship_driver, provider: cur.ship_provider, updated_at: cur.ship_updated_at, arrived_at: cur.ship_arrived_at, picked_at: cur.ship_picked_at, delivered_at: cur.ship_delivered_at, assigned_at: cur.ship_assigned_at } : null;
+          const smart = typeof se.smartTrackContext === "function" ? await se.smartTrackContext(cur, settings).catch(() => null) : null;
+          eta = computeTrackEta({ row: cur, sh, settings: settings || {}, now: T, smart });
+        } catch (e) { partial.push("eta"); log.error("[c360wa] customer eta:", e.message); eta = null; }
+      }
+      if (u.role === "owner") await x.remember([pn]).catch(() => {});
+      const card = cardOf(profile || {}, pn, { owner: true, full });
+      const reviews = (profile && profile.reviews ? profile.reviews : []).filter((r) => !r.hidden && Number(r.rating) > 0).slice(0, 3)
+        .map((r) => ({ id: r.id, rating: Number(r.rating), comment: clip(r.comment, 300), at: iso(r.at), orderNo: r.orderNo || null, resolved: r.resolved === true, channel: r.channel || null }));
+      return c.json({
+        ok: true, key: String(c.req.param("key")), full,
+        card, current: currentOrderOut(cur, { eta, now: T }), profile: pr, reviews,
+        optouts: {
+          sms: sms && sms.opted_out_at ? { at: iso(sms.opted_out_at), source: sms.optout_source || null } : null,
+          wa: wa ? { updates: wa.updates === true, marketing: wa.marketing === true, stopped: Boolean(wa.stopped_at), stoppedAt: iso(wa.stopped_at), marketingOff: Boolean(wa.marketing_off_at) } : null,
+          notOnWhatsapp: Boolean(invalid),
+        },
+        ref: await refFor(pn).catch(() => null), partial,
+      });
+    } catch (e) { log.error("[c360wa] customer:", e.message); return bad(c, "unavailable", 500); }
   });
 
   /* ═══ 💬 تاريخ واتساب في ملف العميل ═══ */

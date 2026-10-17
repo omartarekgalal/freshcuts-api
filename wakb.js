@@ -14,8 +14,11 @@
    - disabled / dismissed مابيتستخدموش أبداً. التعديل بيسري من الرسالة الجاية.
    - الموديول ده مابيبعتش أي رسالة لأي حد.
    ═══════════════════════════════════════════════════════════════════════════ */
+import crypto from "node:crypto";
 import { validateReply } from "./waassist.js";
 import { maskText } from "./wabotllm.js";
+import { hubRoles } from "./wahub.js";      // IBX1a: مين يشوف رابط الرسالة (نفس أدوار المحادثات)
+import { tokenSecret } from "./portal-core.js";
 
 export const KB_LIMITS = Object.freeze({ question: 300, answer: 600, notes: 1500, examples: 3, candidates: 3 });
 export const KB_STATUSES = Object.freeze(["open", "answered", "disabled", "dismissed"]);
@@ -41,6 +44,9 @@ export const KB_DDL = `
     last_used_at TIMESTAMPTZ
   );
   CREATE INDEX IF NOT EXISTS wa_kb_questions_status_idx ON wa_kb_questions(status, last_at DESC);
+  -- IBX1a (عمر ١٧/١٠: «في أسئلة العملاء لازم نضغط على الرسالة يودينا ليها على طول»): آخر ٥ رسايل سأل فيها السؤال ده
+  -- [{ pn, wamid, at }] — الرقم بيفضل جوّه السيرفر؛ اللوحة بتاخد مفتاح المحادثة (md5 بالملح) + wamid بس، وللأدوار اللي بتشوف المحادثات بس.
+  ALTER TABLE wa_kb_questions ADD COLUMN IF NOT EXISTS refs JSONB NOT NULL DEFAULT '[]'::jsonb;
   CREATE TABLE IF NOT EXISTS wa_kb_notes (
     id INT PRIMARY KEY,
     ar TEXT NOT NULL DEFAULT '',
@@ -146,13 +152,28 @@ const messageOf = (problems) => (problems[0] ? `الإجابة ماتتحفظش:
 const clean = (s, max) => String(s ?? "").replace(/\r\n?/g, "\n").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, max + 1);
 const langOf = (s) => (/[؀-ۿ]/.test(String(s || "")) ? "ar" : "en");
 const iso = (v) => (v ? new Date(v).toISOString() : null);
-export function publicQuestion(r) {
+export const KB_REFS_MAX = 5;
+const jsonArr = (v) => (Array.isArray(v) ? v : (() => { try { const x = JSON.parse(v || "[]"); return Array.isArray(x) ? x : []; } catch { return []; } })());
+/* مرجع رسالة من المحادثة ⇒ { pn, wamid, at } أو null (رقم مش سعودي / من غير wamid ⇒ مفيش مرجع) */
+export function kbRef(ref) {
+  if (!ref || typeof ref !== "object") return null;
+  const pn = String(ref.phone || ref.pn || "").replace(/\D/g, "").replace(/^(00966|966)/, "").replace(/^0/, "");
+  const wamid = ref.wamid ? String(ref.wamid).slice(0, 200) : null;
+  if (!/^5\d{8}$/.test(pn) || !wamid) return null;
+  const at = ref.at ? iso(ref.at) : null;
+  return { pn, wamid, at: at || new Date().toISOString() };
+}
+export const mergeRefs = (old, add) => [...(add ? [add] : []), ...jsonArr(old).filter((x) => x && x.wamid && (!add || x.wamid !== add.wamid))].slice(0, KB_REFS_MAX);
+/* opts.keyOf(pn) ⇒ مفتاح المحادثة: لو موجود، السؤال بيطلع ومعاه refs [{ key, wamid, at }] (من غير رقم). من غيره: ولا مرجع (زي الأول). */
+export function publicQuestion(r, opts = {}) {
   if (!r) return null;
-  const ex = Array.isArray(r.examples) ? r.examples : (() => { try { return JSON.parse(r.examples || "[]"); } catch { return []; } })();
+  const ex = jsonArr(r.examples);
+  const keyOf = typeof opts.keyOf === "function" ? opts.keyOf : null;
   return { id: Number(r.id), status: r.status, question: r.question, lang: r.lang === "en" ? "en" : "ar", source: r.source, asked: Number(r.asked) || 1,
     firstAt: iso(r.first_at), lastAt: iso(r.last_at), examples: ex.slice(0, KB_LIMITS.examples),
     answer: r.answer_ar ? { ar: r.answer_ar, en: r.answer_en || "" } : null, answeredBy: r.answered_by || null, answeredAt: iso(r.answered_at),
-    used: Number(r.used) || 0, lastUsedAt: iso(r.last_used_at) };
+    used: Number(r.used) || 0, lastUsedAt: iso(r.last_used_at),
+    ...(keyOf ? { refs: jsonArr(r.refs).filter((x) => x && x.pn && x.wamid).slice(0, KB_REFS_MAX).map((x) => ({ key: keyOf(x.pn), wamid: x.wamid, at: x.at || null })) } : {}) };
 }
 
 /* ── المخزن ─────────────────────────────────────────────────────────────────
@@ -165,22 +186,23 @@ export function makeKb(deps = {}) {
   const note = (who, action, qid, detail) => q("INSERT INTO wa_kb_log(who, action, qid, detail) VALUES ($1,$2,$3,$4::jsonb)", [who ? String(who).slice(0, 80) : null, action, qid ?? null, JSON.stringify(detail || {})]);
 
   /* سؤال من محادثة ⇒ الطابور. نفس السؤال موجود (بأي حالة) ⇒ asked + 1 على نفس الصف (ومثال جديد لو مختلف) من غير ما يتفتح تاني. */
-  async function queue({ question, lang = null, source = "no_answer" } = {}) {
+  async function queue({ question, lang = null, source = "no_answer", ref = null } = {}) {
     const masked = maskText(String(question || "")).slice(0, KB_LIMITS.question);
     const T = kbTokens(masked);
     if (!masked || !T.size) return null;
     const src = KB_SOURCES.includes(source) && source !== "manual" ? source : "no_answer";
-    const rows = await q("SELECT id, status, question, examples FROM wa_kb_questions ORDER BY last_at DESC LIMIT 800");
+    const r0 = kbRef(ref);      // IBX1a: الرسالة اللي اتسأل فيها (الرقم جوّه السيرفر بس)
+    const rows = await q("SELECT id, status, question, examples, to_jsonb(wa_kb_questions)->'refs' AS refs FROM wa_kb_questions ORDER BY last_at DESC LIMIT 800");
     if (rows === null) return null;
     const hit = rows.find((r) => [r.question, ...(Array.isArray(r.examples) ? r.examples : [])].some((t) => kbSame(T, kbTokens(t))));
     if (hit) {
       const ex = Array.isArray(hit.examples) ? hit.examples.slice() : [];
       if (masked !== hit.question && !ex.includes(masked) && ex.length < KB_LIMITS.examples) ex.push(masked);
-      await q("UPDATE wa_kb_questions SET asked = asked + 1, last_at = NOW(), examples = $2::jsonb WHERE id=$1", [hit.id, JSON.stringify(ex)]);
+      await q("UPDATE wa_kb_questions SET asked = asked + 1, last_at = NOW(), examples = $2::jsonb, refs = $3::jsonb WHERE id=$1", [hit.id, JSON.stringify(ex), JSON.stringify(mergeRefs(hit.refs, r0))]);
       return { id: Number(hit.id), created: false, status: hit.status };
     }
-    const r = await q(`INSERT INTO wa_kb_questions(status, question, norm, lang, source, examples) VALUES ('open',$1,$2,$3,$4,'[]'::jsonb) RETURNING id`,
-      [masked, tokKey(T), lang === "en" || lang === "ar" ? lang : langOf(masked), src]);
+    const r = await q(`INSERT INTO wa_kb_questions(status, question, norm, lang, source, examples, refs) VALUES ('open',$1,$2,$3,$4,'[]'::jsonb,$5::jsonb) RETURNING id`,
+      [masked, tokKey(T), lang === "en" || lang === "ar" ? lang : langOf(masked), src, JSON.stringify(mergeRefs([], r0))]);
     if (!r || !r[0]) return null;
     const id = Number(r[0].id);
     try { deps.broadcast?.("wa_kb_question", { id, question: masked, asked: 1, source: src }); } catch (e) { log.error("[wa-kb] broadcast:", e.message); }
@@ -224,7 +246,7 @@ export function makeKb(deps = {}) {
     const problems = [...kbCheck(ar).problems, ...kbCheck(en).problems];
     return problems.length ? fail("not_allowed", 400, { problems, message: messageOf(problems) }) : null;
   }
-  async function list({ status = "open", limit = 50, before = null, q: text = "" } = {}) {
+  async function list({ status = "open", limit = 50, before = null, q: text = "", keyOf = null } = {}) {
     const st = status === "all" ? null : KB_STATUSES.includes(status) ? status : "open";
     const lim = Math.min(200, Math.max(1, Number(limit) || 50));
     const where = [], p = [];
@@ -238,7 +260,7 @@ export function makeKb(deps = {}) {
     if (rows === null || cnt === null) return fail("unavailable", 503);
     const counts = { open: 0, answered: 0, disabled: 0, dismissed: 0 };
     for (const c of cnt) if (c.status in counts) counts[c.status] = Number(c.n);
-    return { ok: true, questions: rows.map(publicQuestion), counts };
+    return { ok: true, questions: rows.map((r) => publicQuestion(r, { keyOf })), counts };
   }
   async function answer(id, body, who) {
     const ar = clean(body && body.ar, KB_LIMITS.answer), en = clean(body && body.en, KB_LIMITS.answer);
@@ -289,6 +311,9 @@ export function makeKb(deps = {}) {
    deps: { requirePortal, broadcast, actor?(c) ⇒ اسم مستخدم اللوحة } */
 export function register(app, ctx, deps = {}) {
   const kb = makeKb({ pool: ctx.pool, broadcast: deps.broadcast, log: deps.log });
+  /* IBX1a: مفتاح المحادثة (نفس ملح wahub) — بيطلع مع السؤال للأدوار اللي بتشوف المحادثات بس */
+  const SALT = String(deps.keySalt || tokenSecret(process.env) || "");
+  const keyOf = SALT ? (pn) => crypto.createHash("md5").update(`${SALT}:${pn}`).digest("hex") : null;
   const send = (c, r) => { const { status, ...body } = r; return c.json(body, r.ok ? 200 : (status || 400)); };
   const bodyOf = async (c) => { try { const b = await c.req.json(); return b && typeof b === "object" ? b : {}; } catch { return {}; } };
   const idOf = (c) => { const n = Number(c.req.param("id")); return Number.isInteger(n) && n > 0 ? n : 0; };
@@ -297,7 +322,7 @@ export function register(app, ctx, deps = {}) {
   /* gate(c) ⇒ { res } أو { who } */
   function mount(prefix, gate) {
     app.get(`${prefix}/questions`, async (c) => { const a = await gate(c); if (a.res) return a.res;
-      return send(c, await kb.list({ status: c.req.query("status") || "open", limit: c.req.query("limit"), before: c.req.query("before"), q: c.req.query("q") || "" })); });
+      return send(c, await kb.list({ status: c.req.query("status") || "open", limit: c.req.query("limit"), before: c.req.query("before"), q: c.req.query("q") || "", keyOf: a.chatLinks ? keyOf : null })); });
     app.post(`${prefix}/questions`, async (c) => { const a = await gate(c); if (a.res) return a.res; return send(c, await kb.add(await bodyOf(c), a.who)); });
     app.post(`${prefix}/questions/:id/answer`, async (c) => { const a = await gate(c); if (a.res) return a.res; const id = idOf(c); return send(c, id ? await kb.answer(id, await bodyOf(c), a.who) : notFound); });
     app.post(`${prefix}/questions/:id/status`, async (c) => { const a = await gate(c); if (a.res) return a.res; const id = idOf(c); const b = await bodyOf(c); return send(c, id ? await kb.setStatus(id, String(b.status || ""), a.who) : notFound); });
@@ -308,13 +333,16 @@ export function register(app, ctx, deps = {}) {
   mount("/api/cms/ops/wabot/kb", async (c) => {
     const err = await ctx.requireAdmin(c); if (err) return { res: err };
     let who = "اللوحة"; try { if (typeof deps.actor === "function") who = (await deps.actor(c)) || who; } catch { /* الاسم اختياري */ }
-    return { who };
+    /* روابط «افتح الرسالة»: لو الدور بيشوف المحادثات (settings.waHub.inboxRoles). مفيش دور معروف (مفتاح الأدمن) ⇒ مالك. */
+    let chatLinks = false;
+    try { const u = typeof deps.whoami === "function" ? await deps.whoami(c) : null; const role = (u && u.role) || "owner"; chatLinks = hubRoles((typeof ctx.getSettingsData === "function" ? await ctx.getSettingsData() : {}) || {}).inbox.includes(role); } catch { chatLinks = false; }
+    return { who, chatLinks };
   });
-  /* البورتال: المدير بس */
+  /* البورتال: المدير بس (وبيشوف المحادثات ⇒ الروابط كمان) */
   if (typeof deps.requirePortal === "function") {
     mount("/api/portal/wa-kb", async (c) => {
       const a = await deps.requirePortal(c, "manager"); if (a.res) return { res: a.res };
-      return { who: `${a.user.name || "مدير"} (${a.user.role || "manager"})` };
+      return { who: `${a.user.name || "مدير"} (${a.user.role || "manager"})`, chatLinks: true };
     });
   }
   return kb;

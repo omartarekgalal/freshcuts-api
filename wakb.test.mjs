@@ -2,7 +2,7 @@
    قاعدة وهمية بحالة، مفيش شبكة ولا أي إرسال. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { register, makeKb, kbCheck, kbTokens, kbSame, kbCandidates, publicQuestion, KB_LIMITS } from "./wakb.js";
+import { register, makeKb, kbCheck, kbTokens, kbSame, kbCandidates, publicQuestion, KB_LIMITS, kbRef, mergeRefs, KB_REFS_MAX } from "./wakb.js";
 
 function fakePool({ fail = false } = {}) {
   const db = { rows: [], notes: null, log: [], seq: 0 };
@@ -12,10 +12,10 @@ function fakePool({ fail = false } = {}) {
     if (fail && !/^CREATE/i.test(s)) throw new Error("db down");
     if (/^CREATE TABLE IF NOT EXISTS wa_kb_questions/i.test(s)) return { rows: [] };
     if (/^INSERT INTO wa_kb_log/i.test(s)) { db.log.push({ who: p[0], action: p[1], qid: p[2], detail: JSON.parse(p[3]) }); return { rows: [] }; }
-    if (/^SELECT id, status, question, examples FROM wa_kb_questions ORDER BY last_at DESC/i.test(s)) return { rows: db.rows.map((r) => ({ id: r.id, status: r.status, question: r.question, examples: r.examples.slice() })) };
-    if (/^UPDATE wa_kb_questions SET asked = asked \+ 1/i.test(s)) { const r = db.rows.find((x) => x.id === p[0]); r.asked++; r.examples = JSON.parse(p[1]); return { rows: [] }; }
-    if (/^INSERT INTO wa_kb_questions\(status, question, norm, lang, source, examples\)/i.test(s)) {
-      const r = { id: ++db.seq, status: "open", question: p[0], norm: p[1], lang: p[2], source: p[3], asked: 1, first_at: T, last_at: T, examples: [], answer_ar: null, answer_en: null, answered_by: null, answered_at: null, used: 0, last_used_at: null };
+    if (/^SELECT id, status, question, examples, to_jsonb\(wa_kb_questions\)->'refs' AS refs FROM wa_kb_questions ORDER BY last_at DESC/i.test(s)) return { rows: db.rows.map((r) => ({ id: r.id, status: r.status, question: r.question, examples: r.examples.slice(), refs: (r.refs || []).slice() })) };
+    if (/^UPDATE wa_kb_questions SET asked = asked \+ 1, last_at = NOW\(\), examples = \$2::jsonb, refs = \$3::jsonb WHERE id=\$1/i.test(s)) { const r = db.rows.find((x) => x.id === p[0]); r.asked++; r.examples = JSON.parse(p[1]); r.refs = JSON.parse(p[2]); return { rows: [] }; }
+    if (/^INSERT INTO wa_kb_questions\(status, question, norm, lang, source, examples, refs\)/i.test(s)) {
+      const r = { id: ++db.seq, status: "open", question: p[0], norm: p[1], lang: p[2], source: p[3], asked: 1, first_at: T, last_at: T, examples: [], refs: JSON.parse(p[4]), answer_ar: null, answer_en: null, answered_by: null, answered_at: null, used: 0, last_used_at: null };
       db.rows.push(r); return { rows: [{ id: r.id }] };
     }
     if (/^INSERT INTO wa_kb_questions\(status, question, norm, lang, source, answer_ar/i.test(s)) {
@@ -150,7 +150,7 @@ test("المسارات: نفس الأجسام تحت البادئتين، الم
   const add = (m) => (path, h) => { routes[`${m} ${path}`] = h; };
   const app = { get: add("GET"), post: add("POST"), put: add("PUT") };
   let role = "manager", admin = true;
-  const kb = register(app, { pool, requireAdmin: async (c) => (admin ? null : c.json({ ok: false, error: "unauthorized" }, 401)) }, { log: quiet, actor: async () => "omar",
+  const kb = register(app, { pool, requireAdmin: async (c) => (admin ? null : c.json({ ok: false, error: "unauthorized" }, 401)) }, { log: quiet, actor: async () => "omar", keySalt: "kb-salt",
     requirePortal: async (c, need) => (need === "manager" && role !== "manager" ? { res: c.json({ ok: false, error: "forbidden" }, 403) } : { user: { id: "s1", name: "أحمد", role } }) });
   const call = async (key, { body = null, query = {}, params = {} } = {}) => {
     let out = null;
@@ -166,7 +166,8 @@ test("المسارات: نفس الأجسام تحت البادئتين، الم
   let r = await call("GET /api/portal/wa-kb/questions");
   assert.equal(r.status, 200); assert.deepEqual(r.body.counts, { open: 2, answered: 0, disabled: 0, dismissed: 0 });
   assert.deepEqual(r.body.questions.map((x) => x.asked), [2, 1]);                         // الأكتر سؤالاً أولاً
-  assert.deepEqual(Object.keys(r.body.questions[0]).sort(), ["answer", "answeredAt", "answeredBy", "asked", "examples", "firstAt", "id", "lang", "lastAt", "lastUsedAt", "question", "source", "status", "used"]);
+  assert.deepEqual(Object.keys(r.body.questions[0]).sort(), ["answer", "answeredAt", "answeredBy", "asked", "examples", "firstAt", "id", "lang", "lastAt", "lastUsedAt", "question", "refs", "source", "status", "used"]);      // IBX1a: refs للمدير (بيشوف المحادثات)
+  assert.deepEqual(r.body.questions.map((x) => x.refs), [[], []], "no message refs were given ⇒ empty lists, never a phone");
   assert.ok(!/phone|hash|chat/i.test(JSON.stringify(r.body)));
   const id = r.body.questions[0].id;
   r = await call("POST /api/portal/wa-kb/questions/:id/answer", { params: { id: String(id) }, body: { ar: "خالي من الجلوتين" } });
@@ -185,4 +186,63 @@ test("المسارات: نفس الأجسام تحت البادئتين، الم
   admin = false;
   for (const k of paths.filter((p) => p.includes("/api/cms/"))) { r = await call(k, { params: { id: "1" }, body: {} }); assert.equal(r.status, 401, k); }
   assert.equal(publicQuestion(null), null);
+});
+
+
+/* ═══ IBX1a (عمر ١٧/١٠): من السؤال للرسالة نفسها — المرجع بيتخزّن من غير ما يطلع رقم، واللوحة بتاخد مفتاح المحادثة بس ═══ */
+test("IBX1a refs: kbRef cleans the phone and needs a wamid; mergeRefs = newest first, no duplicate wamid, capped", () => {
+  assert.deepEqual(kbRef({ phone: "0544775082", wamid: "wamid.A", at: "2026-10-17T05:00:00.000Z" }), { pn: "544775082", wamid: "wamid.A", at: "2026-10-17T05:00:00.000Z" });
+  assert.equal(kbRef({ phone: "+966 54 477 5082", wamid: "w" }).pn, "544775082");
+  assert.equal(kbRef({ phone: "0544775082" }), null, "no wamid ⇒ no ref");
+  assert.equal(kbRef({ phone: "12345", wamid: "w" }), null, "not a Saudi mobile ⇒ no ref");
+  assert.equal(kbRef(null), null);
+  const a = { pn: "544775082", wamid: "wamid.A", at: "t1" }, b = { pn: "544775083", wamid: "wamid.B", at: "t2" };
+  assert.deepEqual(mergeRefs([a], b), [b, a]);
+  assert.deepEqual(mergeRefs([a], { ...a, at: "t9" }), [{ ...a, at: "t9" }], "same wamid is not kept twice");
+  assert.deepEqual(mergeRefs("[]", null), []);
+  const many = Array.from({ length: 7 }, (_, i) => ({ pn: "544775082", wamid: `w${i}`, at: `t${i}` }));
+  assert.equal(mergeRefs(many, { pn: "544775082", wamid: "new", at: "tn" }).length, KB_REFS_MAX);
+  assert.equal(mergeRefs(many, { pn: "544775082", wamid: "new", at: "tn" })[0].wamid, "new");
+});
+
+test("IBX1a refs: queue() keeps the last 5 asking messages on the row; publicQuestion shows them only with keyOf and never the number", async () => {
+  const pool = fakePool();
+  const kb = makeKb({ pool, log: quiet });
+  await kb.queue({ question: "عندكم واي فاي؟ جوالي 0544775082", lang: "ar", ref: { phone: "0544775082", wamid: "wamid.1", at: "2026-10-17T05:00:00.000Z" } });
+  await kb.queue({ question: "فيه واي فاي", ref: { phone: "0500000002", wamid: "wamid.2", at: "2026-10-17T06:00:00.000Z" } });
+  await kb.queue({ question: "هل فيه واي فاي؟" });                                    // من غير مرجع ⇒ العدّاد بس
+  const row = pool.db.rows[0];
+  assert.equal(row.asked, 3);
+  assert.deepEqual(row.refs.map((x) => x.wamid), ["wamid.2", "wamid.1"]);
+  assert.deepEqual(row.refs.map((x) => x.pn), ["500000002", "544775082"]);
+  const plain = publicQuestion(row);
+  assert.ok(!("refs" in plain), "no keyOf ⇒ the question has no refs at all (portal cashier / marketing role)");
+  const keyOf = (pn) => `k${pn.slice(-4)}`;
+  const withKeys = publicQuestion(row, { keyOf });
+  assert.deepEqual(withKeys.refs, [{ key: "k0002", wamid: "wamid.2", at: "2026-10-17T06:00:00.000Z" }, { key: "k5082", wamid: "wamid.1", at: "2026-10-17T05:00:00.000Z" }]);
+  assert.ok(!/544775082|500000002/.test(JSON.stringify(withKeys)), "the phone is never in the public question");
+  const list = await kb.list({ status: "open", keyOf });
+  assert.equal(list.questions[0].refs.length, 2);
+  assert.ok(!("refs" in (await kb.list({ status: "open" })).questions[0]));
+});
+
+test("IBX1a refs: the dashboard route gives refs to inbox roles only (settings.waHub.inboxRoles), the portal manager always", async () => {
+  const pool = fakePool();
+  const routes = {};
+  const add = (m) => (path, h) => { routes[`${m} ${path}`] = h; };
+  const app = { get: add("GET"), post: add("POST"), put: add("PUT") };
+  let role = "kitchen";
+  const kb = register(app, { pool, requireAdmin: async () => null, getSettingsData: async () => ({ waHub: { inboxRoles: ["operations", "kitchen"] } }) },
+    { log: quiet, keySalt: "kb-salt", whoami: async () => ({ role, name: "x" }), requirePortal: async () => ({ user: { id: "s1", name: "أحمد", role: "manager" } }) });
+  await kb.queue({ question: "عندكم واي فاي؟", ref: { phone: "0544775082", wamid: "wamid.1", at: "2026-10-17T05:00:00.000Z" } });
+  const call = async (key, query = {}) => { let out = null; const c = { req: { json: async () => ({}), query: (k) => query[k], param: () => null }, json: (b, s = 200) => { out = { status: s, body: b }; return out; } }; await routes[key](c); return out; };
+  let r = await call("GET /api/cms/ops/wabot/kb/questions");
+  assert.equal(r.body.questions[0].refs.length, 1, "kitchen is in the inbox roles ⇒ link");
+  assert.match(r.body.questions[0].refs[0].key, /^[0-9a-f]{32}$/);
+  assert.ok(!/544775082/.test(JSON.stringify(r.body)));
+  role = "marketing";
+  r = await call("GET /api/cms/ops/wabot/kb/questions");
+  assert.ok(!("refs" in r.body.questions[0]), "marketing does not read chats ⇒ no link");
+  r = await call("GET /api/portal/wa-kb/questions");
+  assert.equal(r.body.questions[0].refs.length, 1, "portal manager reads chats ⇒ link");
 });
