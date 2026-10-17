@@ -37,6 +37,7 @@ import { ORDER_BUTTON, MENU_BUTTON } from "./watemplates.js";
 import { plausibleName } from "./posnames.js";
 import { pausedOffersOf } from "./soldout.js";
 import { subscribe } from "./order-events.js";
+import { bestHourOf } from "./wahabit.js";      // CJ1b (١٧/١٠): ساعة عادة العميل من هيستوجرام ساعات طلباته
 
 export const PROFILE_VERSION = 1;
 export const PROFILE_ALL = "profile_all";
@@ -59,6 +60,7 @@ export const PROFILE_DEFAULTS = Object.freeze({
   bigBillSar: 150,                                 // ≈ أعلى ١٠٪ متوسط طلب (قياس ١٥/١٠: P90 = ١٣٩)
   groupOrderSar: FAV_RULES.bigOrder, groupTwiceSar: FAV_RULES.bigTwice, groupKilos: FAV_RULES.bigKilos,   // نفس «طلبات جمعات» بتاعة FD1
   lunchStart: 11, lunchEnd: 16, lateStart: 22, lateEnd: 4,
+  habitMinOrders: 3,                               // CJ1b (١٧/١٠): «بيطلب غالباً الساعة» من كام طلب — أقل من كده مفيش ساعة معتادة
   weekendDays: Object.freeze(["thu", "fri"]),     // أعلى يومين طلبات (قياس ١٥/١٠) — يوم العمل
   priceHighPct: 80, feeLowSar: 10,
   lateLeanPct: 50, lunchLeanPct: 50, weekendLeanPct: 50,
@@ -86,6 +88,7 @@ export const PROFILE_SCHEMA = Object.freeze([
   { key: "lunchEnd", group: "timing", ar: "الغدا لحد الساعة (وبعدها العشا)", unit: "ساعة", min: 8, max: 20 },
   { key: "lateStart", group: "timing", ar: "آخر الليل من الساعة", unit: "ساعة", min: 18, max: 23 },
   { key: "lateEnd", group: "timing", ar: "آخر الليل لحد الساعة (بعد نص الليل)", unit: "ساعة", min: 0, max: 8 },
+  { key: "habitMinOrders", group: "timing", ar: "«بيطلب غالباً الساعة»: من كام طلب", unit: "طلب", min: 2, max: 20, help: "ساعة عادته = ذروة ساعات طلباته (الرياض) بعد تنعيم ±ساعة. أقل من كده = مفيش ساعة معتادة، وحملة «على عادة العميل» بتحطه في الساعات الهادية" },
   { key: "weekendDays", group: "timing", type: "days", ar: "أيام الويكند", help: "بيوم العمل (طلب ١ الفجر بيتحسب لليوم اللي قبله)" },
   { key: "priceHighPct", group: "price", ar: "حساسية سعر «عالية»: نسبة طلباته بخصم من", unit: "٪", min: 30, max: 100, help: "الخصم = كوبون أو خصم في نقطة البيع/التطبيق (أغلبه عروض عامة)؛ أو كوبونين اختارهم بنفسه" },
   { key: "feeLowSar", group: "price", ar: "رسوم توصيل «قليلة» لحد", unit: "ر.س", min: 1, max: 50 },
@@ -174,7 +177,7 @@ export const PROFILE_FIELDS = Object.freeze([
   F("app_orders", "channels", "طلبات التطبيقات", "int", "orders"), F("app_names", "channels", "التطبيقات", "text", "orders"), F("service_pref", "channels", "بيفضّل", "enum", "pos"),
   F("fav_category", "taste", "نوع أكله المفضّل", "enum", "items"), F("fav_subcat", "taste", "بالتفصيل", "enum", "items"), F("fav_dish", "taste", "طبقه المفضّل", "text", "items"),
   F("fav_weight", "taste", "وزنه المعتاد", "weight", "items"), F("lean", "taste", "الميل", "enum", "items"), F("cat_shares", "taste", "توزيع أكله", "shares", "items"),
-  F("daypart", "timing", "بيطلب غالباً", "enum", "hours"), F("late_night_share", "timing", "نسبة طلبات آخر الليل", "share", "hours"), F("lunch_share", "timing", "نسبة الغدا", "share", "hours"),
+  F("daypart", "timing", "بيطلب غالباً", "enum", "hours"), F("best_hour", "timing", "بيطلب غالباً الساعة", "hour", "hours"), F("late_night_share", "timing", "نسبة طلبات آخر الليل", "share", "hours"), F("lunch_share", "timing", "نسبة الغدا", "share", "hours"),
   F("dinner_share", "timing", "نسبة العشا", "share", "hours"), F("day_pref", "timing", "الأيام", "enum", "days"), F("weekend_share", "timing", "نسبة الويكند", "share", "days"),
   F("big_bill", "basket", "فاتورة كبيرة", "bool", "orders"), F("group_order", "basket", "طلبات جمعات", "bool", "orders"),
   F("price_sensitivity", "price", "حساسية السعر", "enum", "orders"), F("discount_share", "price", "نسبة طلباته بخصم", "share", "orders"), F("coupon_orders", "price", "كوبونات اختارها (غير FIRST والمكافآت)", "int", "web"),
@@ -352,12 +355,18 @@ export function computeProfile(x, ctx = {}) {
   row.cat_shares = dishQty ? Object.fromEntries(Object.entries(gQty).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([g, q]) => [g, r2(q / dishQty)])) : null;
   /* المواعيد */
   const dp = { lunch: 0, dinner: 0, late: 0, morning: 0 };
+  const hist = new Array(24).fill(0);
   let we = 0;
   for (const o of orders) {
     const c = riyadhClock(o.at);
     dp[daypartOf(c.hour, cfg)]++;
+    hist[c.hour]++;
     if (cfg.weekendDays.includes(c.bizDow)) we++;
   }
+  /* CJ1b (١٧/١٠): هيستوجرام ساعات طلباته (الرياض، ٢٤ خانة) + ساعة عادته (ذروة بعد تنعيم ±ساعة، من habitMinOrders طلب وإلا null) —
+     حملة واتساب «على عادة العميل» (wasender.js) بتبعتله قبلها بالمهلة بدل دفعة واحدة */
+  row.hour_hist = n ? hist : null;
+  row.best_hour = n ? bestHourOf(hist, cfg.habitMinOrders) : null;
   row.late_night_share = n ? r3(dp.late / n) : null;
   row.lunch_share = n ? r3(dp.lunch / n) : null;
   row.dinner_share = n ? r3(dp.dinner / n) : null;
@@ -645,6 +654,7 @@ export const PROFILE_COLS = Object.freeze([
   ["pos_orders", "INT", "int"], ["web_orders", "INT", "int"], ["app_orders", "INT", "int"], ["main_channel", "TEXT", "text"], ["app_names", "TEXT", "text"], ["service_pref", "TEXT", "text"],
   ["fav_category", "TEXT", "text"], ["fav_subcat", "TEXT", "text"], ["fav_dish", "TEXT", "text"], ["fav_weight", "TEXT", "text"], ["lean", "TEXT", "text"], ["cat_shares", "JSONB", "json"],
   ["late_night_share", "NUMERIC(4,3)", "num"], ["lunch_share", "NUMERIC(4,3)", "num"], ["dinner_share", "NUMERIC(4,3)", "num"], ["daypart", "TEXT", "text"],
+  ["best_hour", "SMALLINT", "int"], ["hour_hist", "SMALLINT[]", "arr"],      // CJ1b: ساعة عادته + هيستوجرام ٢٤ ساعة (الرياض)
   ["weekend_share", "NUMERIC(4,3)", "num"], ["day_pref", "TEXT", "text"],
   ["big_bill", "BOOLEAN", "bool"], ["group_order", "BOOLEAN", "bool"],
   ["coupon_orders", "INT", "int"], ["discount_share", "NUMERIC(4,3)", "num"], ["used_first", "BOOLEAN", "bool"], ["price_sensitivity", "TEXT", "text"], ["first_eligible", "BOOLEAN", "bool"],

@@ -53,6 +53,7 @@ import { cloudCfg, cloudPacing, classifyError, fallbackFor, campaignParams, clou
 import { waRatesOf } from "./waaicost.js";
 import { FAV_PICK, FAV_AUDIENCE, FAV_DEFAULT_FILTERS, FAV_HOLD, favJobProblem, lineProblem } from "./wafavpick.js";
 import { PROFILE_ALL, PROFILE_TOKENS, PROFILE_TOKEN_KEYS, profileTokensIn, tokensOf, exampleProfileValues } from "./custprofile.js";
+import { habitCfg, habitSchemaRows, planJob, storedPlanHours, riyadhParts, HABIT_GROUP, HABIT_GROUP_AR, HABIT_WHY_AR } from "./wahabit.js";      // CJ1b (١٧/١٠): الإرسال على عادة العميل
 
 export const MIN_GAP_DAYS = 3;
 export const DEFAULTS = {
@@ -98,6 +99,7 @@ export function senderCfg(settings) {
     footer: String(x.footer ?? DEFAULTS.footer).slice(0, 200),
     failStop: clampN(x.failStop, 1, 20, 3),
     warmup: warmupCfg(x.warmup),
+    byHabit: habitCfg(x.byHabit),      // CJ1b (١٧/١٠): «الإيقاع» — الإرسال على عادة العميل (wahabit.js)؛ الافتراضي مقفول
     agentHash: x.agentHash || null,
   };
 }
@@ -297,6 +299,57 @@ export function register(app, ctx, deps = {}) {
   /* سعر الرسالة التسويقية من بطاقة الأسعار المخزّنة عند البوت (settings.waBot.waRates) — مفيش سعر في الملف ده */
   const rateOf = (s) => { const r = waRatesOf(((s || {}).waBot || {}).waRates); return { rateSar: Number(r.marketing) || 0, rateDate: r.date || null }; };
   const ownerOnly = (c) => c.json({ ok: false, error: "owner_only", message: "الخطوة دي للمالك بس" }, 403);
+
+  /* ── CJ1b (١٧/١٠ — عمر: «نشغّل اليوم كله»): الإرسال على عادة العميل (wahabit.js) ─────────────────────────────────────
+     الإعداد settings.waSender.byHabit شغّال ⇒ كل صف في الطابور بياخد send_at = ساعة عادة العميل (best_hour من ملفه — custprofile) − المهلة،
+     مقصوصة على نافذة النهارده؛ واللي مالوش ساعة (أو ساعته فاتت) بيتوزّع على الساعات الهادية. الـclaim مابياخدش صف ميعاده لسه ماجاش.
+     مفيش ملف عميل متاح ⇒ كلهم «هدوء». سعة الساعة في التوزيع = maxPerHour أو سقف الساعة بتاع القناة. */
+  const habitHourCap = (s, channel) => { const cfg = senderCfg(s); return cfg.byHabit.maxPerHour > 0 ? cfg.byHabit.maxPerHour : channel === "wa_cloud" ? cloudCfg(s).hourCap : cfg.hourCap; };
+  async function habitPlanFor(pns, { s, channel, at, force = false }) {
+    const hb = senderCfg(s).byHabit;
+    if (!hb.enabled && !force) return null;
+    const P = profApi();
+    const prof = P && typeof P.profilesFor === "function" ? await P.profilesFor(pns) : new Map();
+    const rows = pns.map((pn) => { const p = prof.get(pn); return { pn, best_hour: p ? p.best_hour : null }; });
+    return planJob({ rows, cfg: hb, now: at, hourCap: habitHourCap(s, channel) });
+  }
+  /* للوحة: الشريط + كام رسالة واقعة بره «ساعات الإرسال» (بتستنى لحد ما ساعات الإرسال تفتح — لو المالك عايز اليوم كله لازم يوسّعها) */
+  function habitPlanView(hp, s, { error = null } = {}) {
+    const cfg = senderCfg(s);
+    if (!hp) return { enabled: cfg.byHabit.enabled, hours: [], noHour: 0, window: null, ...(error ? { error } : {}) };
+    let outsideSenderHours = 0;
+    for (const v of hp.byPn.values()) if (!inWindow(cfg, Date.parse(v.at))) outsideSenderHours++;
+    return { enabled: cfg.byHabit.enabled, hours: hp.hours, total: hp.total, byHabit: hp.byHabit, noHour: hp.noHour, passed: hp.passed, outside: hp.outside, window: hp.window,
+      outsideSenderHours, senderHours: { startHour: cfg.startHour, endHour: cfg.endHour, days: cfg.days }, why: HABIT_WHY_AR };
+  }
+  /* لحظة البدء المجدول (startDueJobs): الخطة بتتعاد لصفوف الحملة اللي لسه pending من دلوقتي (مش من لحظة الإنشاء)؛ الإعداد اتقفل ⇒ المواعيد بتتشال (زي الأول) */
+  async function applyHabitPlan(jobId, { s, channel, at }) {
+    if (!senderCfg(s).byHabit.enabled) { await pool.query("UPDATE wa_send_queue SET send_at=NULL, send_why=NULL WHERE job_id=$1 AND status='pending' AND send_at IS NOT NULL", [jobId]); return null; }
+    const rows = (await pool.query("SELECT id, phone_norm FROM wa_send_queue WHERE job_id=$1 AND status='pending'", [jobId])).rows || [];
+    if (!rows.length) return null;
+    const hp = await habitPlanFor(rows.map((r) => r.phone_norm), { s, channel, at });
+    if (!hp) return null;
+    const ids = [], ats = [], whys = [];
+    for (const r of rows) { const v = hp.byPn.get(r.phone_norm); if (!v) continue; ids.push(Number(r.id)); ats.push(v.at); whys.push(v.why); }
+    if (ids.length) await pool.query(
+      `UPDATE wa_send_queue q SET send_at = v.at, send_why = v.why FROM unnest($1::bigint[], $2::timestamptz[], $3::text[]) AS v(id, at, why)
+        WHERE q.id = v.id AND q.status = 'pending'`, [ids, ats, whys]);
+    return hp;
+  }
+  /* «النتايج» بالساعة: الرسايل اللي اتبعتت فعلاً في كل ساعة (الرياض) ومين رد/ضغط — عشان المالك يقارن الساعات */
+  function sentByHour(rows) {
+    const m = new Map();
+    for (const r of rows || []) {
+      const t = r.sent_at instanceof Date ? r.sent_at.getTime() : Date.parse(String(r.sent_at || ""));
+      if (!Number.isFinite(t)) continue;
+      const h = riyadhParts(t).hour;
+      const b = m.get(h) || { hour: h, n: 0, replied: 0, clicked: 0 };
+      b.n++; if (r.replied_at) b.replied++; if (Number(r.clicks) > 0) b.clicked++;
+      m.set(h, b);
+    }
+    return [...m.values()].sort((a, b) => a.hour - b.hour);
+  }
+
   /* صف الحملة اللي الدورة/التكملة/الإعادة محتاجينه (نفس الاستعلام في كل مكان) */
   const JOB_SQL = "SELECT id, cloud_template, cloud_vars, image_url, video_url, link_slug, offer, fallback, spend_cap_sar, rate_sar, brake_ack_at, status, name FROM wa_send_jobs WHERE id=$1";
   /* مراجعة SX2 (ج): نسبة الفشل بتبدأ من جديد بس لما التكملة ($2='running') تيجي بعد آخر فرملة فشل (fail_brake_at أحدث من fail_base_at).
@@ -475,6 +528,8 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS first_wamid TEXT;       -- wamid المحاولة الأولى (عشان نتأكد إنها ماوصلتش قبل الإعادة)
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS tried_at TIMESTAMPTZ;   -- (ج) آخر محاولة على Cloud — نافذة فرامل الفشل بتعدّ بيه
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS hold_until TIMESTAMPTZ; -- CJ1a: العميل لسه واصلته رسالة (burst_hold) ⇒ الصف يستنى لحد الوقت ده
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS send_at TIMESTAMPTZ;    -- CJ1b: ميعاد الصف على عادة العميل (NULL = زي الأول، أول ما يتاخد)
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS send_why TEXT;          -- CJ1b: habit | quiet | passed | outside (ليه الميعاد ده)
       ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS fail_brake_at TIMESTAMPTZ;  -- (ج) آخر مرة فرامل الفشل وقّفت الحملة
       ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS fail_base_at TIMESTAMPTZ;   -- (ج) «كمّل» بعد فرملة فشل ⇒ نسبة الفشل بتتحسب من هنا
       CREATE INDEX IF NOT EXISTS wa_send_queue_retry_idx ON wa_send_queue(retry_at) WHERE retry_at IS NOT NULL;
@@ -766,6 +821,7 @@ export function register(app, ctx, deps = {}) {
               count(q.*) FILTER (WHERE q.status='skipped')::int AS skipped,
               count(q.*) FILTER (WHERE q.status='holdout')::int AS holdout,
               count(q.*) FILTER (WHERE q.status IN ('pending','sending'))::int AS pending,
+              count(q.*) FILTER (WHERE q.status='pending' AND q.send_at > NOW())::int AS waiting,      -- CJ1b: مستنية ميعادها على عادة العميل
               count(q.*) FILTER (WHERE q.replied_at IS NOT NULL)::int AS replied,
               count(q.*) FILTER (WHERE q.optout_at IS NOT NULL)::int AS optouts,
               count(q.*) FILTER (WHERE q.clicks > 0)::int AS clickers,
@@ -790,6 +846,8 @@ export function register(app, ctx, deps = {}) {
       jobs: jobs.map((j) => ({ ...j, id: Number(j.id), start_at_riyadh: j.start_at ? riyadhClock(j.start_at) : null })), minGapDays: MIN_GAP_DAYS, startMaxDays: START_MAX_DAYS,
       templateVars: TEMPLATE_VARS, defaultTemplate: C.template, linkHost: STORE().replace(/^https?:\/\//, ""),
       profileTokens: profApi() ? PROFILE_TOKENS : [],      // CP1: قيم ملف العميل اللي تتكتب في خانات قوالب الكتالوج
+      /* CJ1b: مخطط «الإيقاع» (نفس شكل مخطط البوت: group/ar/help/min/max/default/value) — القيم الحيّة كمان في cfg.byHabit */
+      byHabit: { groups: { [HABIT_GROUP]: HABIT_GROUP_AR }, settings: habitSchemaRows(cfg.byHabit), why: HABIT_WHY_AR },
       invalidCount: extra.invalid, replies7: extra.replies7, optouts7: extra.optouts7 });
   });
 
@@ -817,6 +875,8 @@ export function register(app, ctx, deps = {}) {
       "startHour", "endHour", "days", "skipOnlineWithinDays", "skipOpenOrder", "footer", "failStop", "warmup"];
     const next = { ...cur };
     for (const k of allowed) if (b[k] !== undefined) next[k] = b[k];
+    /* CJ1b: مفاتيح «الإيقاع» (byHabit) بتتدمج على اللي متخزّن — اللوحة ممكن تبعت مفتاح واحد — وبتتنضّف في senderCfg تحت */
+    if (b.byHabit !== undefined) next.byHabit = { ...((cur.byHabit && typeof cur.byHabit === "object") ? cur.byHabit : {}), ...((b.byHabit && typeof b.byHabit === "object") ? b.byHabit : {}) };
     if (Number(next.gapDays) < MIN_GAP_DAYS) next.gapDays = MIN_GAP_DAYS;
     // التجميع: أول ما يتفعّل بيبدأ العدّ من النهاردة؛ لما يتقفل بيتنسي
     if (b.warmup !== undefined) {
@@ -966,7 +1026,7 @@ export function register(app, ctx, deps = {}) {
     const tpl = tplOf(r, input);
     const host = STORE();
     const client = await pool.connect();
-    let jobId, slug, holdN = 0;
+    let jobId, slug, holdN = 0, hp = null, planErr = null;
     try {
       await client.query("BEGIN");
       jobId = Number((await client.query(
@@ -990,8 +1050,13 @@ export function register(app, ctx, deps = {}) {
       const codes = new Set();
       /* LK1: المحجوزين بالعدد (round(n × النسبة)) مش «عملة» لكل رقم — حملة صغيرة كانت بتطلع ٠ أو ٢٣٪ بدل ١٠٪ */
       const held = holdoutSet(`wa${jobId}`, r.picked.map((x) => x.pn), input.holdoutPct);
+      /* CJ1b (١٧/١٠): «على عادة العميل» شغّال ⇒ لكل مستلم (غير المحجوز) ميعاد send_at من ساعة عادته؛ الحملة المجدولة بتتخطّط من ميعاد بدئها
+         وبتتعاد لحظة البدء الفعلي (startDueJobs). الخطة فشلت ⇒ الحملة بتتعمل من غير مواعيد (زي الأول) والسبب بيرجع في preview.plan.error */
+      try { hp = await habitPlanFor(r.picked.filter((x) => !held.has(String(x.pn))).map((x) => x.pn), { s, channel: input.channel, at: sched.at ? Math.max(now(), Date.parse(sched.at)) : now() }); }
+      catch (e) { hp = null; planErr = e.message; console.error("[wasender] habit plan:", e.message); }
       for (const x of r.picked) {
         const hold = held.has(String(x.pn));
+        const hv = !hold && hp ? hp.byPn.get(String(x.pn)) || null : null;
         let code; do { code = newLinkCode(); } while (codes.has(code)); codes.add(code);
         let coupon = input.link.coupon || null;
         if (input.offer && !hold) {
@@ -1010,9 +1075,9 @@ export function register(app, ctx, deps = {}) {
         const msg = input.perRecipient || input.profileVars ? (cloudText(input, x, slug, code) || "-") : messageFor(x, { template: tpl, footer: r.cfg.footer, host, slug, code, coupon, couponDays: input.offer?.validDays });
         if (hold) holdN++;
         await client.query(
-          `INSERT INTO wa_send_queue(job_id, phone_norm, name, message, score, status, reason, link_code, coupon, vars)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
-          [jobId, x.pn, x.name, msg, x.score || 0, hold ? "holdout" : "pending", hold ? "holdout" : null, code, hold ? null : coupon, J(x.vars || {})]);
+          `INSERT INTO wa_send_queue(job_id, phone_norm, name, message, score, status, reason, link_code, coupon, vars, send_at, send_why)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`,
+          [jobId, x.pn, x.name, msg, x.score || 0, hold ? "holdout" : "pending", hold ? "holdout" : null, code, hold ? null : coupon, J(x.vars || {}), hv ? hv.at : null, hv ? hv.why : null]);
       }
       await client.query("COMMIT");
     } catch (e) {
@@ -1024,7 +1089,9 @@ export function register(app, ctx, deps = {}) {
     } finally { client.release(); }
     return c.json({ ok: true, jobId, total: r.picked.length, holdout: holdN, slug, link: recipientLink(host, slug, null), channel: input.channel,
       target: { type: input.link.target_type, id: input.link.target_id, opens: `${host}${linkTargetPath(input.link)}` },
-      status: sched.at ? "paused" : "running", startAt: sched.at || null, startAtRiyadh: sched.riyadh || null });
+      status: sched.at ? "paused" : "running", startAt: sched.at || null, startAtRiyadh: sched.riyadh || null,
+      /* CJ1b: شريط الـ٢٤ ساعة (نفس شكل GET …/jobs/:id/plan) — اللوحة تعرضه قبل ما الحملة تبدأ */
+      preview: { plan: habitPlanView(hp, s, { error: planErr }) } });
   });
 
   /* ── التحكم في الطابور وهو شغّال (طلب عمر ٢٦/٩) ────────────────────────
@@ -1191,13 +1258,42 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true });
   });
 
+  /* CJ1b (١٧/١٠): خطة الإرسال على عادة العميل لحملة — شريط الساعات قبل البدء وبعده (قراءة بس، مفيش إرسال).
+     الصفوف ليها send_at ⇒ الخطة المتخزّنة (stored:true)؛ مالهاش ⇒ معاينة بإعدادات دلوقتي للصفوف اللي لسه pending (stored:false) حتى والإعداد مقفول. */
+  app.get("/api/cms/wa-sender/jobs/:id/plan", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const jobId = Number(c.req.param("id"));
+    const job = (await pool.query("SELECT id, name, status, channel, start_at, started_at, created_at FROM wa_send_jobs WHERE id=$1", [jobId])).rows[0];
+    if (!job) return bad(c, "not_found", "مش موجودة", 404);
+    const s = await getSettingsData();
+    const rows = (await pool.query("SELECT phone_norm, status, send_at, send_why, sent_at, replied_at, clicks FROM wa_send_queue WHERE job_id=$1 AND status <> 'holdout'", [jobId])).rows || [];
+    const T = now();
+    const tsOf = (v) => (v instanceof Date ? v.getTime() : Date.parse(String(v || "")));
+    const base = { ok: true, id: jobId, name: job.name, status: job.status, channel: job.channel || "wa_web", enabled: senderCfg(s).byHabit.enabled, why: HABIT_WHY_AR, sentHours: sentByHour(rows) };
+    const planned = rows.filter((r) => r.send_at && Number.isFinite(tsOf(r.send_at)));
+    if (planned.length) {
+      const ts = planned.map((r) => tsOf(r.send_at));
+      const lo = Math.min(...ts), hi = Math.max(...ts);
+      const count = (why) => planned.filter((r) => r.send_why === why).length;
+      const waitingTs = planned.filter((r) => ["pending", "sending"].includes(r.status) && tsOf(r.send_at) > T).map((r) => tsOf(r.send_at));
+      return c.json({ ...base, stored: true, hours: storedPlanHours(planned), total: planned.length, byHabit: count("habit"), noHour: count("quiet"), passed: count("passed"), outside: count("outside"),
+        waiting: waitingTs.length, nextAt: waitingTs.length ? new Date(Math.min(...waitingTs)).toISOString() : null, nextAtRiyadh: waitingTs.length ? riyadhClock(Math.min(...waitingTs)) : null,
+        window: { start: new Date(lo).toISOString(), end: new Date(hi).toISOString(), startRiyadh: riyadhClock(lo), endRiyadh: riyadhClock(hi) } });
+    }
+    const pend = rows.filter((r) => r.status === "pending");
+    let hp = null, error = null;
+    try { hp = pend.length ? await habitPlanFor(pend.map((r) => r.phone_norm), { s, channel: job.channel, at: job.start_at ? Math.max(T, tsOf(job.start_at)) : T, force: true }) : null; }
+    catch (e) { error = e.message; }
+    return c.json({ ...base, stored: false, pending: pend.length, ...habitPlanView(hp, s, { error }) });
+  });
+
   app.get("/api/cms/wa-sender/jobs/:id/items", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const canSee = typeof ctx.canSeePhones === "function" ? await ctx.canSeePhones(c) : false;
     const r = await pool.query(
       `SELECT q.id, q.phone_norm, q.name, q.status, q.reason, q.attempts, q.sent_at, q.message, q.clicks, q.replied_at,
               q.optout_at, q.media, q.note, q.coupon, q.edited_by, q.channel, q.cloud_status, q.error_code,
-              q.delivered_at, q.read_at, q.fallback_from, q.retry_at, q.retried_at, q.first_error_code,
+              q.delivered_at, q.read_at, q.fallback_from, q.retry_at, q.retried_at, q.first_error_code, q.send_at, q.send_why,
               (SELECT w.text FROM wa_replies w WHERE w.phone_norm = q.phone_norm AND w.at >= q.sent_at
                 ORDER BY w.at DESC LIMIT 1) AS reply
          FROM wa_send_queue q WHERE q.job_id=$1
@@ -1210,6 +1306,8 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, items: r.rows.map((x) => ({ ...x, id: Number(x.id),
       reason_ar: x.status === "failed" || x.status === "skipped" || (x.status === "pending" && x.reason) ? reasonText(x.reason) : null,
       retry_ar: x.status === "failed" && x.retry_at ? `هتتعاد لوحدها ${riyadhClock(x.retry_at).slice(11)} (فشل مؤقت)` : x.retried_at ? `اتعادت ${riyadhClock(x.retried_at).slice(11)} بعد ${reasonText(classifyError(x.first_error_code).reason)}` : null,
+      /* CJ1b: ميعاد الصف على عادة العميل (الرياض) وليه */
+      send_at_riyadh: x.send_at ? riyadhClock(x.send_at) : null, send_why_ar: x.send_why ? HABIT_WHY_AR[x.send_why] || null : null,
       phone_norm: canSee ? x.phone_norm : `${x.phone_norm.slice(0, 3)}••••${x.phone_norm.slice(-2)}` })) });
   });
 
@@ -1260,7 +1358,7 @@ export function register(app, ctx, deps = {}) {
     const sNow = await getSettingsData().catch(() => ({}));
     const rows = (await pool.query(
       `SELECT phone_norm pn, status, reason, sent_at, clicks, replied_at, optout_at, media, coupon, channel, cloud_status, error_code, fallback_from,
-              retry_at, retried_at, first_error_code, note, tried_at, claimed_at
+              retry_at, retried_at, first_error_code, note, tried_at, claimed_at, send_at, send_why
          FROM wa_send_queue WHERE job_id=$1`, [jobId])).rows;
     const sent = rows.filter((x) => x.status === "sent");
     const hold = rows.filter((x) => x.status === "holdout");
@@ -1288,6 +1386,8 @@ export function register(app, ctx, deps = {}) {
       retry: retryStats(rows), retried: rows.filter((x) => x.retried_at).length, retry_ok: retryStats(rows).ok,
       reasons: reasonRows(rows),
       startAt: job.start_at || null, startAtRiyadh: job.start_at ? riyadhClock(job.start_at) : null, startedAt: job.started_at || null, startError: job.start_error || null,
+      /* CJ1b: الحملة على عادة العميل — كام صف ليه ميعاد، وكام لسه مستني ميعاده (التفاصيل في …/plan) */
+      habit: { planned: count((x) => x.send_at), waiting: count((x) => x.send_at && ["pending", "sending"].includes(x.status) && new Date(x.send_at).getTime() > now()), byHabit: count((x) => x.send_why === "habit") },
       /* SX2 (ج): الفرامل من بعد آخر «كمّل»/بدء (نفس أرقام الدورة) — اللوحة بتقول النسبة الحالية وبتتحسب من إمتى */
       brake: job.channel === "wa_cloud" ? { ...brakeView(brakeWindow(rows, job.fail_base_at || null), cloudCfg(sNow)), sinceRiyadh: job.fail_base_at ? riyadhClock(job.fail_base_at) : null } : null,      // مراجعة SX2: نسبة الفشل من التكملة بعد فرملة فشل بس
       /* التكلفة = الرسايل اللي ميتا قبلتها على قناة Cloud × سعر الرسالة وقت إنشاء الحملة (تقدير — الفاتورة من ميتا) */
@@ -1816,7 +1916,13 @@ export function register(app, ctx, deps = {}) {
           `UPDATE wa_send_jobs SET status='running', started_at=COALESCE(started_at, NOW()), start_at=NULL, start_error=NULL, held_at=NULL, stop_reason=NULL, brake_ack_at=NOW(),
                   fail_base_at = CASE WHEN fail_brake_at IS NOT NULL AND (fail_base_at IS NULL OR fail_brake_at > fail_base_at) THEN NOW() ELSE fail_base_at END
             WHERE id=$1 AND status='paused' AND start_at IS NOT NULL AND start_at <= $2::timestamptz RETURNING id`, [id, T]);
-        if (r.rowCount) out.started.push(id);
+        if (r.rowCount) {
+          out.started.push(id);
+          /* CJ1b (١٧/١٠): الحملة المجدولة بتتخطّط لحظة بدئها الفعلي — ساعات عادة المستلمين على نافذة النهارده من دلوقتي (والإعداد اتقفل ⇒ المواعيد بتتشال).
+             الخطة فشلت ⇒ الحملة بدأت عادي بمواعيد الإنشاء (أو من غير مواعيد) — التخطيط تحسين مش قفل. */
+          try { const hp = await applyHabitPlan(id, { s: S, channel: j.channel, at: now() }); if (hp) (out.planned = out.planned || []).push({ id, byHabit: hp.byHabit, noHour: hp.noHour }); }
+          catch (e) { console.error("[wasender] habit plan:", e.message); }
+        }
       }
       return out;
     } catch (e) {
@@ -1989,11 +2095,12 @@ export function register(app, ctx, deps = {}) {
                          WHERE q.status='pending' AND j.status='running'
                            AND COALESCE(q.channel, j.channel, 'wa_web') = 'wa_cloud'
                            AND (q.hold_until IS NULL OR q.hold_until <= NOW())      -- CJ1a: الصف المحجوز بالهدوء (burst_hold) يستنى ميعاده
+                           AND (q.send_at IS NULL OR q.send_at <= NOW())            -- CJ1b: الصف اللي ليه ميعاد على عادة العميل يستنى ميعاده (الحملة بتفضل running)
                            -- مراجعة SX2: صف للحملة دي فشل لأن ميتا ماقدرتش تنزّل صورتها/الفيديو (131053) ومستني إعادة ⇒ مفيش صفوف جديدة للحملة دي
                            -- لحد ما الإعادة دي تتبعت (فحصنا للرابط مابيشوفش لو المشكلة عند ميتا بس). نجحت ⇒ الحملة تكمّل؛ فشلت تاني ⇒ mediaPause.
                            AND NOT EXISTS (SELECT 1 FROM wa_send_queue m WHERE m.job_id = j.id AND m.status = 'failed' AND m.retry_at IS NOT NULL
                                              AND m.retried_at IS NULL AND m.reason = 'media_error')
-                         ORDER BY j.id, q.score DESC, q.id LIMIT 1 FOR UPDATE SKIP LOCKED)
+                         ORDER BY j.id, q.send_at NULLS FIRST, q.score DESC, q.id LIMIT 1 FOR UPDATE SKIP LOCKED)
             RETURNING id, job_id, phone_norm, message, name, vars, link_code, coupon, attempts, retried_at, first_wamid, first_error_code`)).rows[0];
         if (!q) {
           /* SX2: حملة لسه فيها صفوف مستنية إعادة مابتخلصش */
@@ -2216,7 +2323,8 @@ export function register(app, ctx, deps = {}) {
           WHERE id = (SELECT q.id FROM wa_send_queue q JOIN wa_send_jobs j ON j.id=q.job_id
                        WHERE q.status='pending' AND j.status='running'
                          AND COALESCE(q.channel, j.channel, 'wa_web') = 'wa_web'
-                       ORDER BY j.id, q.score DESC, q.id LIMIT 1 FOR UPDATE SKIP LOCKED)
+                         AND (q.send_at IS NULL OR q.send_at <= NOW())      -- CJ1b: الصف اللي ليه ميعاد على عادة العميل يستنى ميعاده
+                       ORDER BY j.id, q.send_at NULLS FIRST, q.score DESC, q.id LIMIT 1 FOR UPDATE SKIP LOCKED)
           RETURNING id, job_id, phone_norm, message`)).rows[0];
       if (!q) {
         await pool.query(`UPDATE wa_send_jobs j SET status='done', finished_at=NOW() WHERE status='running'
