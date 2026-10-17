@@ -3775,7 +3775,8 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (chat.muted_until && Date.parse(chat.muted_until) > now.getTime()) return no("muted");
     const echo = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 AND ${STAFF_ECHO_SQL} LIMIT 1`, [phone, ev.hoAt]);
     if (echo === null) return no("echo_check_failed"); if (echo.length) return no("staff_answered");
-    const ack = await q(`SELECT acked_at FROM wa_handovers WHERE phone_norm=$1 AND at >= $2 ORDER BY at DESC LIMIT 1`, [phone, ev.hoAt]);      // «تم» في البوابة = حد مسكها
+    /* MJ1 مراجعة: كارت «ملاحظة على طلب شغّال» (order_note) صف في wa_handovers من غير تحويل — مايتحسبش «آخر تحويل» وإلا شكوى اتقفلت بـ«تم» تتعامل كمفتوحة */
+    const ack = await q(`SELECT acked_at FROM wa_handovers WHERE phone_norm=$1 AND at >= $2 AND COALESCE(reason,'') <> 'order_note' ORDER BY at DESC LIMIT 1`, [phone, ev.hoAt]);      // «تم» في البوابة = حد مسكها
     /* «تم» في البورتال من غير أي رد للعميل (مراجعة الخبير): كانت بتلغي التنبيه التاني **و** رسالة العميل، فالعميل يفضل من غير رد خالص. دلوقتي: التنبيه التاني بيتلغي
        (الكارت اتقفل)، بس لو ميعاد رسالة العميل جه ولسه محدش رد عليه ⇒ كارت جديد على البورتال + التنبيه، والعميل ياخد رسالته. */
     const acked = Boolean(ack && ack[0] && ack[0].acked_at);
