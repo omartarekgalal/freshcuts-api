@@ -115,7 +115,7 @@ test("markGoogleRated / clearGoogleRated / markGoogleAsked: one upsert each on r
   assert.equal(await RV.clearGoogleRated(q, { phone: CUST, by: "عمر" }), true);
   assert.equal(await RV.markGoogleAsked(q, { phone: CUST, code: "ab12cd34" }), true);
   assert.deepEqual(q.log.map(([, p]) => p), [[CUST, "reply", null], [CUST, "staff", "عمر"], [CUST, "click", null], [CUST, "staff", null], [CUST, "عمر"], [CUST, "ab12cd34"]]);
-  assert.match(q.log[0][0], /ON CONFLICT \(phone_norm\) DO UPDATE SET google_rated_at = CASE WHEN \$2 = 'click' THEN COALESCE\(review_customer_state\.google_rated_at, NOW\(\)\) ELSE NOW\(\) END/);
+  assert.match(q.log[0][0], /ON CONFLICT \(phone_norm\) DO UPDATE SET google_rated_at = CASE WHEN \$2 = 'staff' THEN NOW\(\) ELSE COALESCE\(review_customer_state\.google_rated_at, NOW\(\)\) END/, "RV6 review: only staff re-stamps; a second «✅ قيّمت» keeps the first date");
   assert.match(q.log[4][0], /VALUES \(\$1, NULL, NULL, \$2, NOW\(\)\) ON CONFLICT \(phone_norm\) DO UPDATE SET google_rated_at = NULL, google_rated_source = NULL/);
   assert.match(q.log[5][0], /google_asked_at = COALESCE\(review_customer_state\.google_asked_at, NOW\(\)\)/, "asked once: the first ask stays");
   const none = fakeQ();

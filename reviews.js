@@ -397,6 +397,11 @@ export function register(app, ctx, deps = {}) {
     if (id > 0) {
       await pool.query("UPDATE reviews SET went_google=TRUE WHERE id=$1", [id]);
       await pool.query("UPDATE review_invites SET went_google=TRUE WHERE review_id=$1", [id]).catch(() => {});
+      /* RV6 مراجعة (١٨/١٠): ضغطة جوجل من صفحة التقييم (مسار الـSMS وقالب بره النافذة) = نفس دليل الضغطة في واتساب ⇒ العميل يتعلّم
+         (المفتاح googleClickCountsAsRated بيتقرا وقت القراية، فقفله بيخفي العلامة من غير مسح) */
+      const rv = await qq("SELECT phone_norm, order_no FROM reviews WHERE id=$1", [id]);
+      const pn = rv && rv[0] && rv[0].phone_norm;
+      if (pn && !/^TEST-/.test(String(rv[0].order_no || ""))) await markGoogleRated(qq, { phone: pn, source: "click" }).catch(() => {});
     }
     return c.json({ ok: true });
   });

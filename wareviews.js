@@ -325,9 +325,9 @@ export async function markGoogleRated(q, { phone, source = "reply", by = null } 
   if (!/^5\d{8}$/.test(pn)) return false;
   const r = await q(`INSERT INTO review_customer_state(phone_norm, google_rated_at, google_rated_source, google_rated_by, updated_at) VALUES ($1, NOW(), $2, $3, NOW())
                      ON CONFLICT (phone_norm) DO UPDATE SET
-                       google_rated_at = CASE WHEN $2 = 'click' THEN COALESCE(review_customer_state.google_rated_at, NOW()) ELSE NOW() END,
-                       google_rated_source = CASE WHEN $2 = 'click' THEN COALESCE(review_customer_state.google_rated_source, 'click') ELSE $2 END,
-                       google_rated_by = CASE WHEN $2 = 'click' THEN review_customer_state.google_rated_by ELSE $3 END,
+                       google_rated_at = CASE WHEN $2 = 'staff' THEN NOW() ELSE COALESCE(review_customer_state.google_rated_at, NOW()) END,
+                       google_rated_source = CASE WHEN $2 = 'staff' OR review_customer_state.google_rated_at IS NULL OR review_customer_state.google_rated_source = 'click' THEN $2 ELSE review_customer_state.google_rated_source END,
+                       google_rated_by = CASE WHEN $2 = 'staff' THEN $3 ELSE review_customer_state.google_rated_by END,
                        updated_at = NOW()
                      RETURNING phone_norm`, [pn, src, by ? String(by).slice(0, 80) : null]);
   return Boolean(r && r.length);

@@ -3037,7 +3037,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       /* RV6 (عمر ١٧/١٠): سجل البوت بيقول ليه زر جوجل ماطلعش (العميل معلَّم «قيّم على جوجل» + المصدر) / إن السؤال الوحيد اتسأل أو اتجاوب «✅ قيّمت» — detail google_rated:* */
       if (d.act === "reply") {
         const why = cls.key === "review_star" && cls.arg && cls.arg.googleRated ? `google_rated:${cls.arg.googleRated}` : cls.key === "gq_yes" ? "google_rated:reply" : cls.key === "gq_ask" ? "google_rated:ask" : null;
-        if (why) d = { ...d, reason: d.reason || "google_rated", detail: why };
+        if (why) d = { ...d, reason: d.reason || "google_rated", detail: d.detail ? `${d.detail} · ${why}` : why };      // RV6 مراجعة (١٨/١٠): مانمسحش التفاصيل اللي قبلها
       }
       /* ═══ MJ1 #٥ — رسالة تحويل واحدة للشكوى (١٦/١٠: سالم ٣ رسايل في دقيقتين، حسام ٣ رسايل في ٤٠ ثانية) ═══
          تحويل شكوى/ملاحظة اتفتح من ثواني (handoverBurstSec) ⇒ الصورة أو النص أو «عندي ملاحظة» اللي بعده = نفس الشكوى: بتوصل للموظف في المحادثة من غير رد تاني ولا تنبيه تاني،
