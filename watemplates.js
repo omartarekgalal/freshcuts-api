@@ -210,7 +210,7 @@ export const TEMPLATES = [
     body: "طلبك رقم {{1}} جاهز للاستلام ✅\nاذكر رقم الطلب للكاشير عند الاستلام.",
     vars: [ORDER_NO],
     buttons: [TRACK("تفاصيل الطلب")],
-    meta: { purpose: "طلب استلام صار جاهز", trigger: "pos_ready_at لطلب option=pickup (أو pickupReadyMinutes بعد القبول)",
+    meta: { purpose: "طلب استلام صار جاهز", trigger: "pos_ready_at لطلب option=pickup بس (PK1 ١٧/١٠: مفيش مؤقّت — pickupReadyMinutes القديم كان لصفحة التتبع بس واتشال)",
       stage: "pickup_ready", send: "auto", fallbackSms: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع", existing: "whatsapp.js fc_order_ready_pickup",
       notes: "١٢/١٠: النسخة الأولى (زر «موقع الفرع» → خرائط جوجل + «تقدر تستلمه من…») رفضتها ميتا INCORRECT_CATEGORY — القالب الخدمي الوحيد اللي زره مش رابط الطلب نفسه. الزر بقى رابط تتبّع الطلب زي باقي قوالب الطلب المعتمدة، والنص عن الطلب بس. ١٢/١٠ (تاني): التعديل اترفض برضه INCORRECT_CATEGORY والزر كان رابط الطلب ⇒ الباقي المختلف عن القوالب المعتمدة هو جملة الفرع والحي والمدينة — اتشالت، والنص بقى حالة الطلب + تعليمة الاستلام بس." } }),
 

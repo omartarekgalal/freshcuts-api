@@ -31,6 +31,7 @@ import { applyPathChanges } from "./settings-guard.js";
 import { trackEtaCfg } from "./tracketa.js";
 import { smartEtaCfg, MIX_KEYS, MIX_LABELS, PERCENTILES } from "./smarteta-core.js";
 import { ljWatchCfg, LJ_WATCH_LIMITS, controlLine } from "./ljwatch.js";
+import { pickupLateCfg, PICKUP_TRACK_LIMITS, PICKUP_TRACK_DEFAULTS } from "./pickuptrack.js";
 
 /* ── عنوان الحقل جوّه الإعدادات ──────────────────────────────────────────── */
 export function getAt(obj, path) {
@@ -156,6 +157,12 @@ export const FIELDS = [
     label: "صفحة التتبع — عرض النطاق قبل الاستلام (د)" },
   { path: "delivery.trackEta.staleMin", group: "zone", type: "int", min: 2, max: 30,
     label: "صفحة التتبع — موقع المندوب أقدم من كده (د) = نحسب من وقت الاستلام" },
+  /* 📍 PK1 (عمر ١٧/١٠، حادثة W1792251412023): صفحة تتبع الاستلام — «جاهز» من الكاشير بس (pos_ready_at). المهلة دي
+     عمرها ما تخلّي الطلب «جاهز»: لما تفوت من غير «جاهز» النص بيبقى صريح «طلبك بياخذ وقت أطول شوية» والخطوة تفضل «بنجهّز».
+     القديم shop.pickupReadyMinutes (اللي كان مؤقّت «جاهز» من غير خانة) بيتقرا كاحتياطي بنفس المعنى الجديد (pickuptrack.js). */
+  { path: "shop.pickupLateAfterMin", group: "zone", type: "int", min: PICKUP_TRACK_LIMITS.lateAfterMin[0], max: PICKUP_TRACK_LIMITS.lateAfterMin[1],
+    label: "صفحة التتبع — الاستلام: بعد كام دقيقة من القبول نقول «طلبك بياخذ وقت أطول شوية» (لو الكاشير ماضغطش «جاهز»)",
+    hint: `«جاهز للاستلام 📍» بتظهر للعميل بس لما الكاشير يضغط «جاهز» في نقطة البيع — مفيش مؤقّت بيخلّيها جاهزة (قرار عمر ١٧/١٠). المهلة دي بتغيّر النص بس: «طلبك بياخذ وقت أطول شوية — لو وصلت الفرع اسأل عن رقم طلبك»، والخطوة تفضل «بنجهّز». فاضية = ${PICKUP_TRACK_DEFAULTS.lateAfterMin} د (أو القيمة القديمة pickupReadyMinutes لو كانت متحطّة).` },
 
   /* ── ETA1: الوقت المتوقع الذكي (smarteta.js) — متعلّم من التاريخ كل ليلة، والعميل بيشوف الحد الأعلى المتحفّظ ── */
   { path: "delivery.smartEta.enabled", group: "eta", type: "bool",
@@ -468,6 +475,7 @@ export function effectiveOf(path, settings, envRead) {
     case "delivery.dispatchMode": return e.dispatch.mode;
     case "delivery.dispatchDelayMin": return e.dispatchDelayMin;
     case "shop.autoDispatch": return e.autoDispatch;
+    case "shop.pickupLateAfterMin": return pickupLateCfg(settings).lateAfterMin;   // PK1: الجديد ← القديم pickupReadyMinutes ← ٤٥
     case "delivery.autoRefundOnNoAccept": return e.autoRefundOnNoAccept;
     case "delivery.newOrderSms": return e.newOrderSms;
     case "delivery.staffSmsLanguage": return e.staffSmsLanguage;
@@ -504,6 +512,10 @@ export function sourceOf(path, settings, envRead = (k) => (process.env[k] || "")
   }
   if (path === "delivery.provider" && getAt(settings || {}, path) == null && envRead("COURIER_PROVIDER")) {
     return { kind: "env", note: "COURIER_PROVIDER", locked: false };
+  }
+  /* PK1: الخانة الجديدة فاضية والقديمة pickupReadyMinutes متحطّة (القيمة المؤقتة ١٨٠ يوم الحادثة) ⇒ الشاشة تقول منين الرقم بدل «افتراضي الكود» */
+  if (path === "shop.pickupLateAfterMin" && getAt(settings || {}, path) == null && pickupLateCfg(settings).source === "legacy") {
+    return { kind: "settings", note: "من المفتاح القديم shop.pickupReadyMinutes" };
   }
   const raw = getAt(settings || {}, path);
   if (raw === undefined || raw === null || raw === "") return { kind: "default", note: "افتراضي الكود" };

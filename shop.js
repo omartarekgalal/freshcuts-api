@@ -59,6 +59,7 @@ import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableB
 import { posMilestones, prepCfg, prepCheck, prepSmsEnabled, orderKind, WEBHOOKS_SQL, PREP_DDL } from "./prepstatus.js";
 import { computeTrackEta, trackStages } from "./tracketa.js";
 import { smartTrackContext, recordShownEta } from "./smarteta.js";
+import { pickupTrackState, pickupLateCfg } from "./pickuptrack.js";
 import { courierOf, courierToken, COURIER_TEMPLATE_BASE } from "./couriercontact.js";
 import { followLinkOf, waPolicyCfg, WINDOW_OPEN_SQL, FOLLOW_WINDOW_HOURS } from "./wapolicy.js";
 
@@ -1828,20 +1829,10 @@ export function register(app, ctx, deps = {}) {
     if (tl) {
       // 🍽 طلب طاولة: العدّاء بيقدّمه — مفيش «جاهز للاستلام من الفرع»
       label = tl.label; step = tl.step;
-    } else if (row.option === "pickup" && row.status === "delivered") {
-      label = "استلمت طلبك — بالهنا والشفا 🌟"; step = 5;
     } else if (row.option === "pickup") {
-      // الاستلام (سفري): «جاهز» بتيجي من الكاشير (pos_ready_at)؛ لو ماوصلتش،
-      // بنقدّرها بالوقت بعد القبول عشان العميل مايفضلش على «بيجهّز» للأبد.
-      if (row.status === "accepted" || row.status === "pos_created") {
-        const acceptedAt = new Date(row.updated_at || row.created_at).getTime();
-        const readyAfterMin = Number(((await getSettingsData()).shop || {}).pickupReadyMinutes) || 20;
-        if (ready || Date.now() - acceptedAt >= readyAfterMin * 60_000) {
-          label = "جاهز للاستلام من الفرع 📍"; step = 4;
-        } else {
-          label = "جاري تجهيز طلبك — جاهز للاستلام قريباً"; step = 2;
-        }
-      }
+      /* 📍 PK1 (عمر ١٧/١٠): الاستلام بيتحسب تحت بعد الوقت المتوقع (pickupTrackState في pickuptrack.js) —
+         «جاهز» من الكاشير بس (pos_ready_at)، ومفيش مؤقّت بيرفع الخطوة لـ٤. كان هنا مؤقّت
+         pickupReadyMinutes (٢٠ د بعد القبول) بيقول «جاهز للاستلام 📍» والكاشير ماضغطش (W1792251412023). */
     } else if (row.option === "delivery") {
       /* «المطعم أولاً» (قرار عمر): مانعرضش أي كلام عن المندوب لحد ما الكاشير
          يسجّل الطلب جاهز (pos_ready_at). قبلها التتبع بيفضل «المطعم بيجهّز»
@@ -1890,9 +1881,9 @@ export function register(app, ctx, deps = {}) {
     }
     /* ١٤/١٠ — صفحة تتبّع زي التطبيقات: المراحل الخمسة بأوقاتها + «يوصلك تقريباً» (نطاق قبل الاستلام، وقت بعده — tracketa.js)
        + زر «تابع طلبك على واتساب» (wapolicy.js: بيفتح نافذة الـ٢٤ ساعة فالتحديثات بعدها ببلاش). أي فشل هنا مايوقفش التتبع. */
-    let stages = null, eta = null, wa = null;
+    let stages = null, eta = null, wa = null, st = {};
     try {
-      const st = await getSettingsData();
+      st = await getSettingsData();
       stages = trackStages({ row, sh: ship });
       /* ETA1: الوقت المتوقع الذكي (smarteta.js) — الوعد المتحفّظ + تسجيله لحساب «دقة الوقت المتوقع». مقفول/فشل ⇒ حساب TR1 زي ما هو. */
       const smart = await smartTrackContext(row, st).catch(() => null);
@@ -1904,9 +1895,21 @@ export function register(app, ctx, deps = {}) {
       const pc = waPolicyCfg(st);
       wa = fl ? { follow: fl, banner: pc.followBanner, windowOpen: pc.followBanner && pc.followBannerSkipHours > 0 ? await waWindowOpen(row.phone_norm, pc.followBannerSkipHours) : false } : null;
     } catch (e) { console.error("[shop] track extras:", e.message); }
+    /* 📍 PK1 (عمر ١٧/١٠): طلب الاستلام — «جاهز» (خطوة ٤) من pos_ready_at بس. من غيرها الخطوة ٢ دايماً،
+       ولو الوعد (eta.promise لو موجود — مفيش للاستلام لحد النهارده) أو مهلة اللوحة shop.pickupLateAfterMin
+       (احتياطي: pickupReadyMinutes القديم، وإلا ٤٥ د) فاتت ⇒ late:true ونص صريح «بياخذ وقت أطول شوية».
+       الإعدادات فشلت ⇒ st = {} ⇒ الافتراضي، والتتبع مايقعش. */
+    let pickup = null;
+    if (!tl && row.option === "pickup") {
+      pickup = pickupTrackState({ row, now: Date.now(), cfg: pickupLateCfg(st), eta });
+      if (pickup) { label = pickup.label; step = pickup.step; }
+    }
     return c.json({
       ok: true, found: true, orderNo: row.order_no, status: row.status,
       label, step, option: row.option,
+      /* PK1: صراحة الاستلام — late = الوعد/المهلة فاتت ومفيش «جاهز» (الخطوة فضلت ٢). للتوصيل والطاولة: false/null. */
+      late: Boolean(pickup && pickup.late), promiseAt: pickup ? pickup.promiseAt : null,
+      promiseText: pickup ? pickup.promiseText : null, promiseBasis: pickup ? pickup.promiseBasis : null,
       stages, eta, wa,
       // 🍽 رقم الطاولة: صفحة التتبع بتعرض خطوات الصالة بدل «جاهز للاستلام من الفرع»
       table: Number(row.table_no) > 0 ? Number(row.table_no) : null,
