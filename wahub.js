@@ -606,7 +606,11 @@ export function register(app, ctx, deps = {}) {
   });
 
   /* ═══ N3: القوالب ═══ */
-  const DIRECT_WIRES = { fc_loyalty_status: { kind: "flow", id: "loyalty_status", label: "رصيد الولاء بعد التسليم" } };
+  const DIRECT_WIRES = { fc_loyalty_status: { kind: "flow", id: "loyalty_status", label: "رصيد الولاء بعد التسليم" },
+    // CR3: استرداد السلة المتروكة (carts.js) — بره النافذة
+    fc_cart_1h: { kind: "flow", id: "cart_recovery_1", label: "السلة المتروكة — الخطوة ١" },
+    fc_cart_24h: { kind: "flow", id: "cart_recovery_2", label: "السلة المتروكة — الخطوة ٢" },
+    fc_cart_24h_first: { kind: "flow", id: "cart_recovery_2_first", label: "السلة المتروكة — الخطوة ٢ (أول طلب)" } };
   async function metaTemplates() {
     const token = wa?.token ? wa.token() : null, waba = wa?.idsInUse ? wa.idsInUse().wabaId : (wa?.wabaId ? wa.wabaId() : null);
     if (!token || !waba) return { ok: false, error: "unconfigured", list: [] };

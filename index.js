@@ -3256,7 +3256,7 @@ let waTeamApi = null;   // wateam.register (ST1): تواصل الفريق على
 let waFlowApi = null;   // waflow.register (ST2): سلّم التصعيد، حوّل للمدير، القفل بنتيجة، ورجوع المساعد
 let waHandoverApi = null;   // wahandover.register (بعد البوابة): بيسجّل تحويلات واتساب ويرنّها على البوابة
 let waHubApi = null;        // wahub.register (آخر الملف): مسارات قسم واتساب في اللوحة + سجل تغيير المفاتيح
-const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi, botCarts: () => (wabotApi ? wabotApi.carts : null) });
+const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi, botCarts: () => (wabotApi ? wabotApi.carts : null), wa: () => waApi });      // CR3: السلة المتروكة على واتساب قبل الـSMS
 freebar.register(app, moduleCtx);
 // رحلة العميل (٠٢): دفعات أحداث المتجر + checkout_result/order_paid من السيرفر + تقرير #store/analytics/journey
 const journeyApi = journey.register(app, moduleCtx, { analytics: analyticsApi });

@@ -29,6 +29,11 @@ import * as cartPresets from "./cartpresets.js";
 import { couponQueries, firstEligibility } from "./couponrules.js";
 const sendAdSms = (pn, body, meta) => smsRules.sendAdSms(pn, body, meta);
 import { holdUntil as journeyHoldUntil } from "./wajourney.js";      // CJ1a (١٧/١٠): SMS السلة مابتيجيش ورا رسالة تانية للعميل بدقايق
+/* CR3 (١٨/١٠): واتساب قبل الـSMS — قوالب السلة المعتمدة من الكتالوج، بوابة مواعيد المطعم، سعر الرسالة، و131049 */
+import { TEMPLATES as WA_CATALOG, bindTemplate } from "./watemplates.js";
+import { isRestaurantOpenAt } from "./sendhours.js";
+import { waRatesOf } from "./waaicost.js";
+import { qualityCfg, META_CAPPED_CODE } from "./waquality.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const STAGES = ["cart", "checkout", "address", "payment", "ordered"];
@@ -49,7 +54,41 @@ export const CART_DEFAULTS = {
   autoFirst: true,           // FIRST (توصيل مجاني) لو مالوش طلب أونلاين مدفوع
   requireVerifiedPhone: true,// جوال اتأكد بـOTP أو عنده حساب — مش رقم مكتوب غلط
   respectOpenHours: true,    // مطبخ مقفول = سكوت
+  /* CR3 (١٨/١٠ — عمر: «ابعتلهم واتساب يكملوا سلتهم»، والقاعدة الثابتة «واتساب قبل SMS»):
+     الترتيب: إشعار (خطوة ١ لو مشترك) ← واتساب ← SMS بس لو واتساب مش ممكن. */
+  waEnabled: true,           // واتساب للسلة المتروكة
+  waInWindowText: true,      // نافذة الـ٢٤ ساعة مفتوحة ⇒ رسالة حرة ببلاش بدل القالب
+  waTemplate1: "fc_cart_1h",         // خطوة ١ بره النافذة
+  waTemplate2: "fc_cart_24h",        // خطوة ٢ بره النافذة (عميل قديم)
+  waTemplate2First: "fc_cart_24h_first", // خطوة ٢ بره النافذة (أول طلب — بكود FIRST وحدّه الأدنى)
+  waText1: "",               // نص الرسالة الحرة خطوة ١ (فاضي = الافتراضي) — الرابط بيتحط آخره لوحده
+  waText2: "",               // نص الرسالة الحرة خطوة ٢
+  smsFallback: true,         // SMS لما واتساب مايقدرش يوصل (ومفتاح «رسايل SMS» لازم يكون شغّال)
 };
+
+/* CR3: القوالب اللي تنفع للسلة = قوالب الكتالوج التسويقية اللي زرها رابط /c/<code>، ومتغيراتها (لو فيه) من كوبون أول طلب بس */
+const CART_VAR_PATHS = new Set(["coupon.code", "coupon.min_total"]);
+export const CART_WA_TEMPLATES = Object.freeze([...new Set((WA_CATALOG || [])
+  .filter((t) => t && t.category === "MARKETING" && (t.language || "ar") === "ar"
+    && ((t.meta || {}).buttonVars || []).some((b) => b.path === "cart.code")
+    && ((t.meta || {}).vars || []).every((v) => CART_VAR_PATHS.has(v.path)))
+  .map((t) => t.name))]);
+/* حالات ميتا اللي الإرسال بيها أكيد هيفشل (نفس whatsapp.js TEMPLATE_BLOCKING_STATUSES) */
+export const CART_TEMPLATE_BLOCKING = Object.freeze(["REJECTED", "NOT_SUBMITTED", "DISABLED", "PENDING_DELETION", "DELETED"]);
+const waTplOk = (v, d) => (typeof v === "string" && CART_WA_TEMPLATES.includes(v) ? v : d);
+const waTextOk = (v) => (typeof v === "string" ? v.replace(/\r/g, "").trim().slice(0, 300) : "");
+
+/* CR3: تسميات اللوحة (نفس مسار GET/PUT /api/carts/recovery) */
+export const CART_FIELDS = Object.freeze({
+  waEnabled: { ar: "رسايل واتساب للسلة المتروكة", hint: "قبل الـSMS — جوّه النافذة ببلاش، وبرّه بقالب تسويقي معتمد (~٠٫٢٢ ر.س)", type: "bool" },
+  waInWindowText: { ar: "رسالة حرة لو العميل كلّمنا آخر ٢٤ ساعة", hint: "ببلاش ومن غير قالب؛ مقفول = القالب دايماً", type: "bool" },
+  waTemplate1: { ar: "قالب الخطوة الأولى", hint: "بعد مدة الرسالة الأولى، بره النافذة", type: "template" },
+  waTemplate2: { ar: "قالب الخطوة التانية (عميل قديم)", hint: "تاني يوم من ساعة الخطوة التانية", type: "template" },
+  waTemplate2First: { ar: "قالب الخطوة التانية (أول طلب)", hint: "فيه كود FIRST وحدّه الأدنى من الكوبونات", type: "template" },
+  waText1: { ar: "نص الرسالة الحرة — الخطوة الأولى", hint: "فاضي = النص الافتراضي؛ رابط السلة بيتحط آخره لوحده", type: "text", max: 300 },
+  waText2: { ar: "نص الرسالة الحرة — الخطوة التانية", hint: "فاضي = النص الافتراضي؛ رابط السلة بيتحط آخره لوحده", type: "text", max: 300 },
+  smsFallback: { ar: "SMS بديل لو واتساب ماينفعش", hint: "مش على واتساب / القالب مش معتمد / سقف ميتا — ومحتاج مفتاح «رسايل SMS» شغّال", type: "bool" },
+});
 const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
 export function cartCfg(settings) {
   const x = { ...CART_DEFAULTS, ...(((settings || {}).abandonedCarts) || {}) };
@@ -63,6 +102,10 @@ export function cartCfg(settings) {
     cooldownDays: Math.round(clampN(x.cooldownDays, 1, 60, 7)),
     minSubtotal: clampN(x.minSubtotal, 0, 10000, 0),
     autoFirst: bool("autoFirst"), requireVerifiedPhone: bool("requireVerifiedPhone"), respectOpenHours: bool("respectOpenHours"),
+    waEnabled: bool("waEnabled"), waInWindowText: bool("waInWindowText"),
+    waTemplate1: waTplOk(x.waTemplate1, CART_DEFAULTS.waTemplate1), waTemplate2: waTplOk(x.waTemplate2, CART_DEFAULTS.waTemplate2),
+    waTemplate2First: waTplOk(x.waTemplate2First, CART_DEFAULTS.waTemplate2First),
+    waText1: waTextOk(x.waText1), waText2: waTextOk(x.waText2), smsFallback: bool("smsFallback"),
   };
 }
 
@@ -74,7 +117,42 @@ export const cartMessages = {
   }),
   sms1: (first) => first ? "فريش كاتس: سلتك محفوظة والتوصيل مجاني لأول طلب، كمّل طلبك بضغطة" : "فريش كاتس: سلتك للحين محفوظة، كمّل طلبك بضغطة",
   sms2: (first) => first ? "طلبك من فريش كاتس للحين في السلة، والتوصيل مجاني لأول طلب" : "طلبك من فريش كاتس للحين في السلة، تقدر تكمّله الحين",
+  /* CR3: الرسالة الحرة جوّه نافذة واتساب — نفس روح قوالب fc_cart_* (لهجة بيضا)، والرابط /c/<code> آخر سطر */
+  wa1: (first) => first ? "سلتك في فريش كاتس محفوظة 🛒\nوالتوصيل مجاني لأول طلب، كمّل طلبك بضغطة من الرابط:"
+    : "سلتك في فريش كاتس محفوظة 🛒\nكمّل طلبك بضغطة من الرابط، ولو عندك سؤال ردّ علينا هنا:",
+  wa2: (first) => first ? "لسا طلبك ينتظرك في سلة فريش كاتس 😋\nوبما إنه أول طلب لك، التوصيل مجاني. كمّل الحين من الرابط:"
+    : "لسا طلبك ينتظرك في سلة فريش كاتس 😋\nكمّل الحين من الرابط ونبدأ نجهّزه لك طازج:",
 };
+/* CR3: نص الرسالة الحرة (نص المالك من اللوحة لو موجود) + الرابط */
+export const cartWaText = (step, first, url, cfg = {}) => {
+  const own = step === 2 ? cfg.waText2 : cfg.waText1;
+  const head = own && String(own).trim() ? String(own).trim() : (step === 2 ? cartMessages.wa2(first) : cartMessages.wa1(first));
+  return `${head}\n${url}`;
+};
+/* CR3: اسم القالب بره النافذة — خطوة ٢ لأول طلب بالقالب اللي فيه الكود لو الكوبون وحدّه معروفين، وإلا القالب العادي */
+export function cartWaTemplate(step, cfg, firstCoupon) {
+  const c = cfg || {};
+  if (step !== 2) return { name: c.waTemplate1 || CART_DEFAULTS.waTemplate1, data: {} };
+  if (firstCoupon && firstCoupon.code && Number(firstCoupon.min_total) > 0) {
+    return { name: c.waTemplate2First || CART_DEFAULTS.waTemplate2First, data: { coupon: { code: firstCoupon.code, min_total: firstCoupon.min_total } } };
+  }
+  return { name: c.waTemplate2 || CART_DEFAULTS.waTemplate2, data: {} };
+}
+/* CR3: متغيّرات القالب {body[], button[]} من الكتالوج نفسه (نفس bindTemplate اللي السجل بيستخدمه) */
+export function cartWaParams(name, code, data = {}) {
+  const t = (WA_CATALOG || []).find((x) => x.name === name && (x.language || "ar") === "ar");
+  if (!t) return { body: [], button: [], missing: ["template"] };
+  const r = bindTemplate(t, { ...data, cart: { code } });
+  return { body: r.body || [], button: (r.buttons || []).map((b) => b.text), missing: r.missing || [] };
+}
+/* CR3: نتيجة واتساب ⇒ ينفع SMS بدلها؟ إيقاف / تأجيل الهدوء ⇒ لأ. 131049 (ميتا حدّت تسويق العميل) ⇒ بس لو waCloud.cappedFallbackSms. */
+export function smsAfterWa(res, settings) {
+  const r = res || {};
+  if (r.ok) return false;
+  if (r.skipped === "opted_out" || r.skipped === "burst_hold") return false;
+  if (Number(r.code) === META_CAPPED_CODE) return qualityCfg(((settings || {}).waCloud) || {}).cappedFallbackSms === true;
+  return true;
+}
 /* سطر الإيقاف واحد لكل الرسايل التسويقية (smsrules.optoutLine) — من ٢١/٩
    الافتراضي كلمة مش رابط، عشان رابط استرداد السلة يفضل هو الوحيد اللي
    يتضغط. `optout` = سطر جاهز، أو {cfg, code, host, sender} وإحنا نبنيه. */
@@ -143,6 +221,8 @@ export function rawCart(raw) {
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb, normPhone } = ctx;
   const notify = deps.notify || null;
+  /* CR3: واتساب (index.js بيدّي () => waApi). مفيش ⇒ السلة بتمشي زي الأول (إشعار ثم SMS). */
+  const waOf = () => { try { return typeof deps.wa === "function" ? deps.wa() : (deps.wa || null); } catch { return null; } };
 
   async function ensureSchema() {
     await pool.query(`
@@ -331,41 +411,110 @@ export function register(app, ctx, deps = {}) {
     return (r.rows[0]?.n || 0) + parts <= cap;
   }
 
-  async function sendStep(row, step, cfg, s, flow) {
+  /* CR3: كوبون FIRST وحدّه الأدنى (لقالب خطوة ٢ لأول طلب) */
+  async function firstCoupon() {
+    const r = await pool.query("SELECT code, min_total FROM shop_coupons WHERE upper(code)='FIRST' AND active IS NOT FALSE LIMIT 1").catch(() => ({ rows: [] }));
+    const c = r.rows[0];
+    return c && Number(c.min_total) > 0 ? { code: String(c.code).toUpperCase(), min_total: Number(c.min_total) } : null;
+  }
+  /* CR3: العميل موقِّف التسويق؟ (رابط /u/، «إيقاف» في واتساب، أو إيقاف كل الرسايل) — قراءة بس.
+     القالب الحارس بيتأكد بنفسه؛ ده للرسالة الحرة (الحارس مابيشوفش الإيقاف في الرد الحر لأنه عادةً رد على كلام العميل). */
+  async function marketingStopped(pn) {
+    try {
+      const r = await pool.query(
+        `SELECT EXISTS (SELECT 1 FROM cms_contacts WHERE phone_norm=$1 AND opted_out_at IS NOT NULL)
+             OR EXISTS (SELECT 1 FROM wa_optins WHERE phone_norm=$1 AND (stopped_at IS NOT NULL OR marketing_off_at IS NOT NULL)) AS stopped`, [pn]);
+      return Boolean(r.rows[0] && r.rows[0].stopped);
+    } catch { return true; }      // ماقدرناش نقرا ⇒ مانبعتش
+  }
+
+  /* CR3: خطوة واتساب. بيرجّع {ok, wamid, cost, kind} أو {ok:false, skipped|error, code?} */
+  async function sendWa(row, step, cfg, s, flow, eligibleFirst) {
+    const wa = waOf();
+    if (!wa || typeof wa.sendTemplate !== "function") return { ok: false, skipped: "wa_unavailable" };
+    const pn = row.phone_norm;
+    if (await marketingStopped(pn)) return { ok: false, skipped: "opted_out" };
+    /* جوّه النافذة: رسالة حرة ببلاش (الحارس بيرفضها window_closed لو النافذة مقفولة ⇒ القالب) */
+    if (cfg.waInWindowText !== false && typeof wa.sendFreeform === "function") {
+      const url = `https://${storeHost()}/c/${flow.code}?s=wa`;
+      const body = cartWaText(step, eligibleFirst, url, cfg);
+      const r = await wa.sendFreeform({ phoneNorm: pn, payload: { type: "text", text: { body, preview_url: true } },
+        source: "cart_recovery", preview: body, proactive: true }).catch((e) => ({ ok: false, error: String(e.message || e) }));
+      if (r && r.ok) return { ok: true, wamid: r.wamid || null, cost: 0, kind: "text" };
+      if (r && r.skipped === "burst_hold") return r;
+    }
+    const pick = cartWaTemplate(step, cfg, step === 2 && eligibleFirst ? await firstCoupon() : null);
+    let name = pick.name, params = cartWaParams(name, flow.code, pick.data);
+    if (params.missing.length && step === 2 && name !== cfg.waTemplate2) {      // قالب أول طلب ناقصه متغيّر ⇒ القالب العادي
+      name = cfg.waTemplate2; params = cartWaParams(name, flow.code, {});
+    }
+    if (params.missing.length) return { ok: false, skipped: "missing_param", detail: params.missing.join(","), template: name };
+    /* حالة القالب عند ميتا لو نقدر نقراها: مش معتمد أكيد ⇒ من غير نداء (SMS البديل). مانعرفش ⇒ ميتا بتقرر. */
+    if (typeof wa.templateStatusOf === "function") {
+      const st = await wa.templateStatusOf(name, "ar").catch(() => null);
+      if (st && CART_TEMPLATE_BLOCKING.includes(st)) return { ok: false, skipped: "template_not_approved", status: st, template: name };
+    }
+    const r = await wa.sendTemplate({ phoneNorm: pn, template: name, params: { body: params.body, button: params.button },
+      source: "cart_recovery", proactive: true }).catch((e) => ({ ok: false, error: String(e.message || e) }));
+    if (r && r.ok) {
+      const rate = Number(waRatesOf((((s || {}).waBot) || {}).waRates).marketing) || 0;
+      return { ok: true, wamid: r.wamid || null, cost: rate, kind: "template", template: name };
+    }
+    return { ...(r || { ok: false, error: "send_failed" }), template: name };
+  }
+
+  /* ctx (CR3): { smsQuiet, waTime } من recoveryTick — الـSMS ليها ساعات الهدوء، وواتساب بمواعيد المطعم (sendhours.js) */
+  async function sendStep(row, step, cfg, s, flow, ctx = {}) {
     const pn = row.phone_norm;
     // ٢٦/٩: أرقام الفريق (إنذارات/طلبات جديدة/استبعاد الحملات) مالهاش رسالة تسويق — ولا حتى إشعار
     if (smsRules.staffPhoneSet(s).has(pn)) return { channel: null, reason: "staff" };
     const eligibleFirst = cfg.autoFirst !== false && (await firstEligible(pn));
     const link = `${storeHost()}/c/${flow.code}`;
-    // خطوة ١: الإشعار ببلاش — لو مشترك ناخده بدل الـSMS
+    // خطوة ١: الإشعار ببلاش — لو مشترك ناخده بدل واتساب والـSMS
     if (step === 1 && cfg.pushEnabled !== false && notify) {
       const m = cartMessages.push1(row.item_count, eligibleFirst);
       const ok = await notify.sendToAudience({ phoneNorm: pn, deviceId: row.device_id, ...m, url: `https://${link}?s=push`, stage: "cart_recovery" }).catch(() => false);
       if (ok) return { channel: "push" };
     }
-    if (cfg.smsEnabled !== true) return { channel: null, reason: "sms_disabled" };
+    /* CR3: واتساب قبل الـSMS. الـSMS بعده بس لو واتساب مايقدرش يوصل (smsAfterWa) ومفتاح البديل شغّال. */
+    let waNote = null;
+    if (cfg.waEnabled !== false && waOf()) {
+      /* آخر نص ساعة قبل القفل (stopBeforeCloseMin): سكوت مش SMS — «كمّل طلبك» والمطبخ بيقفل أسوأ من السكوت. السلة بتستنى جوّه نافذتها. */
+      if (ctx.waTime === false) return { channel: null, reason: "wa_closed_hours", retry: true };
+      const w = await sendWa(row, step, cfg, s, flow, eligibleFirst);
+      if (w.ok) return { channel: "whatsapp", messageId: w.wamid, cost: w.cost, waKind: w.kind, template: w.template || null };
+      if (w.skipped === "burst_hold") return { channel: null, reason: "burst_hold", retry: true };
+      waNote = `wa_${w.skipped || w.error || "failed"}${w.code ? ":" + w.code : ""}`.slice(0, 80);
+      if (!smsAfterWa(w, s)) return { channel: null, reason: waNote };
+      if (cfg.smsFallback === false) return { channel: null, reason: `${waNote}|sms_fallback_off` };
+    }
+    const why = (r) => (waNote ? `${waNote}|${r}` : r);
+    if (cfg.smsEnabled !== true) return { channel: null, reason: why("sms_disabled") };
+    /* الـSMS في ساعات الهدوء مابتطلعش (الدورة شغّالة دلوقتي عشان واتساب). واتساب ماتجرّبش ⇒ السلة تستنى الدورة الجاية؛
+       واتساب اتجرّب وفشل ⇒ نهائي (مانعيدش محاولة واتساب فاشلة كل ٥ دقايق). */
+    if (ctx.smsQuiet) return { channel: null, reason: why("sms_quiet"), retry: !waNote };
     const oc = await optout(pn);
-    if (oc.opted_out_at) return { channel: null, reason: "opted_out" };
+    if (oc.opted_out_at) return { channel: null, reason: why("opted_out") };
     /* حاجب الإعلانات عند المشغّل: FreshCut-AD مابيوصلوش أصلاً (smsblock.js) —
        بنتحاسب على رسالة ماتوصلش. الإشعار فوق عدّى عادي. */
     const blocked = await pool.query("SELECT 1 FROM sms_ad_blocked WHERE phone_norm=$1", [pn]).then((r) => r.rowCount > 0).catch(() => false);
-    if (blocked) return { channel: null, reason: "ad_blocked" };
+    if (blocked) return { channel: null, reason: why("ad_blocked") };
     /* CJ1a: العميل واصلته رسالة (واتساب أو SMS، من أي نظام) من أقل من waBot.burstHoldMin ⇒ مش دلوقتي. مفيش صف بيتحرق:
-       recoveryTick بيمسح صف cart_recovery لما مفيش قناة اتبعتت، فالسلة بتتعاد في الدورة الجاية طول ما هي جوّه نافذتها. */
+       recoveryTick بيمسح صف cart_recovery لما مفيش قناة اتبعتت، والسلة بتتعاد في الدورة الجاية طول ما هي جوّه نافذتها (CR3: retry). */
     const hold = await journeyHoldUntil((sql, p) => pool.query(sql, p).then((r) => r.rows), { phone: pn, cfg: (s || {}).waBot });
-    if (hold) return { channel: null, reason: "burst_hold" };
+    if (hold) return { channel: null, reason: "burst_hold", retry: true };
     const body = cartSmsBody(step, eligibleFirst, link,
       { cfg: (s.cms || {}).campaigns, code: oc.optout_code, host: storeHost(), sender: process.env.TAQNYAT_SENDER_AD }, s);
     const parts = smsRules.smsParts(body);
-    if (parts > 2) return { channel: null, reason: "too_long" };
-    if (!(await smsRoomToday(parts, s.cms))) return { channel: null, reason: "daily_cap" };
+    if (parts > 2) return { channel: null, reason: why("too_long") };
+    if (!(await smsRoomToday(parts, s.cms))) return { channel: null, reason: why("daily_cap") };
     try {
       const info = await sendAdSms(pn, body, { kind: "cart_recovery", ref: `${flow.code}:${step}` });
       pool.query(`INSERT INTO cms_sms_daily(day, n) VALUES (CURRENT_DATE, $1)
                   ON CONFLICT (day) DO UPDATE SET n = cms_sms_daily.n + $1`, [parts]).catch(() => {});
-      return { channel: "sms", ...info };
+      return { channel: "sms", ...info, ...(waNote ? { waNote } : {}) };
     } catch (e) {
-      return { channel: null, reason: "sms_failed: " + String(e.message).slice(0, 120) };
+      return { channel: null, reason: why("sms_failed: " + String(e.message).slice(0, 120)) };
     }
   }
 
@@ -373,8 +522,16 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const cfg = cartCfg(s);
     if (!cfg.enabled) return { skipped: "disabled" };
-    if (smsRules.inQuietFor(s, now)) return { skipped: "quiet_hours" };
     if (cfg.respectOpenHours && !isOpenNow(s.hours, now)) return { skipped: "closed" };
+    /* CR3: الـSMS والإشعار ليهم ساعات الهدوء (smsrules)؛ واتساب الآلي بمواعيد المطعم (sendhours.js، عمر ١٨/١٠) —
+       الإعداد مقفول أو المواعيد مش متعرّفة ⇒ واتساب بساعات الهدوء القديمة زي الـSMS. */
+    const smsQuiet = smsRules.inQuietFor(s, now);
+    const openGate = isRestaurantOpenAt(now, s);
+    const waTime = cfg.waEnabled ? (openGate === null ? !smsQuiet : openGate) : false;
+    if (smsQuiet && !waTime) return { skipped: "quiet_hours" };
+    const ctx = { smsQuiet, waTime };
+    // في ساعات الهدوء الإشعار مابيطلعش (زي الأول لما الدورة كلها كانت بتقف) — الدورة شغّالة عشان واتساب بس
+    const cfgNow = smsQuiet ? { ...cfg, pushEnabled: false } : cfg;
     const out = { step1: 0, step2: 0, skipped: 0 };
     const verified = cfg.requireVerifiedPhone
       ? `AND (EXISTS (SELECT 1 FROM acct_customers a WHERE a.phone_norm = c.phone_norm)
@@ -403,9 +560,11 @@ export function register(app, ctx, deps = {}) {
       }
       if (await inCooldown(row.phone_norm, cfg.cooldownDays, now)) { await mark(row.device_id, -1, "cooldown"); out.skipped++; continue; }
       const flow = await createFlow(row);
-      const res = await sendStep(row, 1, cfg, s, flow);
+      const res = await sendStep(row, 1, cfgNow, s, flow, ctx);
       if (!res.channel) {
         await pool.query("DELETE FROM cart_recovery WHERE id=$1", [flow.id]); // مااتبعتش حاجة = مايستهلكش الـ٧ أيام
+        // CR3: سبب مؤقت (هدوء العميل / ساعات الـSMS) ⇒ السلة تفضل rec_step=0 وتتعاد الدورة الجاية لحد ما نافذتها تقفل
+        if (res.retry) { await pool.query("UPDATE shop_carts SET rec_note=$2 WHERE device_id=$1", [row.device_id, res.reason]); out.skipped++; continue; }
         await mark(row.device_id, -2, res.reason); out.skipped++; continue;
       }
       await pool.query(
@@ -415,7 +574,7 @@ export function register(app, ctx, deps = {}) {
       out.step1++;
     }
 
-    /* خطوة ٢ — تاني يوم (بتوقيت الرياض) من sms2Hour، SMS بس، السلة ≥ sms2MinSubtotal */
+    /* خطوة ٢ — تاني يوم (بتوقيت الرياض) من sms2Hour، واتساب ثم SMS (CR3)، السلة ≥ sms2MinSubtotal */
     const rp = smsRules.riyadhParts(now);
     if (cfg.sms2Enabled && rp.hour >= cfg.sms2Hour) {
       const s2 = (await pool.query(
@@ -434,9 +593,10 @@ export function register(app, ctx, deps = {}) {
           if (await inCooldown(row.phone_norm, cfg.cooldownDays, now)) { await mark(row.device_id, -1, "cooldown"); out.skipped++; continue; }
           flow = await createFlow(row);
         }
-        const res = await sendStep(row, 2, cfg, s, flow);
+        const res = await sendStep(row, 2, cfgNow, s, flow, ctx);
         if (!res.channel) {
           if (!row.rec_flow) await pool.query("DELETE FROM cart_recovery WHERE id=$1", [flow.id]);
+          if (res.retry) { await pool.query("UPDATE shop_carts SET rec_note=$2 WHERE device_id=$1", [row.device_id, res.reason]); out.skipped++; continue; }
           await mark(row.device_id, -3, res.reason); out.skipped++; continue;
         }
         await pool.query(
@@ -488,7 +648,7 @@ export function register(app, ctx, deps = {}) {
     const r = await pool.query(
       `UPDATE cart_recovery SET open_count = open_count + 1, opened_at = COALESCE(opened_at, NOW())
         WHERE code=$1 AND started_at > NOW() - INTERVAL '7 days'
-        RETURNING phone_norm, step1_channel, step2_at`, [code]);
+        RETURNING phone_norm, step1_channel, step2_channel, step2_at`, [code]);
     const f = r.rows[0];
     if (!f) {
       /* مش رابط استرداد ⇒ يمكن سلة جاهزة: بتتفتح للأبد، والكوبون بيتحط دايماً
@@ -501,7 +661,9 @@ export function register(app, ctx, deps = {}) {
     const cfg = cartCfg(await getSettingsData());
     const q = new URLSearchParams();
     q.set("cart", code);
-    q.set("utm_source", b.s === "push" ? "push" : "sms");
+    // CR3: زر القالب مايقدرش يشيل ?s= (متغيّر الزر حروف رابط بس) ⇒ القناة من الفلو نفسه
+    const lastCh = f.step2_at ? f.step2_channel : f.step1_channel;
+    q.set("utm_source", b.s === "push" ? "push" : (b.s === "wa" || lastCh === "whatsapp") ? "whatsapp" : "sms");
     q.set("utm_medium", "crm");
     q.set("utm_campaign", "cart_recovery");
     q.set("utm_content", f.step2_at ? "step2" : "step1");
@@ -543,6 +705,7 @@ export function register(app, ctx, deps = {}) {
           `SELECT count(*)::int AS flows,
                   count(*) FILTER (WHERE step1_channel='sms')::int + count(*) FILTER (WHERE step2_channel='sms')::int AS sms,
                   count(*) FILTER (WHERE step1_channel='push')::int AS push,
+                  count(*) FILTER (WHERE step1_channel='whatsapp')::int + count(*) FILTER (WHERE step2_channel='whatsapp')::int AS wa,
                   count(*) FILTER (WHERE opened_at IS NOT NULL)::int AS opened,
                   count(*) FILTER (WHERE order_no IS NOT NULL)::int AS recovered,
                   COALESCE(sum(order_total) FILTER (WHERE order_no IS NOT NULL),0)::float AS revenue,
@@ -552,7 +715,7 @@ export function register(app, ctx, deps = {}) {
       return { abandoned: ab.rows[0].n, abandonedValue: Math.round(ab.rows[0].value), ...fl.rows[0] };
     };
     const [today, d7] = await Promise.all([one(0), one(6)]);
-    return c.json({ ok: true, config: cfg, defaults: CART_DEFAULTS, today, d7 });
+    return c.json({ ok: true, config: cfg, defaults: CART_DEFAULTS, today, d7, fields: CART_FIELDS, waTemplates: CART_WA_TEMPLATES });
   });
 
   app.put("/api/carts/recovery", async (c) => {
