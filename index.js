@@ -79,6 +79,7 @@ import * as wahandover from "./wahandover.js";
 import * as wahub from "./wahub.js";
 import * as wastaff from "./wastaff.js";
 import * as wateam from "./wateam.js";
+import * as ackescalate from "./ackescalate.js";      // 🔔 RG2 (١٨/١٠): طلب جديد ما اتشافش ⇒ تصعيد
 import * as phonelists from "./phonelists.js";
 import * as waflow from "./waflow.js";
 import * as ccmeta from "./ccmeta.js";      // CC1a: مركز التواصل (إنستجرام/فيسبوك)
@@ -3410,6 +3411,7 @@ waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, 
 const phoneListsApi = phonelists.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
 waTeamApi = wateam.register(app, moduleCtx, { wa: waApi, sendSms: accounts.sendSms, requirePortal: portalApi.requirePortal, flow: () => waFlowApi , presence: () => waHandoverApi, phoneLists: () => phoneListsApi, broadcast: portalApi.broadcast, broadcastTo: portalApi.broadcastTo, push: () => portalApi.push });
 waFlowApi = waflow.register(app, moduleCtx, { team: () => waTeamApi, staff: () => waStaffApi, bot: () => wabotApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast , handover: () => waHandoverApi });
+ackescalate.register(app, moduleCtx, { push: () => portalApi.push, team: () => waTeamApi, sendSms: accounts.sendSms });      // 🔔 RG2: إشعار تاني ⇒ واتساب الكاشير/المدير ⇒ SMS الإدارة لما طلب مدفوع محدش يشوفه/يقبله + GET /api/cms/ack-escalations
 /* 💬 CC1a (عمر ١٨/١٠: «contact center كامل… مش بس الواتساب»): إنستجرام رسايل+كومنتات وفيسبوك ماسنجر+كومنتات — /api/meta/webhook + /api/cms/cc/* + /api/portal/cc/*. الإرسال مقفول لحد settings.cc */
 ccmeta.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast });
 // 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة

@@ -12,6 +12,7 @@
        الأيام اللي قبل النشر «غير متاح» (portal_presence القديم بيحتفظ بآخر ظهور بس).
      • مستوى الفريق (مش لشخص): قبول نقطة البيع (من لحظة الدفع)، «جاهز» قصاد الهدف ووعد الوقت المتوقع (eta_shown)، طلب المندوب من «جاهز»، الاستلام،
        تنبيهات «البورتال مقفول» بالدور (wa_team_log)، المفتوح من كل حاجة، ونقطة البيع باسم كاشير تاب سينس (ts_orders.staff_name).
+     • 🔔 RG2 «تأخير القبول» (team.ackDelay): وسيط/أقصى ثواني من الدفع لأول «شفته» أو قبول نقطة البيع لكل يوم + كام طلب اتصعّد (shop_ack_escalations).
    القواعد: قراءة بس · كل مصدر لوحده (مصدر وقع ⇒ «غير متاح» للي بيعتمد عليه، مش صفر) · مفيش تخمين: اللي مالوش مصدر بيتقال صراحة
    (إقفال الكاش، ضغطات المطبخ على الـKDS) · الأهداف من اللوحة (settings.staffKpi.targets — المالك بس).
    المسارات: GET /api/cms/staff-kpis (اللوحة، قسم «الطلبات») · GET/POST /api/cms/staff-kpis/settings (الأهداف — القراءة للكل، الكتابة للمالك) ·
@@ -107,7 +108,7 @@ const sets = (name, day) => `GROUP BY GROUPING SETS ((${name}), (${name}, ${day}
    قبل OTP وماي فاتورة (مراجعة ١٧/١٠: الفرق وسيطه ٠٫٨ د وبيوصل ٢١ د، وكان بيتحسب على الموظف). لو مفيش صف «paid» (مسار من غير دفع أونلاين) ⇒ created_at.
    الـregex بيحمي الـcast من صف at مش تاريخ. اليوم التشغيلي والنافذة ($1/$2) لسه على created_at عشان الطلب يفضل في يومه. */
 const TS_OK = `'^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}'`;
-const PAID_JOIN = `LEFT JOIN LATERAL (SELECT min((h->>'at')::timestamptz) AS paid_at
+export const PAID_JOIN = `LEFT JOIN LATERAL (SELECT min((h->>'at')::timestamptz) AS paid_at
       FROM jsonb_array_elements(CASE WHEN jsonb_typeof(o.history)='array' THEN o.history ELSE '[]'::jsonb END) h
       WHERE h->>'status'='paid' AND (h->>'at') ~ ${TS_OK}) pd ON TRUE`;
 export const PAID_AT = `COALESCE(pd.paid_at, o.created_at)`;
@@ -185,6 +186,20 @@ export const SQL = Object.freeze({
     LEFT JOIN LATERAL (SELECT min(created_at) AS first_at, max(delivered_at) AS delivered_at FROM dl_shipments d WHERE d.shop_order_no = o.order_no) s ON TRUE
     WHERE NOT COALESCE(o.is_test, false) AND o.status NOT IN ('pending_payment','expired') AND o.created_at >= $1 AND o.created_at < $2
     GROUP BY GROUPING SETS ((), (${D("o.created_at")}))`,
+  /* 🔔 RG2: «تأخير القبول» — من الدفع لأول «شفته» على البوابة أو قبول نقطة البيع (الأبدر فيهم؛ LEAST بيتجاهل NULL)، بالثواني.
+     الطلب المسبق (موعده بعد الدفع) برّه. $3 = هدف «شفته» بالدقايق. */
+  ackDelay: `/*kpi:ackDelay*/ SELECT ${D("o.created_at")} AS day, count(*)::int AS n,
+      ${med("x.sec")} AS med_sec, ${p90("x.sec")} AS p90_sec, max(x.sec)::float AS max_sec,
+      count(*) FILTER (WHERE x.sec <= $3::int * 60)::int AS within
+    FROM shop_orders o ${PAID_JOIN}
+    CROSS JOIN LATERAL (SELECT GREATEST(0, EXTRACT(EPOCH FROM (LEAST(o.portal_ack_at, o.accepted_at) - ${PAID_AT})))::float AS sec) x
+    WHERE COALESCE(o.portal_ack_at, o.accepted_at) IS NOT NULL AND NOT COALESCE(o.is_test, false)
+      AND o.status NOT IN ('pending_payment','expired') AND NOT (o.scheduled_for IS NOT NULL AND o.scheduled_for > o.created_at + INTERVAL '5 minutes')
+      AND o.created_at >= $1 AND o.created_at < $2
+    GROUP BY GROUPING SETS ((), (${D("o.created_at")}))`,
+  ackEsc: `/*kpi:ackEsc*/ SELECT ${D("started_at")} AS day, count(*)::int AS n, count(*) FILTER (WHERE step >= 2)::int AS step2,
+      count(*) FILTER (WHERE step >= 3)::int AS step3
+    FROM shop_ack_escalations WHERE step > 0 AND started_at >= $1 AND started_at < $2 GROUP BY GROUPING SETS ((), (${D("started_at")}))`,
   notes: `/*kpi:notes*/ SELECT ${D("at")} AS day, count(*)::int AS n FROM shop_order_events WHERE name = 'customer_note' AND at >= $1 AND at < $2 GROUP BY 1`,
   pos: `/*kpi:pos*/ SELECT staff_name AS name, calendar_day::text AS day, count(*)::int AS n,
       count(*) FILTER (WHERE COALESCE(order_type,'') NOT ILIKE '%void%' AND COALESCE(order_type,'') NOT ILIKE '%refund%')::int AS sold,
@@ -198,7 +213,7 @@ export const SOURCE_AR = Object.freeze({
   audit: "سجل البوابة", ack: "«شفته» على الطلبات", handed: "التسليم للمندوب", ext: "المندوب الخارجي", incidents: "مشاكل المندوب", incidentsOpen: "مشاكل المندوب المفتوحة",
   handovers: "تحويلات واتساب", firstReply: "أول رد على التحويل", replies: "ردود واتساب", chats: "استلام/قفل المحادثات", closes: "نتايج القفل",
   reviewActions: "إجراءات التقييمات", reviewFirst: "أول إجراء على التقييم", reviewClosed: "التقييمات المقفولة", reviewsOpen: "التقييمات الواطية",
-  notices: "تنبيهات الفريق", tableCalls: "نداءات الطاولات", presence: "حضور البوابة", offline: "تنبيهات «البورتال مقفول»", orders: "أزمنة الطلبات", notes: "ملاحظات العملاء", pos: "نقطة البيع",
+  notices: "تنبيهات الفريق", tableCalls: "نداءات الطاولات", presence: "حضور البوابة", offline: "تنبيهات «البورتال مقفول»", orders: "أزمنة الطلبات", ackDelay: "تأخير القبول", ackEsc: "تصعيد «الطلب ما اتشافش»", notes: "ملاحظات العملاء", pos: "نقطة البيع",
 });
 /* اللي مالوش مصدر خالص — بيتقال صراحة بدل ما يتخمّن */
 export const UNAVAILABLE = Object.freeze([
@@ -244,7 +259,7 @@ export function shapeKpis({ directory, targets, range, rows = {}, failed = [] })
   const dayOf = (p, day) => { if (!day) return null; if (!p.days.has(day)) p.days.set(day, dayRow(day)); return p.days.get(day); };
   const has = (k) => Array.isArray(rows[k]);
   const team = { orders: null, daily: [], handovers: { n: 0, acked: 0, auto: 0, open: 0, medianMin: null, byKind: {} }, offline: { cashier: 0, manager: 0, back: 0, byDay: {} },
-    notices: { n: 0, acked: 0, auto: 0, open: 0, byRole: {} }, tableCalls: { n: 0, done: 0, open: 0 }, reviews: null, incidents: null, notes: null, closes: { byOutcome: {} }, pos: null };
+    notices: { n: 0, acked: 0, auto: 0, open: 0, byRole: {} }, tableCalls: { n: 0, done: 0, open: 0 }, ackDelay: null, reviews: null, incidents: null, notes: null, closes: { byOutcome: {} }, pos: null };
   const auto = { handovers: 0, notices: 0 };
 
   if (has("audit")) for (const r of rows.audit) {
@@ -374,6 +389,17 @@ export function shapeKpis({ directory, targets, range, rows = {}, failed = [] })
     team.orders = tot ? sh(tot) : sh({});
     team.daily = days.map((day) => { const r = rows.orders.find((x) => x.day === day); return { day, ...(r ? sh(r) : sh({})) }; });
   }
+  /* 🔔 RG2: «تأخير القبول» يومي — وسيط/أقصى ثواني من الدفع لأول «شفته» أو قبول، + كام طلب اتصعّد */
+  if (has("ackDelay") || has("ackEsc")) {
+    const ad = has("ackDelay") ? rows.ackDelay : [], ae = has("ackEsc") ? rows.ackEsc : [];
+    const sec = (v) => (num(v) == null ? null : Math.round(num(v)));
+    const sh = (r, e) => ({ n: Number(r && r.n) || 0, medianSec: sec(r && r.med_sec), p90Sec: sec(r && r.p90_sec), maxSec: sec(r && r.max_sec),
+      within: Number(r && r.within) || 0, pct: pctOf(Number(r && r.within) || 0, Number(r && r.n) || 0),
+      escalated: has("ackEsc") ? Number(e && e.n) || 0 : null, step2: has("ackEsc") ? Number(e && e.step2) || 0 : null, step3: has("ackEsc") ? Number(e && e.step3) || 0 : null });
+    team.ackDelay = { label: "تأخير القبول", targetMin: T.ackMin, ...sh(ad.find((r) => r.day == null), ae.find((r) => r.day == null)),
+      available: has("ackDelay"),
+      daily: days.map((day) => ({ day, ...sh(ad.find((r) => r.day === day), ae.find((r) => r.day === day)) })) };
+  }
   if (has("notes")) team.notes = { n: rows.notes.reduce((a, r) => a + (Number(r.n) || 0), 0), byDay: Object.fromEntries(rows.notes.map((r) => [r.day, Number(r.n) || 0])) };
   if (has("pos")) {
     const byStaff = rows.pos.filter((r) => r.day == null).map((r) => ({ name: r.name, invoices: Number(r.n) || 0, sold: Number(r.sold) || 0, revenue: Math.round((Number(r.revenue) || 0) * 100) / 100, voids: Number(r.voids) || 0, refunds: Number(r.refunds) || 0 }))
@@ -433,7 +459,7 @@ export async function collect(pool, range, targets, { log = console, only = null
     handovers: [...p12, targets.handoverMin], firstReply: [...p12, targets.handoverMin], replies: p12, chats: p12, closes: p12,
     reviewActions: p12, reviewFirst: [...p12, targets.reviewMin], reviewClosed: p12, reviewsOpen: p12,
     notices: [...p12, targets.noticeMin], tableCalls: [...p12, targets.tableCallMin], presence: [range.from, range.to], offline: p12,
-    orders: [...p12, targets.readyMin, targets.courierMin], notes: p12, pos: [range.from, range.to],
+    orders: [...p12, targets.readyMin, targets.courierMin], ackDelay: [...p12, targets.ackMin], ackEsc: p12, notes: p12, pos: [range.from, range.to],
   };
   const rows = {}, failed = [];
   for (const [k, params] of Object.entries(plan)) {

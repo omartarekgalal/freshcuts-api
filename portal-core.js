@@ -611,6 +611,7 @@ function evLabel(e) {
     case "courier_update": return d.status ? `المندوب: ${COURIER_STATUS_AR[d.status] || d.status}` : (e.summary || "تحديث المندوب");
     case "courier_arrived": return "🏪 المندوب وصل المطعم";
     case "courier_picked": return "📦 المندوب استلم الطلب";
+    case "ack_escalation": return e.summary || (d.step === "stop" ? "✅ التصعيد وقف" : `🔔 تصعيد ${d.step ?? ""}: الطلب ما اتشافش`); // RG2
     case "staff_action": return ACTION_AR[d.action] ? `${ACTION_AR[d.action]}${e.actor_name ? ` — ${e.actor_name}` : ""}` : (e.summary || "إجراء من الفريق");
     default: return e.summary || e.name;
   }
@@ -694,9 +695,11 @@ export function buildTimeline(srcs = {}) {
     push(at, "staff_alert", label || `تنبيه: ${k}`, "alerts", { key: k });
   }
 
+  const escEvents = events.some((e) => e.name === "ack_escalation");      // RG2: سطر التصعيد فيه عدد الإشعارات أصلاً
   for (const p of srcs.pushLog || []) {
     const kind = String(p.kind || "");
-    const label = PUSH_KIND_AR[kind] || (kind.startsWith("sla:") ? `إشعار للبوابة: تأخير (${kind.split(":").slice(1).join(":")})` : `إشعار للبوابة: ${kind}`);
+    if (escEvents && kind.startsWith("ack_esc:")) continue;
+    const label = PUSH_KIND_AR[kind] || (kind.startsWith("ack_esc:") ? `إشعار للبوابة: تصعيد ${kind.slice(8)} — الطلب لسه ما اتشافش` : null) || (kind.startsWith("sla:") ? `إشعار للبوابة: تأخير (${kind.split(":").slice(1).join(":")})` : `إشعار للبوابة: ${kind}`);
     push(p.at, "portal_push", label, "portal", { kind, sent: p.sent ?? null, of: p.of ?? null });
   }
 

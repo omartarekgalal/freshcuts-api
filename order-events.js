@@ -43,6 +43,7 @@ export const ORDER_EVENTS = Object.freeze([
   "customer_note",     // {kind,text,…}            MJ1: ملاحظة العميل على طلبه الشغّال من واتساب (wabotrun.js)
   "staff_call",        // {outcome}
   "staff_action",      // {action}
+  "ack_escalation",    // {step:1|2|3|"stop", afterSec, pushSent/Of, waTo/waSent, smsTo/smsSent, reason} 🔔 RG2 (١٨/١٠): طلب جديد ما اتشافش ⇒ تصعيد (ackescalate.js)
   "webhook_applied",   // {via: webhook/sweep, lagSec, ready, handed, closed, accepted} ⚡ RT1 (١٧/١٠): ويبهوك نقطة البيع اتطبّق على الطلب — الفرق بين وصوله وتطبيقه (بس لما غيّر محطة فعلاً — المكرر/اللي مفيهوش جديد مابيتسجّلش)
 ]);
 const EVENT_SET = new Set(ORDER_EVENTS);
@@ -73,6 +74,7 @@ export const DEFAULT_SUMMARY = Object.freeze({
   staff_call: "مكالمة للعميل",
   staff_action: "إجراء من الفريق",
   webhook_applied: "اتطبّق تحديث نقطة البيع",
+  ack_escalation: "تصعيد: الطلب ما اتشافش",
 });
 
 export const CHANNEL = "order_event";

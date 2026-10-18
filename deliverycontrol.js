@@ -33,6 +33,7 @@ import { smartEtaCfg, MIX_KEYS, MIX_LABELS, PERCENTILES } from "./smarteta-core.
 import { ljWatchCfg, LJ_WATCH_LIMITS, controlLine } from "./ljwatch.js";
 import { pickupLateCfg, PICKUP_TRACK_LIMITS, PICKUP_TRACK_DEFAULTS } from "./pickuptrack.js";
 import { sweepSecOf, readyGraceMinOf, SWEEP_LIMITS, READY_GRACE_LIMITS } from "./prepstatus.js";   // ⚡ RT1 (١٧/١٠)
+import { ackEscCfg, ACK_ESC_LIMITS } from "./ackescalate.js";   // 🔔 RG2 (١٨/١٠)
 
 /* ── عنوان الحقل جوّه الإعدادات ──────────────────────────────────────────── */
 export function getAt(obj, path) {
@@ -253,6 +254,25 @@ export const FIELDS = [
   { path: "delivery.prepBreachSms", group: "alerts", type: "bool",
     label: "SMS للإدارة لما التحضير يعدّي الحد (٣٠ د من القبول)",
     hint: "مقفول افتراضياً (قرار عمر ١٠/١٠): المخالفة بتطلع إشعار في البوابة بتفاصيل الطلب وبصوت. افتحه لو عايز رسالة كمان." },
+  /* 🔔 RG2 (عمر ١٨/١٠: «أوردر جه مارنّش عند الكاشير إلا بعد ١٦ دقيقة») — تصعيد من السيرفر لما طلب مدفوع محدش يشوفه (ackescalate.js) */
+  { path: "delivery.ackEscalation.enabled", group: "alerts", type: "bool",
+    label: "🔔 طلب جديد ما اتشافش ⇒ تصعيد",
+    hint: "لو محدش ضغط «شفته» على البوابة ولا قبل الطلب على نقطة البيع: إشعار بوابة تاني ⇒ واتساب للكاشير والمدير ⇒ SMS للمدير والمالك. بيقف أول ما الطلب يتشاف أو يتقبل أو يتلغي. مابيعتمدش على إن تابلت الكاشير صاحي." },
+  { path: "delivery.ackEscalation.escalateAfterSec", group: "alerts", type: "int", min: ACK_ESC_LIMITS.escalateAfterSec[0], max: ACK_ESC_LIMITS.escalateAfterSec[1],
+    label: "التصعيد ١ (إشعار البوابة تاني) بعد (ثانية من الدفع)", hint: "الافتراضي ٩٠ ث. الإشعار بيوصل بشكل جديد فبيظهر ويرنّ تاني على كل الأجهزة." },
+  { path: "delivery.ackEscalation.step2AfterSec", group: "alerts", type: "int", min: ACK_ESC_LIMITS.step2AfterSec[0], max: ACK_ESC_LIMITS.step2AfterSec[1],
+    label: "التصعيد ٢ (واتساب للفريق) بعد (ثانية من الدفع)", hint: "الافتراضي ١٨٠ ث. رسالة حرة لو نافذة الموظف مفتوحة، وإلا قالب الفريق المعتمد، وإلا SMS. لازم يكون بعد التصعيد ١ بـ٣٠ ث على الأقل (لو أقل بيتزق لوحده)." },
+  { path: "delivery.ackEscalation.step3AfterSec", group: "alerts", type: "int", min: ACK_ESC_LIMITS.step3AfterSec[0], max: ACK_ESC_LIMITS.step3AfterSec[1],
+    label: "التصعيد ٣ (SMS للإدارة) بعد (ثانية من الدفع)", hint: "الافتراضي ٣٦٠ ث (٦ دقايق). بعد التصعيد ٢ بـ٣٠ ث على الأقل." },
+  { path: "delivery.ackEscalation.step2Cashier", group: "alerts", type: "bool", label: "التصعيد ٢: الكاشير (من دليل فريق واتساب)" },
+  { path: "delivery.ackEscalation.step2Manager", group: "alerts", type: "bool", label: "التصعيد ٢: المدير (من دليل فريق واتساب)" },
+  { path: "delivery.ackEscalation.step3Manager", group: "alerts", type: "bool", label: "التصعيد ٣: SMS للمدير (من دليل فريق واتساب)" },
+  { path: "delivery.ackEscalation.step3Owner", group: "alerts", type: "bool", label: "التصعيد ٣: SMS للمالك (من دليل فريق واتساب)" },
+  { path: "delivery.ackEscalation.step3AlertPhones", group: "alerts", type: "bool", label: "التصعيد ٣: SMS لأرقام الإنذارات الحرجة كمان" },
+  { path: "delivery.ackEscalation.quietWhenClosed", group: "alerts", type: "bool",
+    label: "مفيش تصعيد والمطعم مقفول (حسب مواعيد المطعم)", hint: "لو مواعيد المطعم مش متعرّفة في الإعدادات التصعيد بيشتغل عادي." },
+  { path: "delivery.ackEscalation.maxAgeMin", group: "alerts", type: "int", min: ACK_ESC_LIMITS.maxAgeMin[0], max: ACK_ESC_LIMITS.maxAgeMin[1],
+    label: "مفيش تصعيد لطلب مدفوع من أكتر من (دقيقة)", hint: "الافتراضي ٣٠ — عشان لو السيرفر رجع بعد وقفة مايبعتش على طلبات قديمة." },
   { path: "delivery.staffSmsLanguage", group: "alerts", type: "enum", label: "لغة رسايل الإدارة",
     options: ENUM({ v: "en", label: "English" }, { v: "ar", label: "عربي" }) },
   { path: "delivery.pickupAddress", group: "alerts", type: "text", max: 200, label: "عنوان الاستلام" },
@@ -506,6 +526,7 @@ export function effectiveOf(path, settings, envRead) {
   if (path.startsWith("delivery.courierSla.")) return getAt({ x: e.courierSla }, "x." + path.slice("delivery.courierSla.".length));
   if (path.startsWith("delivery.leajlakContract.")) return e.leajlakContract[path.slice("delivery.leajlakContract.".length)];
   if (path.startsWith("delivery.sla.")) return e.sla[path.slice("delivery.sla.".length)];
+  if (path.startsWith("delivery.ackEscalation.")) return ackEscCfg(settings)[path.slice("delivery.ackEscalation.".length)];   // RG2
   if (path.startsWith("delivery.trackEta.")) return trackEtaCfg(settings)[path.slice("delivery.trackEta.".length)];
   if (path.startsWith("delivery.ljWatch.")) return ljWatchCfg(settings)[path.slice("delivery.ljWatch.".length)];
   if (path.startsWith("delivery.smartEta.")) {

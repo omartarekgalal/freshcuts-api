@@ -44,6 +44,7 @@ test("ORDER_EVENTS matches master plan §4-1 (+ محطّتا المندوب، ١
     "sla_alert", "notify_sent", "refund", "staff_note", "staff_call", "staff_action",
     "customer_note",      // MJ1 (١٧/١٠): ملاحظة العميل على طلبه الشغّال من واتساب
     "webhook_applied",    // ⚡ RT1 (١٧/١٠): ويبهوك نقطة البيع اتطبّق على الطلب (الفرق بين وصوله وتطبيقه)
+    "ack_escalation",     // 🔔 RG2 (١٨/١٠): طلب جديد ما اتشافش ⇒ تصعيد (ackescalate.js)
   ].sort());
   assert.equal(new Set(ORDER_EVENTS).size, ORDER_EVENTS.length);
   assert.ok(Object.isFrozen(ORDER_EVENTS));
