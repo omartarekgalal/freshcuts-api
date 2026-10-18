@@ -24,14 +24,14 @@
    كل المسارات تحت /api/cms/customers ⇒ قسم «العملاء» في الصلاحيات (cms.js) من غير سطر جديد.
 ═══════════════════════════════════════════════════════════════════════════ */
 import crypto from "node:crypto";
-import { normPhone, maskPhone } from "./identity.js";
+import { normPhone, maskPhone, firstOrderDays, isNewCustomer, BIZ_DAY_START_HOUR } from "./identity.js";
 import { tokenSecret } from "./portal-core.js";
 import { publicMedia } from "./wamedia.js";
 import { reasonText } from "./wacloud.js";
 import { hubRoles } from "./wahub.js";
 import { windowState } from "./wainbox.js";
 import { CHANNEL_LABELS, posChannel, isVoid } from "./customer360.js";
-import { KIND_AR } from "./wareviews.js";
+import { KIND_AR, googleRatedState, reviewFlowConfig } from "./wareviews.js";
 import { phoneOut } from "./phones.js";
 import { profileView, ENUM_AR } from "./custprofile.js";      // IBX1a: تصنيف العميل في كارت المحادثة
 
@@ -170,6 +170,29 @@ export function cardOf(profile, pn, { owner = false, full = true } = {}) {
     tags: (p.tags || []).slice(0, 6),
     ...(owner && p.ref ? { ref: p.ref } : {}),
   };
+}
+
+/* ═══ PV2 (عمر ١٨/١٠: «أقدر أفتح ملف العميل من الطلب نفسه وأفتح محادثاته») ═══
+   شارات العميل على تفاصيل الطلب في البورتال: GET /api/portal/order-customer/:no — للكاشير والمدير، قراية بس.
+   • «🆕 عميل جديد» = قاعدة identity.js بالحرف: أول طلب ليه على الإطلاق (أي قناة) وقع في اليوم التشغيلي بتاع الطلب ده.
+   • «⭐ VIP» = تاج VIP في ملف العميل (c360_tags، اللوحة).
+   • «✅ قيّم على جوجل» = نفس حكم RV6 (wareviews.googleRatedState بإعداد اللوحة).
+   • chat.has = فيه محادثة واتساب للرقم ⇒ زرار «المحادثة» بيفتحها؛ مفيش ⇒ الزرار بيقول «مفيش محادثة لسه».
+   مفيش رقم جوال في الرد (الطلب نفسه بيرجّعه بالقواعد بتاعته) — الشارات والمفتاح بس. */
+export const bizDayOf = (at) => {
+  const t = at instanceof Date ? at.getTime() : Date.parse(at || "");
+  return Number.isFinite(t) ? new Date(t + (3 - BIZ_DAY_START_HOUR) * 3600_000).toISOString().slice(0, 10) : null;
+};
+export function orderBadges({ firstDay = null, orderAt = null, tags = [], googleRated = false } = {}) {
+  const day = bizDayOf(orderAt);
+  const isNew = Boolean(day) && isNewCustomer(firstDay, day);
+  const vip = (Array.isArray(tags) ? tags : []).some((t) => String(t).trim().toUpperCase() === "VIP");
+  const out = [];
+  if (isNew) out.push({ id: "new", label: "🆕 عميل جديد — أول طلب" });
+  else if (firstDay && day && String(firstDay).slice(0, 10) < day) out.push({ id: "repeat", label: "🔁 طلب قبل كده" });
+  if (vip) out.push({ id: "vip", label: "⭐ VIP" });
+  if (googleRated) out.push({ id: "google", label: "✅ قيّم على جوجل" });
+  return { isNew, repeat: !isNew && Boolean(firstDay && day && String(firstDay).slice(0, 10) < day), vip, googleRated: Boolean(googleRated), list: out };
 }
 
 /* ═══ IBX1a (عمر ١٧/١٠: «من الشات لو ضغطنا على العميل يبان التفاصيل بطريقة احترافية والطلبات ولو في طلب حالي أو طلبات سابقة») ═══
@@ -505,6 +528,28 @@ export function register(app, ctx, deps = {}) {
         const card = cardOf(await x.buildProfile(pn), pn, { owner, full: true });
         return c.json({ ok: true, card, owner });
       } catch (e) { log.error("[c360wa] card:", e.message); return bad(c, "unavailable", 500); }
+    });
+    /* PV2: شارات العميل + هل فيه محادثة — لتفاصيل الطلب (الكاشير والمدير). أي جزء وقع ⇒ الشارة دي بس بتختفي، الرد يفضل ok. */
+    app.get("/api/portal/order-customer/:no", async (c) => {
+      const a = await requirePortal(c); if (a.res) return a.res;
+      const ref = parseOrderRef(c.req.param("no"));
+      if (!ref || ref.kind !== "web") return bad(c, "not_found", 404, "الطلب مش موجود");
+      let row = null;
+      try { row = (await Q("SELECT order_no, phone_norm, created_at FROM shop_orders WHERE order_no = $1", [ref.no]))[0] || null; }
+      catch (e) { log.error("[c360wa] order-customer:", e.message); return bad(c, "unavailable", 500); }
+      if (!row) return bad(c, "not_found", 404, "الطلب مش موجود");
+      const pn = normPhone(row.phone_norm) || null;
+      if (!pn) return c.json({ ok: true, badges: orderBadges({}), chat: { has: false }, card: a.user?.role === "manager" });
+      const safe = (p) => p.catch(() => null);
+      const qq = (sql, vals) => Q(sql, vals).catch(() => null);
+      const [firsts, tagRows, thread, gr] = await Promise.all([
+        safe(firstOrderDays(pool, [pn])),
+        qq("SELECT tags FROM c360_tags WHERE phone_norm=$1", [pn]),
+        qq("SELECT 1 AS x FROM wa_threads WHERE phone_norm=$1 LIMIT 1", [pn]),
+        safe((async () => googleRatedState(qq, pn, reviewFlowConfig(((await getSettingsData()) || {}).waBot?.reviewFlow)))()),
+      ]);
+      const badges = orderBadges({ firstDay: firsts ? firsts.get(pn) || null : null, orderAt: row.created_at, tags: tagRows?.[0]?.tags || [], googleRated: Boolean(gr && gr.rated) });
+      return c.json({ ok: true, badges, chat: { has: Boolean(thread && thread.length), key: thread && thread.length && SALT ? keyOf(pn) : null }, card: a.user?.role === "manager" });
     });
     app.get("/api/portal/order-peek/:no", async (c) => {
       const a = await requirePortal(c, "manager"); if (a.res) return a.res;

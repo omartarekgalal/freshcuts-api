@@ -32,6 +32,7 @@ import { register as registerSoldOut } from "./soldout.js";
 import { loadOffers } from "./offers.js";
 import { applyService, serviceState } from "./service.js";
 import { reviewScoped, reviewPortalRole } from "./reviewaudience.js";
+import { register as registerTestOrder } from "./portaltest.js";      // PV2 (عمر ١٨/١٠): «طلب تجريبي» — المدير يختبر رنّة الكاشير
 
 export const AUDIT_DDL = Object.freeze([
   `CREATE TABLE IF NOT EXISTS portal_audit (
@@ -1285,8 +1286,14 @@ export function register(app, ctx, deps = {}) {
     appsSync: deps.appsSync ? (args) => deps.appsSync(args) : null,
   });
 
+  /* 🧪 PV2: «طلب تجريبي» — رنّة اختبار لأجهزة الكاشير (SSE + push لدور الكاشير) من غير ما تلمس تاب سينس ولا الطلبات (portaltest.js) */
+  const testOrder = registerTestOrder(app, {
+    requirePortal, broadcastTo, push, audit, clientIp, now, log,
+    streamsFor: (role) => [...hub.clients].filter((x) => x.user && String(x.user.role) === String(role)).length,
+  });
+
   return {
-    soldOut,
+    soldOut, testOrder,
     requirePortal, audit,
     tabsenseDown: (detail) => push.tabsenseDown(detail).catch(() => null),
     pollNewOrders, scan, refresh, loadFeed, loadInfo, push, hub, limiter, scheduleRefresh,

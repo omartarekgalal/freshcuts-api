@@ -685,3 +685,37 @@ test("handed: بيكتب handed_at/handed_by مرة واحدة (COALESCE)، ما
   assert.equal(p.status, 400);
   assert.equal(p.body.error, "not_delivery");
 });
+
+/* ═══ PV2 (عمر ١٨/١٠): «طلب تجريبي» — من المدير لبث الكاشير والرجوع، من غير ما يلمس الطلبات ═══ */
+test("PV2 test-order: manager ⇒ cashier stream gets «test_order»; cashier ack ⇒ manager stream gets the seconds; only portal_audit is written", async () => {
+  const s = build({ settings: { portal: { staff: STAFF() } }, orders: [orderRow("W1")] });
+  const mt = (await login(s, "7777")).body.token;
+  const ct = (await login(s, "2468", "10.0.0.2")).body.token;
+  const cres = await s.req("GET", `/api/portal/stream?token=${encodeURIComponent(ct)}`);
+  const cr = cres.body.getReader();
+  await readUntil(cr, (b) => b.includes("event: hello"));
+  const mres = await s.req("GET", `/api/portal/stream?token=${encodeURIComponent(mt)}`);
+  const mr = mres.body.getReader();
+  await readUntil(mr, (b) => b.includes("event: hello"));
+  await wait(30);
+  const before = s.db.queries.length;
+  assert.equal((await s.json("POST", "/api/portal/test-order", { token: ct })).status, 403, "cashier cannot send");
+  const sent = await s.json("POST", "/api/portal/test-order", { token: mt });
+  assert.equal(sent.status, 200);
+  assert.equal(sent.body.cashierStreams, 1);
+  const cbuf = await readUntil(cr, (b) => b.includes("event: test_order"));
+  assert.match(cbuf, /event: test_order\ndata: .*"title":"🧪 طلب تجريبي — لاختبار الرنة"/);
+  const id = sent.body.ping.id;
+  const ack = await s.json("POST", `/api/portal/test-order/${id}/ack`, { token: ct });
+  assert.equal(ack.status, 200);
+  const mbuf = await readUntil(mr, (b) => b.includes("event: test_order_ack"));
+  assert.match(mbuf, /event: test_order_ack\ndata: .*"by":"علي"/);
+  assert.doesNotMatch(mbuf, /event: test_order\n/, "the manager's own device does not get the cashier card");
+  const touched = s.db.queries.slice(before).map((q) => q.sql);
+  assert.equal(touched.some((q) => /shop_orders|ts_orders|tsp_|dl_shipments|cust|review/i.test(q) && !/portal_audit/.test(q)), false, `no order/customer table: ${touched.join(" | ").slice(0, 300)}`);
+  const rows = s.db.audit.filter((a) => /^portal_test_/.test(a.action));
+  assert.deepEqual(rows.map((a) => a.action).sort(), ["portal_test_ack", "portal_test_order"]);
+  assert.ok(rows.every((a) => a.order_no === null));
+  assert.equal(s.events.some((e) => /test/.test(String(e.data?.action || ""))), false, "nothing on the order event bus");
+  await cr.cancel(); await mr.cancel();
+});

@@ -6,7 +6,7 @@ import { Hono } from "hono";
 import {
   canSeeWaFile, parseOrderRef, campaignState, messageItem, campaignItem, mergePage, summaryOf, cardOf, webOrderOut, posOrderOut,
   handoverItem, ownerItem, ratingItem, consentItem, register, currentOrderOut, etaOut, profileBrief, FINAL_ORDER_STATUSES, ATTENTION_ORDER_STATUSES,
-  CURRENT_ORDER_SQL,
+  CURRENT_ORDER_SQL, orderBadges, bizDayOf,
 } from "./c360wa.js";
 import { profileView, profileCfg } from "./custprofile.js";
 
@@ -149,9 +149,10 @@ test("event items: handover / owner / rating / consent carry Arabic labels", () 
 
 /* ── المسارات ── */
 const ADMIN = "admin-token-c360-test";
-function makeApp({ role = "owner", settings = {}, portalUser = { role: "manager", admin: false }, current = null, profileRow = null, optout = null, waOptin = null } = {}) {
+function makeApp({ role = "owner", settings = {}, portalUser = { role: "manager", admin: false }, current = null, profileRow = null, optout = null, waOptin = null, extra = null } = {}) {
   const calls = [];
   const rows = (sql) => {
+    if (extra) { const x = extra(sql); if (x !== undefined) return x; }
     if (/FROM wa_threads WHERE md5/.test(sql)) return [{ phone_norm: PN }];
     if (/FROM shop_orders o\s+LEFT JOIN LATERAL/.test(sql)) return current ? [current] : [];      // IBX1a: الطلب الحالي
     if (/SELECT opted_out_at, optout_source FROM cms_contacts/.test(sql)) return optout ? [optout] : [];
@@ -352,4 +353,49 @@ test("IBX1a customer route: inbox roles only, phone per phoneRoles, card + curre
 test("IBX1a messageItem carries mid + wamid for «open this message in the chat»", () => {
   const m = messageItem({ id: 41, wamid: "wamid.z", direction: "in", body: "هلا", created_at: T(1), source: "api" });
   assert.equal(m.id, "m41"); assert.equal(m.mid, 41); assert.equal(m.wamid, "wamid.z");
+});
+
+/* ═══ PV2 (عمر ١٨/١٠): شارات العميل على تفاصيل الطلب في البورتال ═══ */
+test("PV2 bizDayOf: Riyadh business day flips at 04:00 (01:00 UTC)", () => {
+  assert.equal(bizDayOf("2026-10-17T00:30:00Z"), "2026-10-16");      // 03:30 الرياض = يوم امبارح التشغيلي
+  assert.equal(bizDayOf("2026-10-17T01:30:00Z"), "2026-10-17");      // 04:30 الرياض = يوم جديد
+  assert.equal(bizDayOf(null), null);
+});
+
+test("PV2 orderBadges: new = first order ever on this order's business day; repeat; VIP tag (any case); Google rated", () => {
+  const at = "2026-10-17T15:00:00Z";
+  const nw = orderBadges({ firstDay: "2026-10-17", orderAt: at, tags: ["vip"], googleRated: true });
+  assert.equal(nw.isNew, true); assert.equal(nw.vip, true); assert.equal(nw.googleRated, true);
+  assert.deepEqual(nw.list.map((b) => b.id), ["new", "vip", "google"]);
+  const old = orderBadges({ firstDay: "2026-09-01", orderAt: at, tags: ["عائلة"] });
+  assert.equal(old.isNew, false); assert.equal(old.repeat, true); assert.deepEqual(old.list.map((b) => b.id), ["repeat"]);
+  const none = orderBadges({});
+  assert.equal(none.isNew, false); assert.equal(none.list.length, 0);
+});
+
+test("PV2 order-customer route: cashier + manager (no phone in the reply), badges + chat key; POS/unknown ⇒ 404; needs login", async () => {
+  const extra = (sql) => {
+    if (/WITH\s/.test(sql) && /firsts/.test(sql)) return [{ pn: PN, first_day: bizDayOf(T(0)) }];
+    if (/FROM c360_tags/.test(sql)) return [{ tags: ["VIP"] }];
+    if (/FROM review_customer_state/.test(sql)) return [{ google_rated_at: T(-60), google_rated_source: "staff", google_asked_at: null }];
+    return undefined;
+  };
+  const cashier = await makeApp({ portalUser: { role: "cashier" }, extra }).get("/api/portal/order-customer/W1077", "Bearer portal:ok");
+  assert.equal(cashier.status, 200);
+  assert.deepEqual(cashier.body.badges.list.map((b) => b.id), ["new", "vip", "google"]);
+  assert.equal(cashier.body.chat.has, true);
+  assert.match(cashier.body.chat.key, /^[0-9a-f]{32}$/);
+  assert.equal(cashier.body.card, false, "the cashier has no customer-file button");
+  assert.equal(JSON.stringify(cashier.body).includes(PN), false, "no phone number in the reply");
+  const mgr = await makeApp({ extra }).get("/api/portal/order-customer/W1077", "Bearer portal:ok");
+  assert.equal(mgr.body.card, true);
+  assert.equal((await makeApp().get("/api/portal/order-customer/pos:88", "Bearer portal:ok")).status, 404);
+  assert.equal((await makeApp().get("/api/portal/order-customer/W1077", "Bearer nope")).status, 401);
+});
+
+test("PV2 order-customer route: a failing badge source only drops that badge", async () => {
+  const extra = (sql) => { if (/FROM c360_tags/.test(sql)) throw new Error("relation does not exist"); return undefined; };
+  const r = await makeApp({ portalUser: { role: "cashier" }, extra }).get("/api/portal/order-customer/W1077", "Bearer portal:ok");
+  assert.equal(r.status, 200);
+  assert.equal(r.body.badges.vip, false);
 });
