@@ -12,6 +12,10 @@
    أول كلمة في اسم الطلب (name_edits = 0). الجلسة دايماً تغلب. التعديل محتاج دخول حقيقي. + percentile في رد النتيجة،
    وmaxScorePerSec الافتراضي ٦٠.
 
+   v2.3: «تحدّى أصحابك» — كود عشوائي ٧ حروف لكل جولة سليمة (freshcuts.sa/play?c=<code>، مفيش بيانات شخصية في الرابط):
+   POST /api/game/challenge (كود أحسن نتيجة ليك) + GET /api/game/challenge/:code (عام: الاسم الحالي + النتيجة بس).
+   وهوية رابط التتبّع بتخلص بعد ساعة من تسليم/استلام الطلب (ولو لسه ماتسلّمش: ٤٨ ساعة من إنشائه زي الأول).
+
    المسارات العامة:
      GET  /api/game/config                 { ok, enabled, period }
      POST /api/game/start                  توكن جولة موقّع من السيرفر (HMAC) — من غير دخول؛ لو داخل ⇒ اسمه في اللعبة
@@ -52,7 +56,7 @@ export const LIMITS = Object.freeze({
   tokenMaxAgeMs: 24 * 3600_000, wallSlackMs: 3000, rateSlack: 50, minDurationMs: 1500,
   outlierFactor: 3, outlierMinRuns: 20, maxScore: 1_000_000, maxDurationMs: 7_200_000,
   startsPerHourIp: 60, startsPerHourSession: 60, scoresPerHourIp: 30, scoresPerHourSession: 20,
-  boardCacheMs: 30_000, topN: 10, meWritesPerHour: 20, scoresPerHourOrder: 20, orderMaxAgeH: 48, percentileMinPlayers: 5,
+  boardCacheMs: 30_000, topN: 10, meWritesPerHour: 20, scoresPerHourOrder: 20, orderMaxAgeH: 48, percentileMinPlayers: 5, orderAfterDoneMs: 3600_000, challengeLookupsPerHourIp: 120, challengeCreatesPerHourIp: 60,
 });
 
 const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
@@ -191,7 +195,28 @@ export function percentileOf(bests, score, minPlayers = LIMITS.percentileMinPlay
   return Math.max(0, Math.min(100, Math.floor((lower / xs.length) * 100)));
 }
 
-export const maskPhone =(pn) => (/^5\d{8}$/.test(String(pn || "")) ? `05••••${String(pn).slice(-4)}` : null);
+/* v2.3 — هوية رابط التتبّع: لحد ساعة بعد التسليم/الاستلام؛ لسه ماتسلّمش (أو حالة نهائية من غير وقت) ⇒ ٤٨ ساعة من الإنشاء — صافي */
+export function orderIdentityValid({ createdAt, doneAt, now }) {
+  const done = doneAt ? new Date(doneAt).getTime() : NaN;
+  if (Number.isFinite(done)) return now < done + LIMITS.orderAfterDoneMs;
+  const created = new Date(createdAt).getTime();
+  return Number.isFinite(created) && now - created < LIMITS.orderMaxAgeH * 3600_000;
+}
+
+/* v2.3 — كود التحدّي: ٧ حروف من أبجدية من غير اللخبطة (مفيش 0/O/o/1/l/I) */
+export const CHALLENGE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+export const CHALLENGE_RE = /^[A-HJ-NP-Za-km-z2-9]{6,10}$/;
+export function newChallengeCode(len = 7) {
+  const bytes = crypto.randomBytes(len * 2);
+  let out = "";
+  for (let i = 0; out.length < len && i < bytes.length; i++) {
+    const v = bytes[i];
+    if (v < 256 - (256 % CHALLENGE_ALPHABET.length)) out += CHALLENGE_ALPHABET[v % CHALLENGE_ALPHABET.length];      // من غير انحياز
+  }
+  return out.length === len ? out : newChallengeCode(len);
+}
+
+export const maskPhone = (pn) => (/^5\d{8}$/.test(String(pn || "")) ? `05••••${String(pn).slice(-4)}` : null);
 const fullPhone = (pn) => (/^5\d{8}$/.test(String(pn || "")) ? `0${pn}` : null);
 
 /* الفريق + أرقام تجربة البوت ⇒ برا اللوحة. (المستثنين من الإعلانات بس = عملاء حقيقيين ⇒ بيظهروا.) */
@@ -254,6 +279,9 @@ export function register(app, ctx, deps = {}) {
       CREATE INDEX IF NOT EXISTS game_scores_created_idx ON game_scores(created_at DESC);
       CREATE INDEX IF NOT EXISTS game_scores_score_idx ON game_scores(score DESC) WHERE NOT flagged;
       CREATE INDEX IF NOT EXISTS game_scores_phone_idx ON game_scores(phone_norm, score DESC) WHERE NOT flagged;
+      -- v2.3: كود «تحدّى أصحابك» — للجولات السليمة بس
+      ALTER TABLE game_scores ADD COLUMN IF NOT EXISTS challenge_code TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS game_scores_challenge_idx ON game_scores(challenge_code) WHERE challenge_code IS NOT NULL;
       -- v2.1: اسم اللاعب مربوط بجواله — أول مرة ببلاش، وبعدها تعديل واحد بس (name_edits 0 ⇒ 1)
       CREATE TABLE IF NOT EXISTS game_players (
         phone_norm TEXT PRIMARY KEY,
@@ -302,11 +330,20 @@ export function register(app, ctx, deps = {}) {
   /* ── v2.2: هوية صامتة من رقم الطلب (صفحة التتبّع) — بس لو مفيش جلسة صالحة ── */
   async function orderOf(ord) {
     if (typeof ord !== "string" || !W_ORDER_RE.test(ord)) return null;
-    const r = await pool.query(`/*game:order*/ SELECT phone_norm, customer->>'name' AS name FROM shop_orders
-        WHERE order_no = $1 AND ${PAID_SQL} AND NOT COALESCE(is_test, false)
-          AND created_at > NOW() - make_interval(hours => $2::int) LIMIT 1`, [ord, LIMITS.orderMaxAgeH]).catch(() => ({ rows: [] }));
+    /* done_at = وقت التسليم/الاستلام: collected_at (الاستلام من الفرع، الكاشير قفل) ⇒ delivered_at بتاع شحنة المندوب ⇒
+       أول «delivered» في history (setStatus). مفيش ⇒ null ⇒ قاعدة الـ٤٨ ساعة (orderIdentityValid). */
+    const r = await pool.query(`/*game:order*/ SELECT o.phone_norm, o.customer->>'name' AS name, o.created_at,
+          COALESCE(o.collected_at,
+            (SELECT max(d.delivered_at) FROM dl_shipments d WHERE d.shop_order_no = o.order_no AND d.status = 'delivered'),
+            CASE WHEN jsonb_typeof(o.history) = 'array' THEN
+              (SELECT min((h->>'at')::timestamptz) FROM jsonb_array_elements(o.history) h WHERE h->>'status' = 'delivered' AND h->>'at' ~ '^\\d{4}-\\d{2}-\\d{2}T') END) AS done_at
+        FROM shop_orders o
+        WHERE o.order_no = $1 AND o.${PAID_SQL} AND NOT COALESCE(o.is_test, false)
+          AND o.created_at > NOW() - INTERVAL '7 days' LIMIT 1`, [ord]).catch(() => ({ rows: [] }));
     const o = r.rows[0];
-    return o && /^5\d{8}$/.test(String(o.phone_norm || "")) ? { ord, phone: o.phone_norm, name: o.name || null } : null;
+    if (!o || !/^5\d{8}$/.test(String(o.phone_norm || ""))) return null;
+    if (!orderIdentityValid({ createdAt: o.created_at, doneAt: o.done_at, now: nowMs() })) return null;
+    return { ord, phone: o.phone_norm, name: o.name || null };
   }
   /* الجلسة دايماً تغلب، وبعدها الطلب، وإلا null (= مجهول) */
   async function whoOf(c, ord) {
@@ -410,7 +447,7 @@ export function register(app, ctx, deps = {}) {
     const up = await pool.query(`/*game:player-edit*/ UPDATE game_players SET first_name = $2, name_edits = name_edits + 1, updated_at = NOW()
         WHERE phone_norm = $1 AND name_edits = 0 RETURNING first_name, name_edits`, [pn, n.name]);
     if (!up.rowCount) return bad(c, "name_locked", 403);
-    boardCache.clear();      // الاسم الجديد يظهر في اللوحة على طول
+    boardCache.clear(); challengeCache.clear();      // الاسم الجديد يظهر في اللوحة وروابط التحدّي على طول
     return c.json({ ok: true, firstName: n.name, canEdit: false });
   });
 
@@ -449,10 +486,19 @@ export function register(app, ctx, deps = {}) {
     const dev = cleanId(b.dev), sess = cleanId(b.sid);
     const firstName = player.first_name;
 
-    const ins = await pool.query(
-      `/*game:insert*/ INSERT INTO game_scores(run_id, phone_norm, first_name, score, duration_ms, session_id, device_id, ip_hash, source, order_no, flagged, flag_reason, queued)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (run_id) DO NOTHING RETURNING id, created_at`,
-      [tk.r, pn, firstName, score, durationMs, sess, dev, ih, src, orderNo, flagged, flagged ? reasons.join(",") : null, b.queued === true ? true : null]);
+    let ins = null, challenge = null;
+    for (let attempt = 0; attempt < 4 && !ins; attempt++) {
+      challenge = flagged ? null : newChallengeCode();      // المعلَّم عليه مالوش كود
+      try {
+        ins = await pool.query(
+          `/*game:insert*/ INSERT INTO game_scores(run_id, phone_norm, first_name, score, duration_ms, session_id, device_id, ip_hash, source, order_no, flagged, flag_reason, queued, challenge_code)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (run_id) DO NOTHING RETURNING id, created_at`,
+          [tk.r, pn, firstName, score, durationMs, sess, dev, ih, src, orderNo, flagged, flagged ? reasons.join(",") : null, b.queued === true ? true : null, challenge]);
+      } catch (e) {
+        if (e && e.code === "23505" && /challenge/.test(String(e.constraint || e.message || "")) && attempt < 3) continue;      // الكود اتكرر (نادر جداً) ⇒ كود تاني
+        throw e;
+      }
+    }
     if (!ins.rowCount) return bad(c, "bad_token");      // التوكن اتستخدم قبل كده
 
     distCache = null;      // الجولة دي تدخل التوزيع
@@ -466,7 +512,52 @@ export function register(app, ctx, deps = {}) {
       best = Math.max(Number(q && q.best) || 0, score);      // المعلَّم عليه بيشوف رقمه هو برضه — مابيتعلّمش حاجة
       percentile = percentileOf(await bestsDist(s), score);  // نفس الحساب للمعلَّم عليه (شكل الرد عادي)
     } catch (e) { console.error("[game] rank failed:", e.message); }
-    return c.json({ ok: true, saved: true, firstName, rank, best, percentile });
+    return c.json({ ok: true, saved: true, firstName, rank, best, percentile, challenge });
+  });
+
+  /* ── v2.3: «تحدّى أصحابك» ── */
+  const challengeCache = new Map();
+  app.post("/api/game/challenge", async (c) => {
+    const s = await settingsOf();
+    const b = (await readJson(c)) || {};
+    const ih = ipHashOf(ipOf(c), secret(), new Date(nowMs()));
+    if (limited("ch:ip:" + ih, LIMITS.challengeCreatesPerHourIp)) return bad(c, "rate_limited", 429);
+    const who = await whoOf(c, b.ord);
+    if (!who) return bad(c, "login_required", 401);
+    if (excludedPhones(s).has(who.phone)) return bad(c, "no_score", 404);      // الفريق/التجربة مابيترتّبوش ⇒ كودهم مش هيفتح
+    const row = (await pool.query(`/*game:mybestrun*/ SELECT id, score, first_name, challenge_code FROM game_scores
+        WHERE NOT flagged AND phone_norm = $1 ORDER BY score DESC, created_at ASC LIMIT 1`, [who.phone])).rows[0];
+    if (!row) return bad(c, "no_score", 404);
+    let code = row.challenge_code;
+    for (let attempt = 0; !code && attempt < 4; attempt++) {      // جولة من قبل v2.3 مالهاش كود ⇒ نعمله
+      try {
+        const u = await pool.query(`/*game:setcode*/ UPDATE game_scores SET challenge_code = $2 WHERE id = $1 AND challenge_code IS NULL RETURNING challenge_code`, [row.id, newChallengeCode()]);
+        code = u.rows[0]?.challenge_code
+          || (await pool.query("/*game:getcode*/ SELECT challenge_code FROM game_scores WHERE id = $1", [row.id])).rows[0]?.challenge_code || null;
+      } catch (e) { if (!(e && e.code === "23505")) throw e; }
+    }
+    if (!code) return c.json({ ok: false, error: "unavailable" }, 500);
+    const p = await playerOf(who.phone).catch(() => null);
+    return c.json({ ok: true, challenge: code, firstName: (p && p.first_name) || row.first_name || null, score: Number(row.score) || 0 });
+  });
+
+  app.get("/api/game/challenge/:code", async (c) => {
+    const ih = ipHashOf(ipOf(c), secret(), new Date(nowMs()));
+    if (limited("cl:ip:" + ih, LIMITS.challengeLookupsPerHourIp)) return bad(c, "rate_limited", 429);
+    const code = String(c.req.param("code") || "");
+    if (!CHALLENGE_RE.test(code)) return bad(c, "not_found", 404);
+    const hit = challengeCache.get(code);
+    let v = hit && nowMs() - hit.at < LIMITS.boardCacheMs ? hit.value : undefined;
+    if (v === undefined) {
+      const s = await settingsOf();
+      const r = (await pool.query(`/*game:challenge*/ SELECT g.score, g.flagged, g.phone_norm, COALESCE(p.first_name, g.first_name) AS name
+          FROM game_scores g LEFT JOIN game_players p ON p.phone_norm = g.phone_norm WHERE g.challenge_code = $1 LIMIT 1`, [code])).rows[0];
+      v = r && !r.flagged && r.phone_norm && !excludedPhones(s).has(r.phone_norm) ? { firstName: r.name || null, score: Number(r.score) || 0 } : null;
+      if (challengeCache.size > 5000) challengeCache.clear();
+      challengeCache.set(code, { at: nowMs(), value: v });
+    }
+    if (!v) return bad(c, "not_found", 404);
+    return c.json({ ok: true, firstName: v.firstName, score: v.score });
   });
 
   app.get("/api/game/leaderboard", async (c) => {

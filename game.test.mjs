@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   register, gameCfg, GAME_DEFAULTS, GAME_LABELS, signToken, verifyToken, cleanFirstName, isProfane, flagReasons,
   leaderboardOf, weekStartOf, maskPhone, excludedPhones, LIMITS, percentileOf,
+  orderIdentityValid, newChallengeCode, CHALLENGE_RE, CHALLENGE_ALPHABET,
 } from "./game.js";
 import * as J from "./journey.js";
 import { sectionOf } from "./cms.js";
@@ -33,7 +34,11 @@ function fakeDb({ history = {}, pos = {}, orders = {} } = {}) {
         case "alltime": { const ok = rows.filter((r) => !r.flagged); return { rows: [{ n: ok.length, best: ok.reduce((m, r) => Math.max(m, r.score), 0) }] }; }
         case "insert": {
           if (rows.some((r) => r.run_id === p[0])) return { rowCount: 0, rows: [] };
-          const r = { id: ++id, run_id: p[0], phone_norm: p[1], first_name: p[2], score: p[3], duration_ms: p[4], session_id: p[5], device_id: p[6], ip_hash: p[7], source: p[8], order_no: p[9], flagged: p[10], flag_reason: p[11], queued: p[12], created_at: new Date(clock.now) };
+          if (p[13] && (rows.some((r) => r.challenge_code === p[13]) || pool.forceCodeClash > 0)) {
+            if (pool.forceCodeClash > 0) pool.forceCodeClash--;
+            throw Object.assign(new Error("duplicate key value violates unique constraint \"game_scores_challenge_idx\""), { code: "23505", constraint: "game_scores_challenge_idx" });
+          }
+          const r = { id: ++id, challenge_code: p[13] || null, run_id: p[0], phone_norm: p[1], first_name: p[2], score: p[3], duration_ms: p[4], session_id: p[5], device_id: p[6], ip_hash: p[7], source: p[8], order_no: p[9], flagged: p[10], flag_reason: p[11], queued: p[12], created_at: new Date(clock.now) };
           rows.push(r); return { rowCount: 1, rows: [{ id: r.id, created_at: r.created_at }] };
         }
         case "top": {
@@ -60,13 +65,24 @@ function fakeDb({ history = {}, pos = {}, orders = {} } = {}) {
         case "order": {
           const o = orders[p[0]];
           const paid = o && !["pending_payment", "expired", "rejected_refunded", "refund_failed", "paid_pos_failed"].includes(o.status || "paid");
-          const fresh = o && clock.now - Date.parse(o.created_at || new Date(clock.now).toISOString()) < Number(p[1]) * 3600_000;
-          return { rows: o && paid && !o.is_test && fresh ? [{ phone_norm: o.phone_norm, name: o.name }] : [] };
+          const week = o && clock.now - Date.parse(o.created_at || new Date(clock.now).toISOString()) < 7 * 86400_000;
+          pool.lastOrderSql = s;
+          return { rows: o && paid && !o.is_test && week ? [{ phone_norm: o.phone_norm, name: o.name, created_at: o.created_at || new Date(clock.now).toISOString(), done_at: o.done_at || null }] : [] };
         }
         case "dist": {
           const ex = new Set(p[0] || []), m = new Map();
           for (const r of rows) if (!r.flagged && r.phone_norm && !ex.has(r.phone_norm)) m.set(r.phone_norm, Math.max(m.get(r.phone_norm) || 0, r.score));
           return { rows: [...m].map(([phone_norm, best]) => ({ phone_norm, best })) };
+        }
+        case "mybestrun": {
+          const m = rows.filter((r) => !r.flagged && r.phone_norm === p[0]).sort((a, b) => b.score - a.score || a.created_at - b.created_at)[0];
+          return { rows: m ? [{ id: m.id, score: m.score, first_name: m.first_name, challenge_code: m.challenge_code }] : [] };
+        }
+        case "setcode": { const r = rows.find((x) => x.id === p[0]); if (!r || r.challenge_code) return { rows: [] }; r.challenge_code = p[1]; return { rows: [{ challenge_code: p[1] }] }; }
+        case "getcode": { const r = rows.find((x) => x.id === p[0]); return { rows: r ? [{ challenge_code: r.challenge_code }] : [] }; }
+        case "challenge": {
+          const r = rows.find((x) => x.challenge_code === p[0]);
+          return { rows: r ? [{ score: r.score, flagged: r.flagged, phone_norm: r.phone_norm, name: players.get(r.phone_norm)?.first_name || r.first_name }] : [] };
         }
         case "hist-order": return { rows: history[p[0]] ? [{ n: history[p[0]] }] : [] };
         case "hist-pos": return { rows: pos[p[0]] ? [{ n: pos[p[0]] }] : [] };
@@ -106,10 +122,10 @@ function build({ settings = {}, owner = true, accts = {}, db = fakeDb() } = {}) 
   };
   const accounts = fakeAccounts(accts);
   const api = register(app, ctx, { accounts: () => accounts, now: () => db.clock.now });
-  const call = async (key, { body, headers = {}, query = {} } = {}) => {
+  const call = async (key, { body, headers = {}, query = {}, params = {} } = {}) => {
     const h = Object.fromEntries(Object.entries({ "cf-connecting-ip": "1.1.1.1", ...headers }).map(([k, v]) => [k.toLowerCase(), v]));
     const c = {
-      req: { header: (n) => h[String(n).toLowerCase()], json: async () => { if (body === undefined) throw new Error("no body"); return body; }, query: (k) => query[k] },
+      req: { header: (n) => h[String(n).toLowerCase()], json: async () => { if (body === undefined) throw new Error("no body"); return body; }, query: (k) => query[k], param: (k) => params[k] },
       json: (b, status = 200) => ({ body: b, status }),
     };
     return routes[key](c);
@@ -550,7 +566,11 @@ test("journey: game_play / game_over / game_leaderboard_view accepted with their
   assert.deepEqual(p.events[2].props, { period: "all", src: "play" });
   assert.equal(p.events[1].path, "/track/:order");
   for (const e of p.events) { assert.equal(e.step, null); assert.equal(J.stampsSession(e.name), false); }
-  assert.deepEqual(J.GAME_EVENTS, ["game_play", "game_over", "game_leaderboard_view"]);
+  assert.deepEqual(J.GAME_EVENTS, ["game_play", "game_over", "game_leaderboard_view", "game_share", "game_challenge_open"]);
+  const q = J.parseBatch(JSON.stringify({ v: 1, sessionId: "s1abc2def3", anonId: "d1abc2def3", events: [
+    { n: "game_share", t: now, seq: 1, path: "/play", p: { via: "wa", src: "play" } },
+    { n: "game_challenge_open", t: now, seq: 2, path: "/play", p: { src: "play" } } ] }), { now });
+  assert.deepEqual(q.events.map((e) => [e.name, e.props, e.step]), [["game_share", { via: "wa", src: "play" }, null], ["game_challenge_open", { src: "play" }, null]]);
   for (const n of J.GAME_EVENTS) { assert.ok(J.WEB_EVENTS.includes(n)); assert.ok(J.GAME_EVENT_LABELS[n]); }
   assert.equal(J.stampsSession("order_created"), true, "checkout events still stamp");
 });
@@ -676,4 +696,128 @@ test("score.percentile: ranked players only (distinct phones, clean, no team/tes
   r = await play(g, { headers: H[5], score: 5000, durationMs: 10_000 });  // flagged ⇒ not in the distribution, answer looks normal
   assert.equal(g.db.rows.at(-1).flagged, true);
   assert.deepEqual([r.body.saved, r.body.rank, r.body.percentile], [true, null, 100]);
+});
+
+/* ═══ v2.3: «تحدّى أصحابك» ═══ */
+test("challenge code: 7 chars, unambiguous alphabet (no 0/O/o/1/l/I), random, matches the lookup regex", () => {
+  assert.ok(!/[0Oo1lI]/.test(CHALLENGE_ALPHABET));
+  const seen = new Set();
+  for (let i = 0; i < 500; i++) {
+    const c = newChallengeCode();
+    assert.equal(c.length, 7); assert.ok(CHALLENGE_RE.test(c), c); assert.ok(!/[0Oo1lI]/.test(c), c);
+    seen.add(c);
+  }
+  assert.ok(seen.size > 495, "random");
+  for (const bad of ["abc", "ABCDEF0", "ABCDEFl", "ABCDEFI", "ABCDEFO", "abc-def", "ABCDEFGHJKM", "ABCDEFG/"]) assert.equal(CHALLENGE_RE.test(bad), false, bad);
+});
+
+test("score: clean run ⇒ challenge code saved on the row; flagged run ⇒ challenge null (rest looks normal); code clash ⇒ retried", async () => {
+  const g = build({ accts: accts("500000111") });
+  const H = await withPlayer(g, "500000111", "Omar");
+  let r = await play(g, { headers: H, score: 200, durationMs: 20_000 });
+  assert.ok(CHALLENGE_RE.test(r.body.challenge), String(r.body.challenge));
+  assert.equal(g.db.rows[0].challenge_code, r.body.challenge);
+  r = await play(g, { headers: H, score: 9000, durationMs: 5_000 });
+  assert.deepEqual([r.body.saved, r.body.rank, r.body.challenge], [true, null, null]);
+  assert.equal(g.db.rows[1].challenge_code, null);
+  g.db.pool.forceCodeClash = 2;
+  r = await play(g, { headers: H, score: 150, durationMs: 20_000 });
+  assert.equal(r.body.saved, true); assert.ok(CHALLENGE_RE.test(r.body.challenge));
+  assert.equal(g.db.rows.length, 3);
+});
+
+test("POST /api/game/challenge: best clean all-time run, reuses its code, makes one for an old run; 401 / 404 no_score; order identity works", async () => {
+  const db = orderDb();
+  const g = build({ db, accts: accts("500000111", "500000222") });
+  assert.deepEqual((await g.call("POST /api/game/challenge", { body: {} })).body, { ok: false, error: "login_required" });
+  const H = await withPlayer(g, "500000111", "Omar");
+  let r = await g.call("POST /api/game/challenge", { body: {}, headers: H });
+  assert.deepEqual([r.status, r.body], [404, { ok: false, error: "no_score" }]);
+  const a = await play(g, { headers: H, score: 300, durationMs: 20_000 });
+  await play(g, { headers: H, score: 200, durationMs: 20_000 });
+  await play(g, { headers: H, score: 9000, durationMs: 5_000 });      // flagged ⇒ never the best
+  r = await g.call("POST /api/game/challenge", { body: {}, headers: H });
+  assert.deepEqual(r.body, { ok: true, challenge: a.body.challenge, firstName: "Omar", score: 300 });
+  // a run from before v2.3 (no code) ⇒ a code gets made once and then reused
+  await withPlayer(g, "500000222", "Lina");
+  db.rows.push({ id: 900, run_id: "old-run", phone_norm: "500000222", first_name: "Lina", score: 500, duration_ms: 30000, flagged: false, challenge_code: null, created_at: new Date(T0 - 86400_000) });
+  const c1 = (await g.call("POST /api/game/challenge", { body: {}, headers: AUTH("500000222") })).body;
+  assert.ok(CHALLENGE_RE.test(c1.challenge)); assert.equal(c1.score, 500);
+  assert.equal((await g.call("POST /api/game/challenge", { body: {}, headers: AUTH("500000222") })).body.challenge, c1.challenge);
+  // order identity (tracking page)
+  const st = await g.start({ ord: ORD });
+  db.clock.now += 20_500;
+  const o = await g.score({ token: st.token, score: 120, durationMs: 20_000, ord: ORD });
+  r = await g.call("POST /api/game/challenge", { body: { ord: ORD } });
+  assert.deepEqual(r.body, { ok: true, challenge: o.body.challenge, firstName: "Faisal", score: 120 });
+});
+
+test("GET /api/game/challenge/:code: current name + score only; unknown / bad shape / flagged / team phone ⇒ 404; 30 s cache; name edit shows; 120 lookups/h per IP", async () => {
+  const settings = { waBot: { testPhones: ["0500000999"] } };
+  const db = fakeDb();
+  const g = build({ db, settings, accts: accts("500000111", "500000999") });
+  const H = await withPlayer(g, "500000111", "Omar");
+  const a = await play(g, { headers: H, score: 321, durationMs: 20_000 });
+  const look = (code, headers = {}) => g.call("GET /api/game/challenge/:code", { params: { code }, headers });
+  let r = await look(a.body.challenge);
+  assert.deepEqual([r.status, r.body], [200, { ok: true, firstName: "Omar", score: 321 }]);
+  for (const k of ["phone", "phone_norm", "order", "orderNo", "id", "runId"]) assert.equal(r.body[k], undefined, k);
+  assert.ok(!JSON.stringify(r.body).includes("500000111"));
+  for (const bad of ["ZZZZZZZ", "abc", "ABC0DEF", ""]) assert.deepEqual((await look(bad)).body, { ok: false, error: "not_found" }, bad);
+  // flagged row with a code (should never exist, but the lookup refuses it anyway)
+  db.rows.push({ id: 901, run_id: "x1", phone_norm: "500000111", first_name: "Omar", score: 99999, flagged: true, challenge_code: "FLAGGED", created_at: new Date(T0) });
+  assert.equal((await look("FLAGGED")).status, 404);
+  // team/test phone
+  const T = await withPlayer(g, "500000999", "Tester");
+  const t = await play(g, { headers: T, score: 400, durationMs: 20_000 });
+  assert.equal((await look(t.body.challenge)).status, 404);
+  assert.deepEqual((await g.call("POST /api/game/challenge", { body: {}, headers: T })).body, { ok: false, error: "no_score" });
+  // cache 30 s
+  const n0 = db.calls.filter((x) => x === "challenge").length;
+  await look(a.body.challenge); await look(a.body.challenge);
+  assert.equal(db.calls.filter((x) => x === "challenge").length, n0);
+  // the one name edit shows at once
+  await g.setName("500000111", "Mido");
+  assert.equal((await look(a.body.challenge)).body.firstName, "Mido");
+  // rate limit per IP
+  const g2 = build();
+  for (let i = 0; i < 120; i++) assert.notEqual((await g2.call("GET /api/game/challenge/:code", { params: { code: "ABCDEFG" } })).status, 429);
+  assert.deepEqual((await g2.call("GET /api/game/challenge/:code", { params: { code: "ABCDEFG" } })).body, { ok: false, error: "rate_limited" });
+});
+
+/* ═══ v2.3: هوية رابط التتبّع بتخلص بعد ساعة من التسليم/الاستلام ═══ */
+test("orderIdentityValid (pure): delivered/collected ⇒ until done + 1 h; not done ⇒ 48 h from creation", () => {
+  const C = new Date(T0).toISOString();
+  const D = new Date(T0 + 40 * 60_000).toISOString();      // delivered 40 min after the order
+  assert.equal(orderIdentityValid({ createdAt: C, doneAt: D, now: T0 + 40 * 60_000 + 3600_000 - 1 }), true, "59:59 after delivery");
+  assert.equal(orderIdentityValid({ createdAt: C, doneAt: D, now: T0 + 40 * 60_000 + 3600_000 }), false, "exactly 1 h after");
+  assert.equal(orderIdentityValid({ createdAt: C, doneAt: null, now: T0 + 48 * 3600_000 - 1 }), true, "not delivered: 48 h cap");
+  assert.equal(orderIdentityValid({ createdAt: C, doneAt: null, now: T0 + 48 * 3600_000 }), false);
+  assert.equal(orderIdentityValid({ createdAt: C, doneAt: "garbage", now: T0 + 3 * 3600_000 }), true, "unknown time ⇒ 48 h rule");
+  assert.equal(orderIdentityValid({ createdAt: null, doneAt: null, now: T0 }), false);
+});
+
+test("order identity expiry from the route: delivered 1 h ago ⇒ anonymous (start known:false, score 401, token NOT consumed); final status without a time ⇒ 48 h; the SQL reads collected_at, shipment delivered_at and history", async () => {
+  const D = T0 + 30 * 60_000;
+  const db = fakeDb({ orders: {
+    W1792400000701: { phone_norm: "500000701", name: "Delivered Guy", status: "delivered", created_at: new Date(T0).toISOString(), done_at: new Date(D).toISOString() },
+    W1792400000702: { phone_norm: "500000702", name: "Final Notime", status: "delivered", created_at: new Date(T0).toISOString() },
+  } });
+  const g = build({ db });
+  db.clock.now = D + 3600_000 - 60_000;      // 59 min after delivery
+  const st = await g.start({ ord: "W1792400000701" });
+  assert.deepEqual([st.known, st.firstName], [true, "Delivered"]);
+  assert.match(db.pool.lastOrderSql, /collected_at/); assert.match(db.pool.lastOrderSql, /dl_shipments/); assert.match(db.pool.lastOrderSql, /history/);
+  assert.ok(db.pool.lastOrderSql.includes("~ '^\\d{4}-\\d{2}-\\d{2}T'"), "the history guard regex reaches SQL with its backslashes (template literal trap)");
+  db.clock.now = D + 3600_000 + 1000;        // just past 1 h ⇒ the same order is anonymous now
+  assert.equal((await g.start({ ord: "W1792400000701" })).known, false);
+  assert.equal((await g.call("GET /api/game/me", { query: { ord: "W1792400000701" } })).status, 401);
+  const r = await g.score({ token: st.token, score: 100, durationMs: 20_000, ord: "W1792400000701" });
+  assert.deepEqual([r.status, r.body.error], [401, "login_required"]);
+  assert.equal(db.rows.length, 0, "nothing saved, token still unused");
+  // final status, delivery time unknown ⇒ 48 h from creation
+  db.clock.now = T0 + 47 * 3600_000;
+  assert.equal((await g.start({ ord: "W1792400000702" })).known, true);
+  db.clock.now = T0 + 48 * 3600_000 + 1;
+  assert.equal((await g.start({ ord: "W1792400000702" })).known, false);
 });

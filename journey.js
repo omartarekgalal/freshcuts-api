@@ -83,9 +83,10 @@ export const PICKUP_DENIED_HOW = Object.freeze({ pre: "كان رافض من قب
 
 /* RTG2 (١٨/١٠): لعبة الجري على المتجر (/play + جوّه صفحة التتبّع). props: game_play {src} · game_over {score, ms, src} ·
    game_leaderboard_view {period, src} — src = play | track. زي JE1: ماتختمش الجلسة (NO_STAMP_RE) ومالهاش خطوة قمع (stepOf ⇒ null). */
-export const GAME_EVENTS = Object.freeze(["game_play", "game_over", "game_leaderboard_view"]);
+export const GAME_EVENTS = Object.freeze(["game_play", "game_over", "game_leaderboard_view", "game_share", "game_challenge_open"]);      // v2.3: game_share {via: native|copy|wa, src} · game_challenge_open {src}
 export const GAME_EVENT_LABELS = Object.freeze({
   game_play: "بدأ يلعب لعبة الجري", game_over: "خلّص جولة في اللعبة", game_leaderboard_view: "فتح لوحة أبطال اللعبة",
+  game_share: "شارك تحدّي اللعبة", game_challenge_open: "فتح رابط تحدّي من صاحبه",
 });
 
 // أحداث المتصفح المسموحة — أي اسم تاني بيترفض
