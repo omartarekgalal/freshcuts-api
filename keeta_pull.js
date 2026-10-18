@@ -38,7 +38,11 @@ const CODE_RE = /^[a-z0-9]{6}$/;
 /* ═══ الإعدادات (settings.keeta.pull) ═════════════════════════════════════ */
 export const DEFAULT_PULL = Object.freeze({
   enabled: false, enabledAt: null, paused: false, pauseReason: null, pausedAt: null,      // enabledAt / paused*: السيرفر بيكتبهم (المالك يفكّ الإيقاف بس)
-  reviewDelayMin: 50,          // قرار المالك ١٨/١٠: طلب التقييم بعد طلب كيتا بـ٥٠ دقيقة
+  reviewDelayMin: 50,          // قرار المالك ١٨/١٠: طلب التقييم «بعد ٥٠ دقيقة من تسليم الطلب للمندوب» (KA2c) — من المرجع اللي تحت
+  reviewAnchor: "handoff",     // KA2c: handoff = من تسليم الطلب لمندوب كيتا (نقطة البيع) · order = من وقت الطلب (السلوك القديم)
+  handoffWaitMin: 90,          // KA2c: التسليم ماظهرش خلال المدة دي من الطلب ⇒ الميعاد = الطلب + fallbackDelayMin (handoff_unknown)
+  fallbackDelayMin: 80,        // KA2c: الاحتياطي من وقت الطلب (≈ تحضير + ٥٠)
+  handoffMinAfterOrderMin: 5,  // KA2c: إشارة «اتسلّم» قبل المدة دي من الطلب مش تسليم حقيقي (قفل بالغلط) ⇒ بتتجاهل
   pullDelayMin: 10,            // رسالة السحب بعد التقييم العالي / قفل الشكوى بالمدة دي (والهدوء بعد آخر رسالة CJ1a فوقها)
   ratingWaitHours: 24,         // مفيش تقييم خلال المدة دي من طلب التقييم ⇒ مفيش سحب
   lowResolveDays: 3,           // تقييم واطي: لازم يتقفل «اتحلت» خلال المدة دي وإلا مفيش سحب
@@ -53,11 +57,11 @@ export const DEFAULT_PULL = Object.freeze({
   autoPauseOptoutPct: 3, autoPauseMinSends: 50,
 });
 const NUM = Object.freeze({
-  reviewDelayMin: [10, 180], pullDelayMin: [0, 240], ratingWaitHours: [1, 72], lowResolveDays: [0, 14], maxLateHours: [1, 48],
+  reviewDelayMin: [10, 180], handoffWaitMin: [30, 240], fallbackDelayMin: [10, 240], handoffMinAfterOrderMin: [0, 60], pullDelayMin: [0, 240], ratingWaitHours: [1, 72], lowResolveDays: [0, 14], maxLateHours: [1, 48],
   dailyCap: [1, 100], hourCap: [1, 50], campaignGapDays: [3, 30], firstWithinDays: [0, 365], holdoutPct: [0, 50],
   autoPauseOptoutPct: [0, 20], autoPauseMinSends: [20, 500],
 });
-const ENUM = Object.freeze({ lowCloseRule: ["resolved", "any_close"], template: TEMPLATES });
+const ENUM = Object.freeze({ lowCloseRule: ["resolved", "any_close"], template: TEMPLATES, reviewAnchor: ["handoff", "order"] });
 const BOOLS = Object.freeze(["enabled", "skipDirectCustomers", "paused"]);
 const isoOrNull = (v) => (v && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null);
 
@@ -98,9 +102,13 @@ export function pullFromBody(b, prev, now = new Date()) {
 const S = (type, ar, help, extra = {}) => Object.freeze({ type, ar, help, ...extra });
 const N = (k, ar, help, unit) => S("number", ar, help, { min: NUM[k][0], max: NUM[k][1], unit });
 export const PULL_SCHEMA = Object.freeze({
-  enabled: S("boolean", "تشغيل رسايل ما بعد طلب كيتا", "عميل كيتا الجديد: بعد طلبه بالمدة اللي تحت بيوصله طلب تقييم على واتساب. لو قيّم ٤–٥ نجوم (أو قيّم واطي والشكوى اتقفلت «اتحلت») بتوصله رسالة واحدة «اطلب مباشرة من موقعنا + توصيل مجاني أول طلب بكود FIRST». رسالتين بالكتير في عمر الرقم. مقفول = ولا رسالة."),
+  enabled: S("boolean", "تشغيل رسايل ما بعد طلب كيتا", "عميل كيتا الجديد: بعد ما طلبه يتسلّم للمندوب بالمدة اللي تحت بيوصله طلب تقييم على واتساب. لو قيّم ٤–٥ نجوم (أو قيّم واطي والشكوى اتقفلت «اتحلت») بتوصله رسالة واحدة «اطلب مباشرة من موقعنا + توصيل مجاني أول طلب بكود FIRST». رسالتين بالكتير في عمر الرقم. مقفول = ولا رسالة."),
   paused: S("boolean", "متوقّفة (الفرملة)", "بتتقفل لوحدها لو نسبة «إيقاف» عدّت الحد اللي تحت، أو ميتا رجّعت خطأ بيوقف الإرسال. اقفلها هنا عشان ترجع تشتغل."),
-  reviewDelayMin: N("reviewDelayMin", "طلب التقييم بعد طلب كيتا بـ", "قرار المالك ١٨/١٠: ٥٠ دقيقة. والمطعم لازم يكون مفتوح.", "دقيقة"),
+  reviewAnchor: S("enum", "طلب التقييم بيتحسب من", "قرار المالك ١٨/١٠: «بعد ٥٠ دقيقة من تسليم الطلب للمندوب». التسليم = نقطة البيع قالت إن الطلب اتسلّم/اتقفل (نفس إشارة «سلّمته للمندوب» لطلبات الموقع).", { options: ENUM.reviewAnchor, optionsAr: { handoff: "تسليم الطلب لمندوب كيتا (المقترح)", order: "وقت الطلب نفسه" } }),
+  reviewDelayMin: N("reviewDelayMin", "طلب التقييم بعدها بـ", "قرار المالك ١٨/١٠: ٥٠ دقيقة من التسليم للمندوب. والمطعم لازم يكون مفتوح وقت الإرسال.", "دقيقة"),
+  handoffWaitMin: N("handoffWaitMin", "لو التسليم ماظهرش في نقطة البيع خلال", "من وقت الطلب. بعدها الميعاد بيتحسب من وقت الطلب (السطر اللي تحت) — ولو التسليم ظهر بعدها والرسالة لسه ماطلعتش، الميعاد بيرجع يتحسب منه.", "دقيقة"),
+  fallbackDelayMin: N("fallbackDelayMin", "…يبقى طلب التقييم بعد الطلب بـ", "الاحتياطي لما وقت التسليم مش معروف (≈ تحضير + ٥٠).", "دقيقة"),
+  handoffMinAfterOrderMin: N("handoffMinAfterOrderMin", "إشارة «اتسلّم» قبل الدقايق دي من الطلب = غلط", "الكاشير قفل الطلب بالغلط أول ما نزل — مانحسبهاش تسليم.", "دقيقة"),
   pullDelayMin: N("pullDelayMin", "رسالة «اطلب من موقعنا» بعد التقييم بـ", "بعد التقييم العالي أو قفل الشكوى. وكمان بتستنى الهدوء بعد آخر رسالة للعميل (١٠ دقايق).", "دقيقة"),
   ratingWaitHours: N("ratingWaitHours", "لو ماقيّمش خلال", "مفيش تقييم = مفيش رسالة «اطلب من موقعنا».", "ساعة"),
   lowResolveDays: N("lowResolveDays", "التقييم الواطي لازم يتقفل «اتحلت» خلال", "الشكوى اتقفلت بعد المدة دي أو لسه مفتوحة = مفيش رسالة.", "يوم"),
@@ -123,7 +131,7 @@ export function pullSchemaRows(cfg) {
 
 /* أسباب الحالة بالعربي (للكارت) — كل سبب الموديول بيكتبه لازم يكون هنا (اختبار) */
 export const KA2_REASON_AR = Object.freeze({
-  staff: "رقم فريق / تنبيهات", invalid: "رقم مش صالح / مش على واتساب", opted_out: "موقّف رسايلنا", web_customer: "عنده طلب موقع مدفوع",
+  staff: "رقم فريق / تنبيهات", handoff_unknown: "وقت التسليم للمندوب ماظهرش — طلب التقييم من وقت الطلب", invalid: "رقم مش صالح / مش على واتساب", opted_out: "موقّف رسايلنا", web_customer: "عنده طلب موقع مدفوع",
   pending_checkout: "بيدفع على الموقع دلوقتي", direct: "عميل مباشر (صالة/سفري)", test_contact: "رقم تجربة", cap: "السقف اليومي خلص",
   disabled: "اتقفلت من اللوحة", review_missing: "دعوة التقييم مش موجودة", no_rating: "ماقيّمش", low_open: "تقييم واطي والشكوى ماتقفلتش",
   low_closed: "تقييم واطي واتقفل من غير حل", holdout: "محجوز للقياس", gap: "وصلته رسالة تسويقية قريب", late: "فات الميعاد",
@@ -150,8 +158,102 @@ export function pullParams(template, coupon, code) {
   if (!c || !min) throw new Error("ka2_coupon");
   return { body: [c, min], button: [linkSuffix(code)] };
 }
-/* ميعاد طلب التقييم: وقت طلب كيتا + reviewDelayMin (البوابة وقت الإرسال في reviews.js بتأجّل لو المطعم مقفول) */
+/* ميعاد طلب التقييم بمرجع «وقت الطلب»: وقت طلب كيتا + reviewDelayMin (البوابة وقت الإرسال في reviews.js بتأجّل لو المطعم مقفول) */
 export const reviewDueOf = (orderAt, cfg) => new Date(Date.parse(orderAt) + (cfg.reviewDelayMin || DEFAULT_PULL.reviewDelayMin) * 60_000);
+
+/* ═══ KA2c — وقت تسليم طلب كيتا للمندوب (عمر ١٨/١٠: «بعد ٥٠ دقيقة من تسليم الطلب للمندوب») ═══
+   المصدر: tsp_webhooks — تاب سينس بيبعت order-updated لكل طلبات الفرع ومنها الخارجي اللي فيدأس بينزّله (Keeta/Hungerstation)، بيوصل خلال ~١٠ ث
+   (قياس KDS ١٩/٩). الطلب الخارجي اتعرّف بـresource.order.tenant_order_id = «freshcuts-<ts_orders.order_id>» (نفس ربط RT1/RC1).
+   «اتسلّم» = أول إشارة من دول: approval فيها picked / delivered / completed / on_the_way / dispatch (نفس اللي شاشة المطبخ بتعتبره «خلص» للخارجي)،
+   أو order_status = completed (الكاشير قفل الطلب = «تم التوصيل» على نقطة البيع — نفس handed_at/handed_source='pos' لطلبات الموقع في shop.js).
+   «جاهز» (pickup_ready / ready) مش تسليم. إشارة قبل handoffMinAfterOrderMin من الطلب بتتجاهل (قفل بالغلط). */
+const tms = (v) => (v instanceof Date ? v.getTime() : new Date(v).getTime());
+const HANDOFF_APPROVAL_RE = /picked|delivered|delivering|complete|on_the_way|out_for|dispatch/;
+const DEAD_APPROVAL_RE = /reject|cancel|refund|void/;
+export function handoffOf(rows, { orderAt = null, cfg = DEFAULT_PULL } = {}) {
+  const floor = orderAt ? tms(orderAt) + (Number(cfg.handoffMinAfterOrderMin) || 0) * 60_000 : -Infinity;
+  const list = (Array.isArray(rows) ? rows : []).map((w) => ({
+    t: w && w.received_at ? new Date(w.received_at).getTime() : NaN,
+    a: String((w && w.approval) || "").toLowerCase(), o: String((w && w.order_status) || "").toLowerCase(),
+  })).filter((w) => Number.isFinite(w.t)).sort((x, y) => x.t - y.t);
+  for (const w of list) {
+    if (w.t < floor) continue;
+    if (w.a && !DEAD_APPROVAL_RE.test(w.a) && HANDOFF_APPROVAL_RE.test(w.a)) return { at: new Date(w.t).toISOString(), basis: "pos_approval" };
+    if (w.o === "completed") return { at: new Date(w.t).toISOString(), basis: "pos_closed" };
+  }
+  return null;
+}
+/* ويبهوكات طلبات كيتا ($1 = أرقام ts_orders.order_id، $2 = من إمتى) — نافذة received_at (فيها فهرس) */
+export const HANDOFF_SQL = `
+  SELECT (regexp_match(w.payload->'resource'->'order'->>'tenant_order_id', '([0-9]+)[[:space:]]*$'))[1] AS tid,
+         w.payload->'resource'->'order'->>'id' AS pid, w.received_at,
+         w.payload->'resource'->'statuses_slugs'->>'approval_status' AS approval,
+         w.payload->'resource'->'statuses_slugs'->>'order_status' AS order_status
+    FROM tsp_webhooks w
+   WHERE w.received_at > $2::timestamptz
+     AND ((regexp_match(w.payload->'resource'->'order'->>'tenant_order_id', '([0-9]+)[[:space:]]*$'))[1] = ANY($1::text[])
+          OR w.payload->'resource'->'order'->>'id' = ANY($1::text[]))
+   ORDER BY w.received_at`;
+export function groupHandoffRows(rows, ids) {
+  const want = new Set((ids || []).map(String)), out = new Map();
+  for (const r of rows || []) {
+    const k = want.has(String(r.tid || "")) ? String(r.tid) : want.has(String(r.pid || "")) ? String(r.pid) : null;
+    if (!k) continue;
+    if (!out.has(k)) out.set(k, []);
+    out.get(k).push(r);
+  }
+  return out;
+}
+/* الخطة: ميعاد دعوة التقييم + المرجع.
+     order            ⇒ الطلب + reviewDelayMin (نهائي)
+     handoff          ⇒ max(التسليم، الطلب) + reviewDelayMin (نهائي)
+     handoff_unknown  ⇒ التسليم ماظهرش بعد handoffWaitMin ⇒ الطلب + fallbackDelayMin (بيتراجع لو التسليم ظهر والدعوة لسه ماطلعتش)
+     pending          ⇒ مستنيين التسليم: الميعاد «حجز» = الطلب + handoffWaitMin + reviewDelayMin — ده أبعد من أي «تسليم + reviewDelayMin» ممكن
+                        جوّه مدة الانتظار ⇒ عمر الدعوة ما تطلع قبل التسليم + المدة حتى لو دورتنا اتأخّرت. */
+export function reviewPlanOf({ orderAt, handoff = null, cfg, now = new Date() }) {
+  const M = 60_000, o = tms(orderAt), t = tms(now);
+  const iso = (x) => new Date(x).toISOString();
+  if (cfg.reviewAnchor !== "handoff") return { anchor: "order", final: true, dueAt: iso(o + cfg.reviewDelayMin * M), handoffAt: null, basis: null, reason: null };
+  const h = handoff && handoff.at ? tms(handoff.at) : NaN;
+  if (Number.isFinite(h)) return { anchor: "handoff", final: true, dueAt: iso(Math.max(h, o) + cfg.reviewDelayMin * M), handoffAt: iso(h), basis: handoff.basis || null, reason: null };
+  if (t >= o + cfg.handoffWaitMin * M) return { anchor: "handoff_unknown", final: true, dueAt: iso(o + cfg.fallbackDelayMin * M), handoffAt: null, basis: null, reason: "handoff_unknown" };
+  return { anchor: "pending", final: false, dueAt: iso(o + (cfg.handoffWaitMin + cfg.reviewDelayMin) * M), handoffAt: null, basis: null, reason: null };
+}
+/* التغطية (قراءة بس، للوحة والـverify): طلبات كيتا في آخر N يوم — كام واحد ليه إشارة تسليم ووسيط الدقايق من الطلب */
+export const HANDOFF_COVERAGE_SQL = `
+  WITH k AS (
+    SELECT o.order_id, o.order_date FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
+     WHERE s.source = 'delivery_app' AND lower(btrim(COALESCE(s.source_note,''))) = 'keeta'
+       AND o.order_date > NOW() - make_interval(days => $1::int)
+       AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%')))
+  SELECT k.order_id, k.order_date, w.received_at,
+         w.payload->'resource'->'statuses_slugs'->>'approval_status' AS approval,
+         w.payload->'resource'->'statuses_slugs'->>'order_status' AS order_status
+    FROM k LEFT JOIN tsp_webhooks w
+      ON w.received_at BETWEEN k.order_date - INTERVAL '15 minutes' AND k.order_date + INTERVAL '6 hours'
+     AND (regexp_match(w.payload->'resource'->'order'->>'tenant_order_id', '([0-9]+)[[:space:]]*$'))[1] = k.order_id
+   ORDER BY k.order_id, w.received_at`;
+export function handoffCoverage(rows, cfg = DEFAULT_PULL) {
+  const by = new Map();
+  for (const r of rows || []) {
+    const id = String(r.order_id);
+    if (!by.has(id)) by.set(id, { orderAt: r.order_date, rows: [] });
+    if (r.received_at) by.get(id).rows.push(r);
+  }
+  const mins = [], basis = {};
+  let withWebhooks = 0;
+  for (const { orderAt, rows: rs } of by.values()) {
+    if (rs.length) withWebhooks++;
+    const h = handoffOf(rs, { orderAt, cfg });
+    if (h) { mins.push((tms(h.at) - tms(orderAt)) / 60_000); basis[h.basis] = (basis[h.basis] || 0) + 1; }
+  }
+  mins.sort((a, b) => a - b);
+  const pct = (p) => (mins.length ? Math.round(mins[Math.min(mins.length - 1, Math.floor(p * mins.length))]) : null);
+  const n = by.size;
+  return { orders: n, withWebhooks, withHandoff: mins.length, pct: n ? Math.round((mins.length * 1000) / n) / 10 : null,
+    minutesFromOrder: { p50: pct(0.5), p80: pct(0.8), max: mins.length ? Math.round(mins[mins.length - 1]) : null }, basis,
+    within: n ? mins.filter((m) => m <= cfg.handoffWaitMin).length : 0 };
+}
 /* التقييم ⇒ القرار: eligible (السحب مسموح) | wait | skip:<سبب>. rv = صف reviews (rating, rating_exact, resolved, outcome, resolved_at, created_at) */
 export function verdictOf({ invite, rv, cfg, now = new Date() }) {
   const t = new Date(now).getTime();
@@ -227,7 +329,18 @@ export const KA2_DDL = Object.freeze([
      id BIGSERIAL PRIMARY KEY, phone_norm TEXT NOT NULL, link_code TEXT UNIQUE, ok BOOLEAN, result TEXT, by_name TEXT,
      clicks INT NOT NULL DEFAULT 0, clicked_at TIMESTAMPTZ, at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
   "ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS ka2 BOOLEAN NOT NULL DEFAULT FALSE",
+  /* KA2c: مرجع ميعاد طلب التقييم — order | handoff | handoff_unknown | pending (NULL = صف قبل KA2c، ميعاده نهائي من وقت الطلب) */
+  "ALTER TABLE ka2_sends ADD COLUMN IF NOT EXISTS review_anchor TEXT",
+  "ALTER TABLE ka2_sends ADD COLUMN IF NOT EXISTS handoff_at TIMESTAMPTZ",
+  "ALTER TABLE ka2_sends ADD COLUMN IF NOT EXISTS handoff_basis TEXT",
 ]);
+/* KA2c مرة واحدة: الحل المؤقت كان reviewDelayMin = 80 من وقت الطلب (≈ تحضير + ٥٠). أول إقلاع بالمرجع الجديد: لو لسه 80 ومفيش reviewAnchor
+   متسجّل ⇒ 50 من التسليم. أي قيمة تانية (أو reviewAnchor متسجّل) ⇒ مانلمسش حاجة. */
+export const ANCHOR_MIGRATION_SQL = `
+  UPDATE settings SET data = jsonb_set(jsonb_set(data, '{keeta,pull,reviewDelayMin}', '50'::jsonb, true), '{keeta,pull,reviewAnchor}', '"handoff"'::jsonb, true)
+   WHERE id = 1 AND jsonb_typeof(data->'keeta'->'pull') = 'object'
+     AND data #>> '{keeta,pull,reviewDelayMin}' = '80' AND NOT ((data->'keeta'->'pull') ? 'reviewAnchor')
+  RETURNING id`;
 const KEETA_ROW_SQL = "s.source = 'delivery_app' AND lower(btrim(COALESCE(s.source_note,''))) = 'keeta'";
 const LIVE_ORDER_SQL = (a) => `(${a}.order_type IS NULL OR (${a}.order_type NOT ILIKE '%void%' AND ${a}.order_type NOT ILIKE '%refund%'))`;
 /* المرشّحين: طلب كيتا بجوال، بعد enabledAt (حماية أول تشغيل) وجوّه maxLateHours، الرقم ماحجزش KA2 قبل كده، أول طلب كيتا ليه، ومفيش طلب موقع مدفوع. */
@@ -338,7 +451,12 @@ export function register(app, ctx, deps = {}) {
   const sender = () => (typeof deps.sender === "function" ? deps.sender() : deps.sender || null);
   const clock = () => (typeof deps.now === "function" ? deps.now() : new Date());
   const q = async (sql, p = []) => { try { return (await pool.query(sql, p)).rows; } catch (e) { console.error("[ka2] q:", e.message); return null; } };
-  const ready = (async () => { for (const ddl of KA2_DDL) await pool.query(ddl); return true; })()
+  const ready = (async () => {
+    for (const ddl of KA2_DDL) await pool.query(ddl);
+    const m = await pool.query(ANCHOR_MIGRATION_SQL).catch((e) => { console.error("[ka2] anchor migration:", e.message); return null; });
+    if (m && m.rows && m.rows.length) console.log("[ka2] KA2c: reviewDelayMin 80 (من الطلب) ⇒ 50 من التسليم للمندوب (reviewAnchor = handoff)");
+    return true;
+  })()
     .catch((e) => { console.error("[ka2] schema:", e.message); return false; });
 
   async function savePull(next) {
@@ -376,6 +494,18 @@ export function register(app, ctx, deps = {}) {
     return false;
   }
 
+  /* KA2c: إشارات التسليم لطلبات كيتا (Map رقم الطلب ⇒ {at, basis}). القاعدة وقعت ⇒ Map فاضية (الطلب يفضل pending لحد handoffWaitMin) */
+  async function handoffsFor(list, cfg) {
+    const out = new Map();
+    if (cfg.reviewAnchor !== "handoff" || !list.length) return out;
+    const ids = [...new Set(list.map((x) => String(x.order_id)))];
+    const since = new Date(Math.min(...list.map((x) => tms(x.order_at))) - 15 * 60_000).toISOString();
+    const rows = await q(HANDOFF_SQL, [ids, since]);
+    const byId = groupHandoffRows(rows || [], ids);
+    for (const x of list) { const h = handoffOf(byId.get(String(x.order_id)) || [], { orderAt: x.order_at, cfg }); if (h) out.set(String(x.order_id), h); }
+    return out;
+  }
+
   /* ── ١) دخول عملاء كيتا الجداد (كل دورة؛ dry = خطة من غير كتابة) ── */
   async function enroll(s, cfg, now, { dry = false } = {}) {
     const plan = { enroll: [], skip: [] };
@@ -383,31 +513,61 @@ export function register(app, ctx, deps = {}) {
     const rows = await q(CANDIDATES_SQL, [cfg.enabledAt, cfg.maxLateHours, cfg.firstWithinDays]);
     if (!rows || !rows.length) return plan;
     const staff = staffOf(s);
+    const hand = await handoffsFor(rows.map((c) => ({ order_id: c.order_id, order_at: c.order_date })), cfg);
     let used = dry ? 0 : await enrolledToday(now);
     if (used === null) return plan;
     for (const c of rows) {
       let why = candidateSkip(c, { cfg, staff });
       if (!why && used >= cfg.dailyCap) why = "cap";
-      const due = reviewDueOf(c.order_date, cfg);
+      const rp = reviewPlanOf({ orderAt: c.order_date, handoff: hand.get(String(c.order_id)) || null, cfg, now });
+      const due = new Date(rp.dueAt);
       if (why) { plan.skip.push({ pn: c.pn, order: c.order_id, reason: why }); }
-      else { plan.enroll.push({ pn: c.pn, order: c.order_id, reviewDue: due.toISOString() }); used++; }
+      else { plan.enroll.push({ pn: c.pn, order: c.order_id, reviewDue: due.toISOString(), anchor: rp.anchor, handoffAt: rp.handoffAt }); used++; }
       if (dry) continue;
       if (why) {
         await q(`INSERT INTO ka2_sends(phone_norm, keeta_order_id, order_at, status, reason) VALUES ($1,$2,$3,'skipped',$4) ON CONFLICT DO NOTHING`, [c.pn, String(c.order_id), c.order_date, why]);
         continue;
       }
       const ord = `pos:${c.order_id}`;
-      const ins = await q(`INSERT INTO ka2_sends(phone_norm, keeta_order_id, order_at, status, review_order_no, review_due_at) VALUES ($1,$2,$3,'review_wait',$4,$5)
-                           ON CONFLICT DO NOTHING RETURNING id`, [c.pn, String(c.order_id), c.order_date, ord, due.toISOString()]);
+      const ins = await q(`INSERT INTO ka2_sends(phone_norm, keeta_order_id, order_at, status, review_order_no, review_due_at, review_anchor, handoff_at, handoff_basis)
+                           VALUES ($1,$2,$3,'review_wait',$4,$5,$6,$7,$8)
+                           ON CONFLICT DO NOTHING RETURNING id`, [c.pn, String(c.order_id), c.order_date, ord, due.toISOString(), rp.anchor, rp.handoffAt, rp.basis]);
       if (!ins || !ins.length) { used--; continue; }
-      /* دعوة التقييم: نفس صف reviews.js (pos:<رقم الطلب>) — لو اتعملت قبلنا (appsMin) بنقدّم ميعادها ونعلّمها ka2 طول ما مااتبعتتش ومااتقفلتش */
+      if (rp.reason) console.log(`[ka2] ${rp.reason}: طلب ${c.order_id} — طلب التقييم من وقت الطلب + ${cfg.fallbackDelayMin} د`);
+      /* دعوة التقييم: نفس صف reviews.js (pos:<رقم الطلب>) — لو اتعملت قبلنا (appsMin) بنعلّمها ka2 وميعادها بقى ميعاد KA2 طول ما مااتبعتتش
+         ومااتقفلتش (KA2c: الميعاد ممكن يتأخّر لحد التسليم + المدة — LEAST القديمة كانت ممكن تطلّعها قبل التسليم) */
       const code = crypto.randomBytes(6).toString("base64url").replace(/[-_]/g, "").toLowerCase().slice(0, 8).padEnd(8, "x");
       await q(`INSERT INTO review_invites(order_no, code, phone_norm, option, due_at, kind, order_at, ref, ka2) VALUES ($1,$2,$3,'app',$4,'app',$5,NULL,TRUE)
-               ON CONFLICT (order_no) DO UPDATE SET ka2 = TRUE, due_at = LEAST(review_invites.due_at, EXCLUDED.due_at)
+               ON CONFLICT (order_no) DO UPDATE SET ka2 = TRUE, due_at = EXCLUDED.due_at
                 WHERE review_invites.sent_at IS NULL AND review_invites.skip_reason IS NULL`, [ord, code, c.pn, due.toISOString(), c.order_date]);
       await recordKa2ReviewConsent(pool, { phoneNorm: c.pn, orderNo: ord, at: c.order_date }).catch((e) => console.error("[ka2] consent:", e.message));
     }
     return plan;
+  }
+
+  /* ── ١ب) KA2c: ميعاد طلب التقييم بيتحدّث أول ما التسليم للمندوب يظهر (أو الاحتياطي بعد handoffWaitMin) — طول ما الدعوة ماطلعتش.
+         صفوف قبل KA2c (review_anchor NULL) ميعادها نهائي من وقت الطلب ومش بتتلمس. */
+  async function anchorStep(cfg, now) {
+    const rows = await q(`SELECT k.id, k.keeta_order_id, k.order_at, k.review_order_no, k.review_anchor, k.review_due_at, k.handoff_at
+                            FROM ka2_sends k JOIN review_invites iv ON iv.order_no = k.review_order_no
+                           WHERE k.status = 'review_wait' AND k.review_anchor IN ('pending','handoff_unknown')
+                             AND iv.sent_at IS NULL AND iv.skip_reason IS NULL
+                           ORDER BY k.id LIMIT 200`, []);
+    if (!rows || !rows.length) return 0;
+    const hand = await handoffsFor(rows.map((x) => ({ order_id: x.keeta_order_id, order_at: x.order_at })), cfg);
+    let n = 0;
+    for (const x of rows) {
+      const rp = reviewPlanOf({ orderAt: x.order_at, handoff: hand.get(String(x.keeta_order_id)) || null, cfg, now });
+      const same = rp.anchor === x.review_anchor && x.review_due_at && tms(x.review_due_at) === tms(rp.dueAt);
+      if (same) continue;
+      const u = await q(`UPDATE ka2_sends SET review_anchor=$2, review_due_at=$3, handoff_at=$4, handoff_basis=$5, updated_at=NOW()
+                          WHERE id=$1 AND status='review_wait' RETURNING id`, [x.id, rp.anchor, rp.dueAt, rp.handoffAt, rp.basis]);
+      if (!u || !u.length) continue;
+      await q("UPDATE review_invites SET due_at=$2 WHERE order_no=$1 AND ka2 AND sent_at IS NULL AND skip_reason IS NULL", [x.review_order_no, rp.dueAt]);
+      if (rp.reason && x.review_anchor !== rp.anchor) console.log(`[ka2] ${rp.reason}: طلب ${x.keeta_order_id} — التسليم ماظهرش خلال ${cfg.handoffWaitMin} د ⇒ طلب التقييم من وقت الطلب + ${cfg.fallbackDelayMin} د`);
+      n++;
+    }
+    return n;
   }
 
   /* ── ٢) التقييم ⇒ القرار (review_wait ⇒ queued / holdout / skipped) ── */
@@ -556,6 +716,7 @@ export function register(app, ctx, deps = {}) {
         if (br.trip) { c = await pause(`optout_${br.pct}pct_of_${br.n}`, s.keeta && s.keeta.pull); out.paused = c.pauseReason; }
       }
       if (!c.paused) out.enroll = (await enroll(s, c, now)).enroll.length;
+      out.anchored = await anchorStep(c, now);
       out.advanced = await advance(c, now);
       out.send = await sendDue(s, c, now);
       if (out.enroll || out.send.sent) console.log(`[ka2] enrolled ${out.enroll || 0}, advanced ${out.advanced}, sent ${out.send.sent}${out.send.waited ? ` (wait: ${out.send.waited})` : ""}`);
@@ -574,14 +735,15 @@ export function register(app, ctx, deps = {}) {
     const [all, d7, d14, reasons, recent, coupon, link, caps, waiting, tpl] = await Promise.all([
       ka2Results(q, {}), ka2Results(q, { days: 7 }), ka2Results(q, { days: 14 }),
       q("SELECT reason, count(*)::int AS n FROM ka2_sends WHERE reason IS NOT NULL GROUP BY 1 ORDER BY 2 DESC", []),
-      q(`SELECT k.phone_norm, k.order_at, k.review_due_at, k.status, k.reason, k.rating, k.rating_exact, k.high, k.holdout, k.due_at, k.sent_at, k.clicked_at,
+      q(`SELECT k.phone_norm, k.order_at, k.review_due_at, k.review_anchor, k.handoff_at, k.status, k.reason, k.rating, k.rating_exact, k.high, k.holdout, k.due_at, k.sent_at, k.clicked_at,
                 iv.sent_at AS review_sent_at, m.status AS wa_status,
                 (SELECT so.order_no FROM shop_orders so WHERE so.phone_norm = k.phone_norm AND ${shopPaidSql("so")} AND so.created_at > COALESCE(k.sent_at, k.eligible_at, k.created_at)
                   ORDER BY so.created_at LIMIT 1) AS web_order
            FROM ka2_sends k LEFT JOIN review_invites iv ON iv.order_no = k.review_order_no LEFT JOIN wa_messages m ON m.wamid = k.wamid AND k.wamid IS NOT NULL
           ORDER BY k.created_at DESC LIMIT 50`, []),
       couponRow(), linkRow(), sentToday(now),
-      q("SELECT count(*) FILTER (WHERE status='queued')::int AS queued, count(*) FILTER (WHERE status='review_wait')::int AS review_wait FROM ka2_sends", []),
+      q(`SELECT count(*) FILTER (WHERE status='queued')::int AS queued, count(*) FILTER (WHERE status='review_wait')::int AS review_wait,
+                count(*) FILTER (WHERE status='review_wait' AND review_anchor='pending')::int AS handoff_pending FROM ka2_sends`, []),
       q("SELECT DISTINCT ON (name) name, event AS status FROM wa_template_events WHERE name = ANY($1::text[]) ORDER BY name, at DESC, id DESC", [TEMPLATES]),      // آخر حدث من ميتا (APPROVED / REJECTED …)
     ]);
     const gate = isRestaurantOpenAt(now, s);
@@ -590,6 +752,7 @@ export function register(app, ctx, deps = {}) {
       state: {
         enabled: cfg.enabled, paused: cfg.paused, pauseReason: cfg.pauseReason, pausedAt: cfg.pausedAt, enabledAt: cfg.enabledAt,
         queued: waiting && waiting[0] ? waiting[0].queued : null, reviewWait: waiting && waiting[0] ? waiting[0].review_wait : null,
+        handoffPending: waiting && waiting[0] ? waiting[0].handoff_pending : null, reviewAnchor: cfg.reviewAnchor,
         sentToday: caps ? caps.today : null, dailyCap: cfg.dailyCap, restaurantOpen: gate, waCloud: cloudCfg(s).enabled,
         coupon: coupon ? { code: coupon.code, minTotal: Number(coupon.min_total), active: coupon.active !== false } : null,
         link: link ? { slug: link.slug, active: link.active !== false, coupon: link.coupon || null } : null,
@@ -597,7 +760,8 @@ export function register(app, ctx, deps = {}) {
       },
       results: { d7, d14, all },
       reasons: (reasons || []).map((r) => ({ reason: r.reason, n: r.n, ar: reasonAr(r.reason) })),
-      recent: (recent || []).map((r) => ({ phone: maskPhone(r.phone_norm), orderAt: r.order_at, reviewDueAt: r.review_due_at, reviewSentAt: r.review_sent_at, status: r.status,
+      recent: (recent || []).map((r) => ({ phone: maskPhone(r.phone_norm), orderAt: r.order_at, reviewDueAt: r.review_due_at, reviewAnchor: r.review_anchor || "order", handoffAt: r.handoff_at || null,
+        reviewSentAt: r.review_sent_at, status: r.status,
         reason: r.reason, reasonAr: reasonAr(r.reason), rating: r.rating, exact: r.rating_exact, high: r.high, holdout: r.holdout, dueAt: r.due_at, sentAt: r.sent_at,
         waStatus: r.wa_status || null, clicked: Boolean(r.clicked_at), webOrder: r.web_order || null })),
       note: "الطلبات على كيتا بعد الرسالة (نقلناهم ولا زوّدناهم؟) — شوف «العملاء» ← lifetimeOrders (/api/keeta-reports/customers)",
@@ -636,6 +800,18 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: Boolean(r && r.ok), result: r, link: `freshcuts.sa/l/${linkSuffix(code)}`, params });
   });
 
+  /* KA2c (قراءة بس): طلبات كيتا في آخر N يوم — كام واحد نقطة البيع قالت إنه اتسلّم، ووسيط الدقايق من الطلب. قبل ما تعتمد على المرجع «التسليم». */
+  app.get("/api/keeta/pull/handoff-coverage", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    const days = Math.min(30, Math.max(1, Math.round(Number(c.req.query("days")) || 7)));
+    const s = (await getSettingsData()) || {};
+    const cfg = pullCfg(s);
+    const rows = await q(HANDOFF_COVERAGE_SQL, [days]);
+    if (rows === null) return c.json({ ok: false, error: "القراءة فشلت" }, 500);
+    return c.json({ ok: true, days, reviewAnchor: cfg.reviewAnchor, handoffWaitMin: cfg.handoffWaitMin, ...handoffCoverage(rows, cfg) });
+  });
+
   /* خطة من غير كتابة: مين هيدخل دلوقتي ومين هيتخطّى وليه */
   app.post("/api/keeta/pull/dry-run", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -647,7 +823,7 @@ export function register(app, ctx, deps = {}) {
   });
 
   console.log("[ka2] routes ready");
-  return { tick, ready, enroll, advance, sendDue, reconcile };
+  return { tick, ready, enroll, anchorStep, advance, sendDue, reconcile };
 }
 
 /* محلّل الرابط (cms.js POST /api/cms/links/resolve/:slug): /l/keeta-first-<code> ⇒ صف المستلم (أو صف تجربة) ⇒ { table, id, coupon } أو null */

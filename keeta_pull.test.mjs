@@ -48,8 +48,75 @@ test("من اللوحة: أول تشغيل بيسجّل enabledAt (حماية أ
   for (const r of K.pullSchemaRows({})) assert.match(r.ar, /[؀-ۿ]/, `${r.key} بتسمية عربي`);
 });
 
-test("طلب التقييم بعد طلب كيتا بـ٥٠ دقيقة", () => {
+test("طلب التقييم بعد طلب كيتا بـ٥٠ دقيقة (المرجع «وقت الطلب»)", () => {
   assert.equal(K.reviewDueOf(R(19, 40).toISOString(), CFG).toISOString(), R(20, 30).toISOString());
+});
+
+/* ═══ KA2c — «بعد ٥٠ دقيقة من تسليم الطلب للمندوب» (عمر ١٨/١٠) ═══════════════ */
+test("KA2c الإعدادات: المرجع «التسليم» افتراضياً، ٥٠ د منه، انتظار ٩٠، احتياطي ٨٠ من الطلب، تجاهل قفل قبل ٥ د — والحدود واللوحة", () => {
+  const d = K.pullCfg({});
+  assert.equal(d.reviewAnchor, "handoff"); assert.equal(d.reviewDelayMin, 50); assert.equal(d.handoffWaitMin, 90); assert.equal(d.fallbackDelayMin, 80); assert.equal(d.handoffMinAfterOrderMin, 5);
+  assert.equal(K.pullCfg({ keeta: { pull: { reviewAnchor: "order" } } }).reviewAnchor, "order");
+  assert.equal(K.pullCfg({ keeta: { pull: { reviewAnchor: "x" } } }).reviewAnchor, "handoff");
+  assert.equal(K.pullCfg({ keeta: { pull: { handoffWaitMin: 5 } } }).handoffWaitMin, 30, "أرضية الانتظار ٣٠");
+  assert.equal(K.pullFromBody({ reviewAnchor: "order", handoffWaitMin: 120, fallbackDelayMin: 70 }, {}).ok, true);
+  assert.equal(K.pullFromBody({ reviewAnchor: "pickup" }, {}).ok, false);
+  assert.equal(K.pullFromBody({ fallbackDelayMin: 5 }, {}).ok, false);
+  const rows = K.pullSchemaRows({});
+  const a = rows.find((r) => r.key === "reviewAnchor");
+  assert.equal(a.type, "enum"); assert.deepEqual(a.options, ["handoff", "order"]); assert.match(a.optionsAr.handoff, /تسليم/);
+  for (const k of ["handoffWaitMin", "fallbackDelayMin", "handoffMinAfterOrderMin"]) assert.equal(rows.find((r) => r.key === k).type, "number", k);
+  assert.ok(rows.findIndex((r) => r.key === "reviewAnchor") < rows.findIndex((r) => r.key === "reviewDelayMin"), "المرجع قبل المدة في الكارت");
+  assert.equal(K.reasonAr("handoff_unknown"), K.KA2_REASON_AR.handoff_unknown);
+});
+
+test("KA2c التسليم من ويبهوكات نقطة البيع: قفل الطلب أو approval «اتسلّم/اتوصّل» — مش «جاهز»، مش رفض، ومش قفل بالغلط أول ما نزل", () => {
+  const O = R(19).toISOString();
+  const W = (mm, x) => ({ received_at: R(19, mm).toISOString(), ...x });
+  assert.equal(K.handoffOf([], { orderAt: O }), null);
+  assert.equal(K.handoffOf([W(1, { approval: "accepted", order_status: "processing" }), W(20, { approval: "pickup_ready" })], { orderAt: O }), null, "جاهز مش تسليم");
+  assert.deepEqual(K.handoffOf([W(1, { approval: "accepted" }), W(20, { approval: "pickup_ready" }), W(26, { approval: "pickup_ready", order_status: "completed" })], { orderAt: O }),
+    { at: R(19, 26).toISOString(), basis: "pos_closed" });
+  assert.deepEqual(K.handoffOf([W(24, { approval: "picked_up" }), W(30, { order_status: "completed" })], { orderAt: O }), { at: R(19, 24).toISOString(), basis: "pos_approval" });
+  assert.equal(K.handoffOf([W(24, { approval: "delivered" })], { orderAt: O }).basis, "pos_approval");
+  assert.equal(K.handoffOf([W(24, { approval: "delivery_ready" })], { orderAt: O }), null, "delivery_* مش delivered");
+  assert.equal(K.handoffOf([W(24, { approval: "rejected_delivered" })], { orderAt: O }), null, "رفض/إلغاء");
+  assert.equal(K.handoffOf([W(2, { order_status: "completed" })], { orderAt: O }), null, "قفل بعد دقيقتين = غلط");
+  assert.equal(K.handoffOf([W(2, { order_status: "completed" })], { orderAt: O, cfg: { ...CFG, handoffMinAfterOrderMin: 0 } }).basis, "pos_closed");
+  assert.equal(K.handoffOf([W(30, { order_status: "completed" }), W(25, { approval: "picked" })], { orderAt: O }).at, R(19, 25).toISOString(), "الأقدم بالترتيب");
+  assert.deepEqual([...K.groupHandoffRows([{ tid: "5901", pid: "La84" }, { tid: null, pid: "5902" }, { tid: "77" }], ["5901", "5902"]).keys()], ["5901", "5902"]);
+  assert.match(K.HANDOFF_SQL, /tenant_order_id/); assert.match(K.HANDOFF_SQL, /w\.received_at > \$2::timestamptz/, "نافذة received_at (الفهرس)");
+});
+
+test("KA2c الخطة: التسليم + ٥٠؛ مستني ⇒ «حجز» أبعد من أي تسليم + ٥٠ جوّه الانتظار؛ بعد ٩٠ من غير تسليم ⇒ الطلب + ٨٠ (handoff_unknown)؛ «وقت الطلب» ⇒ الطلب + ٥٠", () => {
+  const O = R(19).toISOString();
+  const H = (mm) => ({ at: R(19, mm).toISOString(), basis: "pos_closed" });
+  const CF = K.pullCfg({ keeta: { pull: { enabled: true } } });
+  assert.deepEqual(K.reviewPlanOf({ orderAt: O, handoff: H(25), cfg: CF, now: R(19, 30) }), { anchor: "handoff", final: true, dueAt: R(20, 15).toISOString(), handoffAt: R(19, 25).toISOString(), basis: "pos_closed", reason: null });
+  const pend = K.reviewPlanOf({ orderAt: O, cfg: CF, now: R(19, 30) });
+  assert.equal(pend.anchor, "pending"); assert.equal(pend.final, false); assert.equal(pend.dueAt, R(21, 20).toISOString(), "الطلب + ٩٠ + ٥٠");
+  for (let mm = 0; mm <= 90; mm += 5) assert.ok(Date.parse(pend.dueAt) >= Date.parse(K.reviewPlanOf({ orderAt: O, handoff: { at: new Date(Date.parse(O) + mm * 60_000).toISOString() }, cfg: CF }).dueAt), `الحجز مش قبل تسليم +${mm}`);
+  const unk = K.reviewPlanOf({ orderAt: O, cfg: CF, now: R(20, 30) });
+  assert.deepEqual([unk.anchor, unk.reason, unk.dueAt, unk.final], ["handoff_unknown", "handoff_unknown", R(20, 20).toISOString(), true]);
+  assert.equal(K.reviewPlanOf({ orderAt: O, cfg: CF, now: R(20, 29) }).anchor, "pending", "قبل ٩٠ لسه مستني");
+  assert.equal(K.reviewPlanOf({ orderAt: O, handoff: H(100), cfg: CF, now: R(20, 45) }).dueAt, R(21, 30).toISOString(), "التسليم ظهر متأخّر ⇒ منه");
+  assert.deepEqual(K.reviewPlanOf({ orderAt: O, handoff: H(25), cfg: { ...CF, reviewAnchor: "order" }, now: R(19, 30) }).dueAt, R(19, 50).toISOString(), "المرجع «وقت الطلب» بيتجاهل التسليم");
+  assert.equal(K.reviewPlanOf({ orderAt: O, handoff: H(25), cfg: { ...CF, reviewDelayMin: 30 }, now: R(19, 30) }).dueAt, R(19, 55).toISOString());
+  assert.equal(K.reviewPlanOf({ orderAt: R(19), handoff: { at: R(19, 25) }, cfg: CF, now: R(19, 30) }).dueAt, R(20, 15).toISOString(), "أعمدة pg بترجع Date");
+});
+
+test("KA2c التغطية (قراءة بس): كام طلب كيتا ليه تسليم ووسيط الدقايق", () => {
+  const rows = [
+    { order_id: "1", order_date: R(19).toISOString(), received_at: R(19, 1).toISOString(), approval: "accepted" },
+    { order_id: "1", order_date: R(19).toISOString(), received_at: R(19, 30).toISOString(), order_status: "completed" },
+    { order_id: "2", order_date: R(20).toISOString(), received_at: R(20, 1).toISOString(), approval: "accepted" },
+    { order_id: "3", order_date: R(21).toISOString(), received_at: null },
+    { order_id: "4", order_date: R(22).toISOString(), received_at: R(22, 20).toISOString(), approval: "picked_up" },
+  ];
+  const c = K.handoffCoverage(rows, CFG);
+  assert.equal(c.orders, 4); assert.equal(c.withWebhooks, 3); assert.equal(c.withHandoff, 2); assert.equal(c.pct, 50);
+  assert.deepEqual(c.basis, { pos_closed: 1, pos_approval: 1 }); assert.equal(c.minutesFromOrder.max, 30); assert.equal(c.within, 2);
+  assert.match(K.HANDOFF_COVERAGE_SQL, /delivery_app/); assert.match(K.HANDOFF_COVERAGE_SQL, /'keeta'/);
 });
 
 test("التقييم ⇒ القرار: ٤–٥ نجوم ⇒ السحب؛ واطي ⇒ بس لو اتقفل «اتحلت» خلال المدة؛ مفيش تقييم ⇒ لأ", () => {
@@ -150,8 +217,8 @@ test("الملكية والصلاحيات: keeta ملك السيرفر، /api/ke
 });
 
 /* ═══ الدورة كاملة على قاعدة مزيّفة ═══════════════════════════════════════ */
-function rig({ cands = [], settings = {}, coupon = { code: "FIRST", min_total: 60, active: true }, link = { slug: "keeta-first", active: true, coupon: "FIRST" }, waReply = { ok: true, wamid: "wamid.KA2" }, recent = new Set(), now = R(20) } = {}) {
-  const db = { k: [], inv: [], reviews: [], contactLog: [], consent: [], sent: [], optouts: {}, settingsWrites: [] };
+function rig({ cands = [], settings = {}, coupon = { code: "FIRST", min_total: 60, active: true }, link = { slug: "keeta-first", active: true, coupon: "FIRST" }, waReply = { ok: true, wamid: "wamid.KA2" }, recent = new Set(), now = R(20), webhooks = [], invites = [] } = {}) {
+  const db = { k: [], inv: [...invites], reviews: [], contactLog: [], consent: [], sent: [], optouts: {}, settingsWrites: [], webhooks: [...webhooks], migrations: 0 };
   let id = 0;
   const S = { hours: HOURS, waCloud: { enabled: true }, keeta: { pull: { enabled: true, enabledAt: R(12).toISOString() } }, ...settings };
   const rowOf = (x) => db.k.find((r) => r.id === Number(x));
@@ -161,13 +228,29 @@ function rig({ cands = [], settings = {}, coupon = { code: "FIRST", min_total: 6
     if (/WITH cand AS/.test(s)) return { rows: cands.filter((c) => !db.k.some((k) => k.phone_norm === c.pn || k.keeta_order_id === String(c.order_id))) };
     if (/^SELECT count\(\*\)::int AS n FROM ka2_sends WHERE created_at >= /.test(s)) return { rows: [{ n: db.k.filter((k) => k.review_order_no).length }] };
     if (/^INSERT INTO ka2_sends\(phone_norm, keeta_order_id, order_at, status, reason\)/.test(s)) { db.k.push({ id: ++id, phone_norm: p[0], keeta_order_id: p[1], order_at: p[2], status: "skipped", reason: p[3] }); return { rows: [] }; }
-    if (/^INSERT INTO ka2_sends\(phone_norm, keeta_order_id, order_at, status, review_order_no, review_due_at\)/.test(s)) {
+    if (/^INSERT INTO ka2_sends\(phone_norm, keeta_order_id, order_at, status, review_order_no, review_due_at, review_anchor, handoff_at, handoff_basis\)/.test(s)) {
       if (db.k.some((k) => k.phone_norm === p[0])) return { rows: [] };
-      db.k.push({ id: ++id, phone_norm: p[0], keeta_order_id: p[1], order_at: p[2], status: "review_wait", review_order_no: p[3], review_due_at: p[4], attempts: 0 }); return { rows: [{ id }] };
+      db.k.push({ id: ++id, phone_norm: p[0], keeta_order_id: p[1], order_at: p[2], status: "review_wait", review_order_no: p[3], review_due_at: p[4], review_anchor: p[5], handoff_at: p[6], handoff_basis: p[7], attempts: 0 }); return { rows: [{ id }] };
+    }
+    /* KA2c: ويبهوكات تاب سينس (tenant_order_id = freshcuts-<رقم>) */
+    if (/FROM tsp_webhooks w WHERE w\.received_at > \$2::timestamptz/.test(s)) {
+      return { rows: db.webhooks.filter((w) => Date.parse(w.received_at) > Date.parse(p[1])).map((w) => ({ tid: (String(w.tenant_order_id || "").match(/(\d+)\s*$/) || [])[1] || null, pid: w.id || null, received_at: w.received_at, approval: w.approval || null, order_status: w.order_status || null }))
+        .filter((w) => p[0].includes(w.tid) || p[0].includes(w.pid)).sort((a, b) => Date.parse(a.received_at) - Date.parse(b.received_at)) };
+    }
+    if (/FROM ka2_sends k JOIN review_invites iv ON iv\.order_no = k\.review_order_no WHERE k\.status = 'review_wait' AND k\.review_anchor IN \('pending','handoff_unknown'\)/.test(s)) {
+      return { rows: db.k.filter((k) => k.status === "review_wait" && ["pending", "handoff_unknown"].includes(k.review_anchor)).filter((k) => { const iv = db.inv.find((i) => i.order_no === k.review_order_no); return iv && !iv.sent_at && !iv.skip_reason; })
+        .map((k) => ({ id: k.id, keeta_order_id: k.keeta_order_id, order_at: k.order_at, review_order_no: k.review_order_no, review_anchor: k.review_anchor, review_due_at: k.review_due_at, handoff_at: k.handoff_at })) };
+    }
+    if (/^UPDATE ka2_sends SET review_anchor=\$2, review_due_at=\$3/.test(s)) { const r = rowOf(p[0]); if (!r || r.status !== "review_wait") return { rows: [] }; Object.assign(r, { review_anchor: p[1], review_due_at: p[2], handoff_at: p[3], handoff_basis: p[4] }); return { rows: [{ id: r.id }] }; }
+    if (/^UPDATE review_invites SET due_at=\$2 WHERE order_no=\$1 AND ka2 AND sent_at IS NULL/.test(s)) { const i = db.inv.find((x) => x.order_no === p[0]); if (i && i.ka2 && !i.sent_at && !i.skip_reason) i.due_at = p[1]; return { rows: [] }; }
+    if (/'\{keeta,pull,reviewAnchor\}'/.test(s)) {      // ANCHOR_MIGRATION_SQL
+      const x = S.keeta && S.keeta.pull;
+      if (x && typeof x === "object" && String(x.reviewDelayMin) === "80" && !("reviewAnchor" in x)) { x.reviewDelayMin = 50; x.reviewAnchor = "handoff"; db.migrations++; return { rows: [{ id: 1 }] }; }
+      return { rows: [] };
     }
     if (/^INSERT INTO review_invites\(order_no, code, phone_norm, option, due_at, kind, order_at, ref, ka2\)/.test(s)) {
       const ex = db.inv.find((i) => i.order_no === p[0]);
-      if (ex) { if (!ex.sent_at && !ex.skip_reason) { ex.ka2 = true; if (Date.parse(p[3]) < Date.parse(ex.due_at)) ex.due_at = p[3]; } }
+      if (ex) { if (!ex.sent_at && !ex.skip_reason) { ex.ka2 = true; ex.due_at = p[3]; } }
       else db.inv.push({ order_no: p[0], code: p[1], phone_norm: p[2], due_at: p[3], kind: "app", ka2: true });
       return { rows: [] };
     }
@@ -206,8 +289,9 @@ function rig({ cands = [], settings = {}, coupon = { code: "FIRST", min_total: 6
 }
 const CAND = (pn, order_id, at) => ({ order_id, pn, order_date: at, web_paid: false, pending_checkout: false, opted_out: false, is_staff: false, is_test: false, direct: false, invalid: false });
 
-test("الدورة: طلب كيتا جديد ⇒ دعوة تقييم «pos:<الطلب>» بعد ٥٠ د (ka2) + صف موافقة keeta_order؛ ٥ نجوم ⇒ «اطلب من موقعنا» برابط شخصي و«رسالة الأسبوع»", async () => {
-  const r = rig({ cands: [CAND("561112223", "T900", R(19, 30).toISOString()), CAND("562223334", "T901", R(19, 35).toISOString())], now: R(19, 40) });
+test("الدورة (المرجع «وقت الطلب»): طلب كيتا جديد ⇒ دعوة تقييم «pos:<الطلب>» بعد ٥٠ د (ka2) + صف موافقة keeta_order؛ ٥ نجوم ⇒ «اطلب من موقعنا» برابط شخصي و«رسالة الأسبوع»", async () => {
+  const r = rig({ cands: [CAND("561112223", "T900", R(19, 30).toISOString()), CAND("562223334", "T901", R(19, 35).toISOString())], now: R(19, 40),
+    settings: { keeta: { pull: { enabled: true, enabledAt: R(12).toISOString(), reviewAnchor: "order" } } } });
   r.db.k.push({ id: 99, phone_norm: "562223334", keeta_order_id: "OLD", status: "skipped", reason: "gap" });      // الرقم ده خد KA2 قبل كده ⇒ مرة في العمر
   const o1 = await r.api.tick({ now: R(19, 40) });
   assert.equal(o1.enroll, 1, JSON.stringify(o1));
@@ -303,4 +387,75 @@ test("مسارات تانية لمسها KA2: reviewAsk بيستعمل قالب 
   const g = readFileSync(new URL("./whatsapp.js", import.meta.url), "utf8");
   assert.match(g, /source === "ka2"/, "KA2 مبادِرة (CJ1a)");
   assert.match(g, /ka2ReviewConsentCovers\(pool, pn, orderNo\)/);
+});
+
+/* ═══ KA2c — الدورة على قاعدة مزيّفة ═══════════════════════════════════════ */
+const WH = (oid, at, x) => ({ tenant_order_id: `freshcuts-${oid}`, id: `h${oid}${Date.parse(at)}`, received_at: at, ...x });
+const ON = { keeta: { pull: { enabled: true, enabledAt: R(12).toISOString(), holdoutPct: 0 } } };
+
+test("KA2c الدورة: الدعوة «محجوزة» لحد التسليم، أول ما الكاشير يقفل الطلب ⇒ الميعاد = التسليم + ٥٠ (ومش قبله)", async () => {
+  const r = rig({ cands: [CAND("561728394", "5901", R(19, 30).toISOString())], now: R(19, 40), settings: ON,
+    webhooks: [WH("5901", R(19, 31).toISOString(), { approval: "accepted" }), WH("5901", R(19, 55).toISOString(), { approval: "pickup_ready" })] });
+  const o1 = await r.api.tick({ now: R(19, 40) });
+  assert.equal(o1.enroll, 1);
+  const inv = r.db.inv[0], row = r.db.k[0];
+  assert.equal(row.review_anchor, "pending"); assert.equal(inv.due_at, R(21, 50).toISOString(), "حجز: الطلب + ٩٠ + ٥٠"); assert.equal(inv.ka2, true);
+  await r.api.tick({ now: R(20) });
+  assert.equal(row.review_anchor, "pending", "جاهز (pickup_ready) مش تسليم"); assert.equal(inv.due_at, R(21, 50).toISOString());
+  r.db.webhooks.push(WH("5901", R(20, 5).toISOString(), { approval: "pickup_ready", order_status: "completed" }));
+  const o3 = await r.api.tick({ now: R(20, 6) });
+  assert.equal(o3.anchored, 1);
+  assert.equal(row.review_anchor, "handoff"); assert.equal(row.handoff_at, R(20, 5).toISOString()); assert.equal(row.handoff_basis, "pos_closed");
+  assert.equal(inv.due_at, R(20, 55).toISOString(), "التسليم ٢٠:٠٥ + ٥٠"); assert.equal(row.review_due_at, inv.due_at);
+  const o4 = await r.api.tick({ now: R(20, 30) });
+  assert.equal(o4.anchored, 0, "نهائي ⇒ مابيتلمسش تاني"); assert.equal(inv.due_at, R(20, 55).toISOString());
+  assert.equal(r.db.sent.length, 0);
+});
+
+test("KA2c الدورة: التسليم ماظهرش خلال ٩٠ ⇒ الطلب + ٨٠ وسبب handoff_unknown؛ ظهر بعدها والدعوة لسه ماطلعتش ⇒ الميعاد يرجع للتسليم + ٥٠؛ اتبعتت ⇒ مابنلمسهاش", async () => {
+  const r = rig({ cands: [CAND("562817465", "5902", R(19).toISOString()), CAND("563918274", "5903", R(19).toISOString())], now: R(19, 10), settings: ON });
+  await r.api.tick({ now: R(19, 10) });
+  const [a, b] = ["5902", "5903"].map((o) => r.db.k.find((k) => k.keeta_order_id === o));
+  const ia = r.db.inv.find((i) => i.order_no === "pos:5902"), ib = r.db.inv.find((i) => i.order_no === "pos:5903");
+  assert.equal(ia.due_at, R(21, 20).toISOString());
+  await r.api.tick({ now: R(20, 29) });
+  assert.equal(a.review_anchor, "pending");
+  const o = await r.api.tick({ now: R(20, 31) });
+  assert.equal(o.anchored, 2);
+  assert.equal(a.review_anchor, "handoff_unknown"); assert.equal(ia.due_at, R(20, 20).toISOString(), "الطلب + ٨٠ (فات ⇒ reviews.js يبعته أول ما المطعم مفتوح)");
+  /* الدعوة بتاعة b اتبعتت؛ a لسه (مثلاً البوابة) — وبعدين الكاشير قفل الاتنين */
+  ib.sent_at = R(20, 32).toISOString();
+  r.db.webhooks.push(WH("5902", R(20, 40).toISOString(), { order_status: "completed" }), WH("5903", R(20, 40).toISOString(), { order_status: "completed" }));
+  await r.api.tick({ now: R(20, 45) });
+  assert.equal(a.review_anchor, "handoff"); assert.equal(ia.due_at, R(21, 30).toISOString(), "التسليم ٢٠:٤٠ + ٥٠");
+  assert.equal(b.review_anchor, "handoff_unknown", "الدعوة اتبعتت ⇒ مفيش تعديل"); assert.equal(ib.due_at, R(20, 20).toISOString());
+});
+
+test("KA2c الدورة: التسليم معروف وقت الدخول ⇒ منه على طول؛ دعوة reviews.js الأقدم بتاخد ميعاد KA2 (مش LEAST)؛ قفل بالغلط بعد دقيقة مايتحسبش؛ المرجع «وقت الطلب» بيحسم المستنيين", async () => {
+  const r = rig({ cands: [CAND("561947382", "5904", R(19).toISOString()), CAND("568127394", "5905", R(19).toISOString())], now: R(19, 40), settings: ON,
+    invites: [{ order_no: "pos:5905", code: "x", phone_norm: "568127394", due_at: R(19, 30).toISOString(), kind: "app", ka2: false }],
+    webhooks: [WH("5904", R(19, 25).toISOString(), { approval: "picked_up" }), WH("5905", R(19, 1).toISOString(), { order_status: "completed" })] });
+  await r.api.tick({ now: R(19, 40) });
+  const a = r.db.k.find((k) => k.keeta_order_id === "5904"), b = r.db.k.find((k) => k.keeta_order_id === "5905");
+  assert.equal(a.review_anchor, "handoff"); assert.equal(r.db.inv.find((i) => i.order_no === "pos:5904").due_at, R(20, 15).toISOString());
+  const ib = r.db.inv.find((i) => i.order_no === "pos:5905");
+  assert.equal(b.review_anchor, "pending", "قفل بعد دقيقة من الطلب = غلط"); assert.equal(ib.ka2, true);
+  assert.equal(ib.due_at, R(21, 20).toISOString(), "ميعاد reviews.js (١٩:٣٠) كان هيطلّعها قبل التسليم ⇒ ميعاد KA2");
+  r.S.keeta.pull.reviewAnchor = "order";
+  await r.api.tick({ now: R(19, 45) });
+  assert.equal(b.review_anchor, "order"); assert.equal(ib.due_at, R(19, 50).toISOString(), "الطلب + ٥٠");
+});
+
+test("KA2c الترحيل مرة واحدة: reviewDelayMin 80 (الحل المؤقت) من غير reviewAnchor ⇒ 50 من التسليم؛ أي حاجة تانية ⇒ زي ما هي", async () => {
+  const m = rig({ settings: { keeta: { pull: { enabled: false, reviewDelayMin: 80 } } } });
+  await m.api.ready;
+  assert.equal(m.S.keeta.pull.reviewDelayMin, 50); assert.equal(m.S.keeta.pull.reviewAnchor, "handoff"); assert.equal(m.db.migrations, 1);
+  const keep = rig({ settings: { keeta: { pull: { enabled: false, reviewDelayMin: 80, reviewAnchor: "order" } } } });
+  await keep.api.ready;
+  assert.equal(keep.S.keeta.pull.reviewDelayMin, 80, "المالك اختار المرجع ⇒ مانلمسش"); assert.equal(keep.db.migrations, 0);
+  const other = rig({ settings: { keeta: { pull: { enabled: false, reviewDelayMin: 60 } } } });
+  await other.api.ready;
+  assert.equal(other.S.keeta.pull.reviewDelayMin, 60); assert.equal(other.db.migrations, 0);
+  assert.match(K.ANCHOR_MIGRATION_SQL, /#>> '\{keeta,pull,reviewDelayMin\}' = '80'/);
+  assert.match(K.ANCHOR_MIGRATION_SQL, /NOT \(\(data->'keeta'->'pull'\) \? 'reviewAnchor'\)/);
 });
