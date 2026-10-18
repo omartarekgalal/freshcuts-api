@@ -25,6 +25,8 @@ function fakePool({ active = false, tables = ["push_subs", "shop_carts", "cms_co
     if (/^DELETE FROM acct_sessions/.test(s)) return { rowCount: 2, rows: [] };
     if (/^DELETE FROM acct_customers/.test(s)) return { rowCount: 1, rows: [] };
     if (/^UPDATE push_subs/.test(s)) return { rowCount: 3, rows: [] };
+    if (/^DELETE FROM game_players/.test(s)) return { rowCount: 1, rows: [] };
+    if (/^DELETE FROM game_scores/.test(s)) return { rowCount: 4, rows: [] };
     return { rowCount: 0, rows: [] };
   };
   const pool = { log, query: q };
@@ -80,7 +82,7 @@ test("deletes account, sessions, carts; disables push; opts out; logs a hash onl
   const { call, pool } = setup();
   const r = await call({ body: { confirm: " حذف ", source: "app_android" } });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body.deleted, { sessions: 2, account: 1, otp: 0, pushSubs: 3, carts: 0, installs: 0 });
+  assert.deepEqual(r.body.deleted, { sessions: 2, account: 1, otp: 0, pushSubs: 3, carts: 0, installs: 0, gamePlayers: 0, gameScores: 0 });
   const sqls = pool.log.map((x) => x.s);
   assert.ok(sqls.some((s) => s.startsWith("DELETE FROM shop_carts")));
   assert.ok(sqls.some((s) => s.includes("'account_delete'") && s.startsWith("INSERT INTO cms_contacts")));
@@ -115,5 +117,28 @@ test("transaction commits on success", async () => {
   await deleteAccountData(pool, PHONE, { source: "web" });
   const sqls = pool.log.map((x) => x.s);
   assert.equal(sqls[0], "BEGIN");
+  assert.ok(sqls.includes("COMMIT"));
+});
+
+/* 🎮 RTG2 (قرار المالك ١٨/١٠): حذف الحساب بيمسح اسم اللاعب ونتايجه — ومابيقعش لو جداول اللعبة لسه مااتعملتش */
+test("game data: game_players + game_scores rows for the phone are deleted (counted, logged as counts only)", async () => {
+  const pool = fakePool({ withConnect: true, tables: ["push_subs", "shop_carts", "cms_contacts", "cms_optout_log", "game_players", "game_scores"] });
+  const out = await deleteAccountData(pool, PHONE, { source: "web" });
+  assert.equal(out.gamePlayers, 1); assert.equal(out.gameScores, 4);
+  const del = pool.log.filter((x) => /^DELETE FROM game_(players|scores) WHERE phone_norm=\$1$/.test(x.s));
+  assert.equal(del.length, 2);
+  for (const d of del) assert.deepEqual(d.params, [PHONE]);
+  const sqls = pool.log.map((x) => x.s);
+  assert.ok(sqls.indexOf(del[1].s) < sqls.indexOf("COMMIT"), "inside the same transaction");
+  const logRow = pool.log.find((x) => x.s.startsWith("INSERT INTO acct_deletions"));
+  assert.deepEqual(JSON.parse(logRow.params[2]).gameScores, 4);
+});
+
+test("game data: missing game tables (deploy order / fresh DB) never break the deletion", async () => {
+  const pool = fakePool({ withConnect: true });      // default tables: no game_players / game_scores
+  const out = await deleteAccountData(pool, PHONE, { source: "web" });
+  assert.deepEqual([out.gamePlayers, out.gameScores, out.account], [0, 0, 1]);
+  const sqls = pool.log.map((x) => x.s);
+  assert.ok(!sqls.some((s) => /game_(players|scores)/.test(s) && !/to_regclass/.test(s)), "never queried");
   assert.ok(sqls.includes("COMMIT"));
 });

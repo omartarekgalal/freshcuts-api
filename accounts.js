@@ -354,6 +354,12 @@ export async function deleteAccountData(pool, pn, { source = "web" } = {}) {
         ? n(await client.query("DELETE FROM shop_carts WHERE phone_norm=$1", [pn])) : 0,
       installs: (await has("app_installs"))
         ? n(await client.query("UPDATE app_installs SET phone_norm=NULL WHERE phone_norm=$1", [pn])) : 0,
+      /* 🎮 RTG2 (قرار المالك ١٨/١٠): لعبة الجري — اسم اللاعب ونتايجه بيتمسحوا (روابط التحدّي بتبقى 404 ومابيترتّبش).
+         الجداول ممكن ماتكونش اتعملت لسه (ترتيب النشر/داتابيز جديدة) ⇒ to_regclass زي الباقي. كاش اللوحة/التحدّي/النسبة ≤ ٣٠ ث. */
+      gamePlayers: (await has("game_players"))
+        ? n(await client.query("DELETE FROM game_players WHERE phone_norm=$1", [pn])) : 0,
+      gameScores: (await has("game_scores"))
+        ? n(await client.query("DELETE FROM game_scores WHERE phone_norm=$1", [pn])) : 0,
     };
     if (await has("cms_contacts")) {
       await client.query(
