@@ -108,8 +108,10 @@ export function watchedValues(settings) {
   for (const k of ["phoneId", "wabaId"]) put(`waCloudActive.${k}`, (s.waCloudActive || {})[k]);
   put("waBot.mode", (s.waBot || {}).mode);
   /* CC1a: مفاتيح مركز التواصل (إنستجرام/فيسبوك) في نفس سجل التغيير */
-  put("cc.enabled", (s.cc || {}).enabled === true);
-  for (const k of ["ig_dm", "fb_dm", "ig_comment", "fb_comment"]) put(`cc.channels.${k}`, ((s.cc || {}).channels || {})[k]?.enabled === true);
+  if (s.cc) {      // بتظهر بعد أول حفظ بس (غايبة = مقفولة، ومش تغيير)
+    put("cc.enabled", s.cc.enabled === true);
+    for (const k of ["ig_dm", "fb_dm", "ig_comment", "fb_comment"]) put(`cc.channels.${k}`, (s.cc.channels || {})[k]?.enabled === true);
+  }
   return out;
 }
 export function diffWatched(prev, next) {

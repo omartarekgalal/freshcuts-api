@@ -112,6 +112,7 @@ test("call sites: Graph «/messages» is requested from exactly one place in the
       if (/^\s*(\/\/|\*|\/\*)/.test(ln)) return;                                  // تعليق
       if (!/\/messages[`"']/.test(ln) || OTHER_APIS.test(ln)) return;
       if (/app\.(get|post|put|delete)\(\s*["'`]\/api\//.test(ln)) return;        // مسار عندنا اسمه بينتهي بـ/messages
+      if (rel(f) === "ccmeta.js" && /\$\{PAGE_ID\(\)\}\/messages`/.test(ln)) return;   // CC1a: Messenger Platform (رسايل إنستجرام/ماسنجر على الصفحة) — مش واتساب
       hits.push(`${rel(f)}:${enclosing(lines, i).name}`);
     });
   }
