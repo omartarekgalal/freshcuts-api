@@ -336,6 +336,9 @@ export function register(app, ctx, deps = {}) {
   const bad = (c, error, status = 400, message) => c.json({ ok: false, error, ...(message ? { message } : {}) }, status);
 
   async function pnOfWaKey(k) {
+    /* CC1a: محادثة إنستجرام/فيسبوك (cc-<id>) ⇒ جوال الهوية لو اتربطت — نفس الكارت */
+    const cc = /^cc-(\d{1,12})$/.exec(String(k || ""));
+    if (cc) return (await Q("SELECT i.phone_norm FROM cc_threads t JOIN cc_identities i ON i.id = t.identity_id WHERE t.id = $1", [Number(cc[1])]).catch(() => []))[0]?.phone_norm || null;
     if (!/^[0-9a-f]{32}$/.test(String(k || "")) || !SALT) return null;
     return (await Q("SELECT phone_norm FROM wa_threads WHERE md5($1 || ':' || phone_norm) = $2 LIMIT 1", [SALT, k]))[0]?.phone_norm || null;
   }

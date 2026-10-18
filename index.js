@@ -81,6 +81,7 @@ import * as wastaff from "./wastaff.js";
 import * as wateam from "./wateam.js";
 import * as phonelists from "./phonelists.js";
 import * as waflow from "./waflow.js";
+import * as ccmeta from "./ccmeta.js";      // CC1a: مركز التواصل (إنستجرام/فيسبوك)
 import * as wakb from "./wakb.js";
 import * as wabotllm from "./wabotllm.js";
 import * as extsettle from "./extsettle.js";
@@ -3405,6 +3406,8 @@ waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, 
 const phoneListsApi = phonelists.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
 waTeamApi = wateam.register(app, moduleCtx, { wa: waApi, sendSms: accounts.sendSms, requirePortal: portalApi.requirePortal, flow: () => waFlowApi , presence: () => waHandoverApi, phoneLists: () => phoneListsApi, broadcast: portalApi.broadcast, broadcastTo: portalApi.broadcastTo, push: () => portalApi.push });
 waFlowApi = waflow.register(app, moduleCtx, { team: () => waTeamApi, staff: () => waStaffApi, bot: () => wabotApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast , handover: () => waHandoverApi });
+/* 💬 CC1a (عمر ١٨/١٠: «contact center كامل… مش بس الواتساب»): إنستجرام رسايل+كومنتات وفيسبوك ماسنجر+كومنتات — /api/meta/webhook + /api/cms/cc/* + /api/portal/cc/*. الإرسال مقفول لحد settings.cc */
+ccmeta.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast });
 // 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة
 tableOrder.register(app, moduleCtx, { portal: () => portalApi, shop: () => shopApi });
 /* 🚨 حارس الدفع (٢٢/٩): ناس بتوصل لخطوة الدفع ومحدش بيدفع ⇒ SMS للمدير.
