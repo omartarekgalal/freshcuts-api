@@ -27,11 +27,11 @@ const MEMBERS = [{ phone: `0${CASH1}`, name: "منى", role: "cashier" }, { phon
   { phone: `0${OWN1}`, name: "عمر", role: "owner" }, { phone: `0${OWN2}`, name: "طارق", role: "owner" }];
 const NOON = "2026-10-13T12:00:00Z";      // ٣:٠٠ العصر بتوقيت الرياض — بره ساعات الهدوء
 
-function world({ at = NOON, waTeam = { members: MEMBERS }, settings = {}, lastIn = {}, approved = [], chat = [], graphFail = null, flow = null, portal = false } = {}) {
+function world({ at = NOON, waTeam = { members: MEMBERS }, settings = {}, lastIn = {}, approved = [], chat = [], graphFail = null, flow = null, portal = false, seed = false } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { settings: { waMaster: { enabled: true }, notifications: { whatsappEnabled: false }, delivery: { alertPhones: [], staffSmsLanguage: "en" }, waBot: { testPhones: [] }, ...(waTeam ? { waTeam } : {}), ...settings },
-    lastIn: { ...lastIn }, chat: [...chat], state: {}, log: [], odd: [], oddSeq: 0, events: approved.map((name) => ({ name, event: "APPROVED" })), out: [], botFailed: 0, notices: [], noticeSeq: 0 };
+    lastIn: { ...lastIn }, chat: [...chat], state: {}, audit: [], log: [], odd: [], oddSeq: 0, events: approved.map((name) => ({ name, event: "APPROVED" })), out: [], botFailed: 0, notices: [], noticeSeq: 0 };
   const iso = (v) => (v ? new Date(v).toISOString() : null);
   const pool = { db, async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
@@ -45,6 +45,23 @@ function world({ at = NOON, waTeam = { members: MEMBERS }, settings = {}, lastIn
     if (/^INSERT INTO wa_messages/i.test(s)) { db.out.push({ wamid: p[0], phone_norm: p[1], template: p[2], status: p[6], source: p[10] }); return { rows: [], rowCount: 1 }; }
     if (/FROM wa_optins WHERE phone_norm/i.test(s)) return { rows: [] };
     if (/^SELECT event FROM wa_template_events WHERE name=\$1/i.test(s)) return { rows: db.events.filter((e) => e.name === p[0]).slice(-1).map((e) => ({ event: e.event })) };
+    /* WT2: ترحيل «مسؤول السوشيال» (SEED_SQL) — بيتحاكى بس لما seed:true (الاختبارات القديمة دليلها زي ما هو) */
+    if (/^WITH seed_cur AS/i.test(s)) {
+      if (!seed) return { rows: [] };
+      const mem = db.settings.waTeam && Array.isArray(db.settings.waTeam.members) ? db.settings.waTeam.members : null;
+      if (!mem) return { rows: [{ dir: 0, claimed: 0, added: 0, present: false }] };
+      const n9 = (x) => String(x || "").replace(/\D/g, "").slice(-9), present = mem.some((m) => n9(m && m.phone) === p[1]);
+      const claimed = !(p[0] in db.state); if (claimed) db.state[p[0]] = { closed_nudge_via: "claimed" };
+      let added = 0;
+      if (claimed && !present && mem.length < p[3]) { db.settings.waTeam.members = [...mem, ...JSON.parse(p[2])]; added = 1; }
+      return { rows: [{ dir: 1, claimed: claimed ? 1 : 0, added, present }] };
+    }
+    /* WT2: سقف رسايل المالك المباشرة (topic='direct' في الساعة) */
+    if (/^SELECT count\(\*\) FILTER \(WHERE phone_norm=\$1\)::int AS phone_hour/i.test(s)) {
+      if (db.rateFail) throw new Error("db down");
+      const r = db.log.filter((l) => l.topic === "direct" && Date.parse(l.at) > Date.parse(p[1])), mine = r.filter((l) => l.phone_norm === p[0]);
+      return { rows: [{ phone_hour: mine.length, all_hour: r.length, last_at: mine.length ? mine[mine.length - 1].at : null }] };
+    }
     /* wa_team_state */
     if (/^SELECT free_nudge_at, closed_nudge_at, closed_nudge_via, renewed_at FROM wa_team_state WHERE phone_norm=\$1/i.test(s)) return { rows: db.state[p[0]] ? [{ ...db.state[p[0]] }] : [] };
     { const m = /^INSERT INTO wa_team_state\(phone_norm, (free_nudge_at|closed_nudge_at|renewed_at), updated_at\)/i.exec(s);
@@ -96,7 +113,7 @@ function world({ at = NOON, waTeam = { members: MEMBERS }, settings = {}, lastIn
   const add = (m) => (path, h) => { routes[`${m} ${path}`] = h; };
   const app = { routes, get: add("GET"), post: add("POST"), put: add("PUT"), delete: add("DELETE") };
   let owner = true, portalUser = { name: "منى", role: "cashier" };
-  const ctx = { pool, requireAdmin: async () => null, isOwner: async () => owner, getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)), jb: (x) => JSON.stringify(x),
+  const ctx = { pool, requireAdmin: async () => null, isOwner: async () => owner, auditNote: async (_c, note) => { db.audit.push(note); }, getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)), jb: (x) => JSON.stringify(x),
     normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "") };
   const wa = W.register(app, ctx, { fetch, sendSms: async () => ({ ok: true }) });
   const sms = [];
@@ -118,7 +135,7 @@ const wa966 = (p) => `966${p}`;
 test("config: defaults, limits and the role routing Omar asked for; a missing directory falls back to the alert phones as cashiers", () => {
   const cfg = T.teamConfig({ waTeam: { members: MEMBERS } });
   assert.equal(cfg.enabled, true); assert.equal(cfg.fallback, false);
-  assert.deepEqual(cfg.routing, { cashier: ["handover"], manager: ["handover", "odd"], owner: ["urgent", "odd", "digest"] });
+  assert.deepEqual(cfg.routing, { cashier: ["handover"], manager: ["handover", "odd"], owner: ["urgent", "odd", "digest"], social: [] });      // WT2: السوشيال ولا موضوع
   assert.deepEqual([cfg.keeper.enabled, cfg.keeper.renewAtHour, cfg.keeper.quietFrom, cfg.keeper.quietTo], [true, 20, "02:00", "10:00"]);
   assert.deepEqual([cfg.odd.enabled, cfg.odd.perHour, cfg.odd.digest, cfg.odd.excerpt, cfg.odd.smsFallback], [true, 12, false, 6, false]);
   assert.deepEqual(Object.keys(cfg.odd.kinds), T.ODD_KEYS); assert.ok(Object.values(cfg.odd.kinds).every(Boolean));
@@ -670,4 +687,160 @@ test("TW1 routes: each portal role sees only its notices; «تمام» clears it
   const st = (await w.call("GET", "/api/cms/wabot/team")).body;
   assert.deepEqual(st.members.map((x) => [x.last4, x.reach]), [["0001", "portal"], ["0002", "wa_free"], ["0003", "portal"], ["0004", "template"], ["0005", "template"]]);
   assert.deepEqual(st.schema.outsideModes.map((x) => x.id), ["portal", "template"]); assert.equal(st.config.outsideWindow, "portal"); assert.equal(st.schema.portalNotices, true);
+}));
+
+/* ══ WT2 — دور «سوشيال» + رسالة المالك لعضو واحد + ترحيل «مسؤول السوشيال» ═══════════════════════════════ */
+const SOC = "551000006";
+const SOCIAL = { phone: `0${SOC}`, name: "مسؤول السوشيال", role: "social" };
+const WITH_SOC = [...MEMBERS, SOCIAL];
+
+test("WT2 config: «social» is a team role with its Arabic label, routed to nothing by default; the owner can route it from the dashboard; the guard treats it as staff", withEnv(OPEN, async () => {
+  assert.ok(T.ROLES.includes("social")); assert.equal(T.ROLE_AR.social, "سوشيال ميديا (مهام يدوية)");
+  const cfg = T.teamConfig({ waTeam: { members: WITH_SOC } });
+  assert.deepEqual(cfg.members.at(-1), { phone: SOC, name: "مسؤول السوشيال", role: "social", active: true });
+  assert.deepEqual(cfg.routing.social, []);
+  for (const t of [["handover"], ["handover", "urgent"], "odd", "digest"]) assert.ok(!T.recipientsFor(cfg, t).some((m) => m.phone === SOC), JSON.stringify(t));
+  assert.equal(T.staffRoleOf({ waTeam: { members: WITH_SOC } }, SOC), "social");
+  const saved = T.configFromBody({ members: WITH_SOC, routing: { social: ["odd"] } }, {});
+  assert.equal(saved.ok, true); assert.equal(saved.value.members.at(-1).role, "social"); assert.deepEqual(saved.value.routing.social, ["odd"]);
+  assert.ok(T.recipientsFor(T.teamConfig({ waTeam: saved.value }), "odd").some((m) => m.phone === SOC), "owner routing applies");
+  assert.equal(T.configFromBody({ members: [{ phone: `0${SOC}`, role: "influencer" }] }, {}).ok, false);
+  // the dashboard renders roles from the schema ⇒ the social role shows up in the team screen with its label
+  const w = world({ waTeam: { members: WITH_SOC } });
+  const r = (await w.call("GET", "/api/cms/wabot/team")).body;
+  assert.deepEqual(r.schema.roles.find((x) => x.id === "social"), { id: "social", label: "سوشيال ميديا (مهام يدوية)" });
+  assert.deepEqual(r.members.at(-1).topics, []); assert.equal(r.members.at(-1).roleAr, "سوشيال ميديا (مهام يدوية)");
+  assert.equal(r.members.at(-1).reach, "template", "no portal for social ⇒ outside the window = the paid template path");
+  assert.equal((await w.wa.guardSend({ phoneNorm: SOC, kind: "template", template: "fc_staff_team_notice", staff: true })).ok, true);
+}));
+
+test("WT2 routing: handovers, urgent handovers and odd things never reach the social member; his status says «ولا موضوع»; «ملخص» is refused for him", withEnv(OPEN, async () => {
+  const w = world({ waTeam: { members: WITH_SOC } }); allOpen(w); w.wrote(SOC, 1);
+  await w.team.handover({ phone: CUST, reason: "complaint", reasonAr: "شكوى", urgent: true, sms: "x" });
+  assert.equal(await w.team.odd({ kind: "secret", phone: CUST, detail: "x" }), "sent");
+  assert.ok(w.calls.length > 0); assert.ok(!w.to().includes(wa966(SOC)), "nothing for social");
+  const n = w.calls.length;
+  await w.team.inbound({ phone: SOC, type: "text", text: "حالة" });
+  assert.match(bodyOf(w.calls[n]), /^👤 مسؤول السوشيال — سوشيال ميديا \(مهام يدوية\)\nبيوصلك: ولا موضوع\n/);
+  await w.team.inbound({ phone: SOC, type: "text", text: "ملخص" });
+  assert.equal(bodyOf(w.calls[n + 1]), "الملخص للمدير والملاك بس.");
+  assert.equal(await w.team.inbound({ phone: SOC, type: "text", text: "تمام رفعت الفيديو" }), true, "a team phone: swallowed, the bot does not answer him as a customer");
+}));
+
+test("WT2 keeper: the social member's window is renewed like any team member — free-form with the button at hour 20; closed ⇒ the renew template once", withEnv(OPEN, async () => {
+  const w = world({ waTeam: { members: [SOCIAL], daily: { enabled: false } }, approved: ["fc_staff_alerts_renew"] });
+  w.wrote(SOC, 20.1);
+  assert.deepEqual((await w.team.tick()).keeper, [{ to: "…0006", action: "free", via: "wa_free", ok: true }]);
+  assert.equal(w.calls[0].body.to, wa966(SOC)); assert.equal(w.calls[0].body.interactive.action.buttons[0].reply.id, "team:renew");
+  w.clock.advance(5 * 60); await w.team.tick();
+  assert.equal(w.calls.length, 2); assert.equal(w.calls[1].body.template.name, "fc_staff_alerts_renew");
+}));
+
+const send = (w, json) => w.call("POST", "/api/cms/wabot/team/send", json);
+test("WT2 send: owner only; the phone must be an active member of the directory; text is required and ≤ 4096 — nothing is sent on any refusal", withEnv(OPEN, async () => {
+  const w = world({ waTeam: { members: [...WITH_SOC, { phone: "0561000009", name: "قديم", role: "cashier", active: false }] } }); allOpen(w); w.wrote(SOC, 1); w.wrote("561000009", 1);
+  w.setOwner(false);
+  assert.equal((await send(w, { phone: `0${SOC}`, text: "x" })).status, 403);
+  w.setOwner(true);
+  assert.equal((await send(w, { phone: `0${CUST}`, text: "x" })).body.error, "not_staff");
+  assert.equal((await send(w, { phone: "0561000009", text: "x" })).body.error, "not_staff", "inactive member");
+  assert.equal((await send(w, { phone: "abc", text: "x" })).status, 400);
+  assert.equal((await send(w, { phone: `0${SOC}`, text: "   \n " })).body.error, "text_required");
+  assert.equal((await send(w, { phone: `0${SOC}`, text: "ا".repeat(4097) })).body.error, "text_too_long");
+  assert.equal(w.calls.length + w.sms.length + w.db.log.length, 0);
+}));
+
+test("WT2 send, window open: free-form through the guard with the renew button (≤1024), plain text above; logged as topic «direct» + an audit note", withEnv(OPEN, async () => {
+  const w = world({ waTeam: { members: WITH_SOC } }); w.wrote(SOC, 3);
+  const task = "مهمة اليوم:\n١) ارفع فيديو المشاوي على تيك توك وسناب\n٢) ستوري انستجرام بستيكر تصويت «مشكل ولا ريش؟»";
+  const r = await send(w, { phone: `+966${SOC}`, text: task });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { ok: true, via: "wa_free", full: true, to: "…0006", name: "مسؤول السوشيال", role: "social", roleAr: "سوشيال ميديا (مهام يدوية)", chars: task.length });
+  assert.equal(w.calls.length, 1); assert.equal(w.calls[0].body.to, wa966(SOC));
+  assert.equal(bodyOf(w.calls[0]), task); assert.equal(w.calls[0].body.interactive.action.buttons[0].reply.id, "team:renew");
+  assert.deepEqual(w.db.log.map((l) => [l.phone_norm, l.role, l.topic, l.kind, l.via, l.ok]), [[SOC, "social", "direct", "owner_text", "wa_free", true]]);
+  assert.equal(w.db.audit.length, 1); assert.match(w.db.audit[0], /^واتساب الفريق: رسالة لـ…0006 \(سوشيال ميديا \(مهام يدوية\)\) — wa_free · \d+ حرف: مهمة اليوم/);
+  w.clock.advance(1);
+  const long = "ت".repeat(2000);
+  assert.equal((await send(w, { phone: `0${SOC}`, text: long })).body.via, "wa_free");
+  assert.equal(w.calls[1].body.type, "text"); assert.equal(w.calls[1].body.text.body, long, "long text goes whole, without the button");
+  // any team member can receive one, not only social
+  w.wrote(MGR, 1); w.clock.advance(1);
+  assert.equal((await send(w, { phone: `0${MGR}`, text: "راجع الطلب" })).body.role, "manager");
+  assert.ok(w.to().every((t) => [wa966(SOC), wa966(MGR)].includes(t)));
+}));
+
+test("WT2 send, window closed: an approved team template carries ONE line (full:false); not approved ⇒ 409 window_closed with no Graph call; never a portal notice or SMS", withEnv(OPEN, async () => {
+  const x = world({ waTeam: { members: WITH_SOC } }); x.wrote(SOC, 30);
+  const r = await send(x, { phone: `0${SOC}`, text: "ارفع الفيديو" });
+  assert.equal(r.status, 409); assert.equal(r.body.error, "window_closed"); assert.equal(r.body.ok, false);
+  assert.equal(x.calls.length + x.sms.length, 0);
+  assert.deepEqual(x.db.log.map((l) => [l.topic, l.via, l.ok, l.error]), [["direct", "none", false, "window_closed"]]);
+  const w = world({ waTeam: { members: WITH_SOC }, approved: ["fc_staff_team_notice"] });
+  const task = "ارفع فيديو التيك توك بتاع النهارده\nالساعة ٨ مع الصوت الترند، وحط ستيكر التصويت على الستوري وابعتلي اللينك قبل النشر عشان أراجعه";
+  const t = await send(w, { phone: `0${SOC}`, text: task });
+  assert.equal(t.status, 200); assert.deepEqual([t.body.ok, t.body.via, t.body.full], [true, "wa_template", false]); assert.match(t.body.message, /جدّد التنبيهات/);
+  const tpl = w.calls[0].body.template, line = tpl.components[0].parameters[0].text;
+  assert.equal(tpl.name, "fc_staff_team_notice"); assert.ok(line.length <= 120 && !/\n|\s{2,}/.test(line), line); assert.match(line, /^رسالة من الإدارة/);
+  // a cashier with the default «portal only» outside the window: the owner's direct message is NOT turned into a portal notice
+  const p = world({ portal: true }); p.wrote(CASH1, 30);
+  const pr = await send(p, { phone: `0${CASH1}`, text: "تعال بدري بكرة" });
+  assert.equal(pr.body.error, "window_closed"); assert.equal(p.told.length + p.pushed.length + p.db.notices.length, 0);
+}));
+
+test("WT2 send rate limit: 5 s between two messages to the same phone, 20 per phone per hour, 60 overall; a second click while one is in flight is refused; an unreadable count refuses", withEnv(OPEN, async () => {
+  const w = world({ waTeam: { members: WITH_SOC } }); allOpen(w); w.wrote(SOC, 1);
+  assert.equal((await send(w, { phone: `0${SOC}`, text: "1" })).status, 200);
+  const fast = await send(w, { phone: `0${SOC}`, text: "2" });
+  assert.equal(fast.status, 429); assert.deepEqual([fast.body.error, fast.body.why], ["rate_limited", "too_fast"]); assert.ok(fast.body.retryAfterSec >= 1);
+  assert.equal((await send(w, { phone: `0${MGR}`, text: "other phone is fine" })).status, 200);
+  for (let i = 2; i <= 20; i++) { w.clock.advance(0.1); assert.equal((await send(w, { phone: `0${SOC}`, text: `#${i}` })).status, 200, `#${i}`); }
+  w.clock.advance(0.1);
+  const cap = await send(w, { phone: `0${SOC}`, text: "21" });
+  assert.deepEqual([cap.status, cap.body.why], [429, "phone_hour"]);
+  w.clock.advance(61);
+  assert.equal((await send(w, { phone: `0${SOC}`, text: "next hour" })).status, 200);
+  assert.deepEqual(T.directRateVerdict({ phone_hour: 0, all_hour: 60 }, NOON), { error: "rate_limited", why: "all_hour", retryAfterSec: 3600 });
+  assert.equal(T.directRateVerdict({ phone_hour: 19, all_hour: 59, last_at: "2026-10-13T11:59:00Z" }, NOON), null);
+  // double click: the second request while the first is still sending
+  const slow = world({ waTeam: { members: WITH_SOC } }); slow.wrote(SOC, 1);
+  const orig = slow.wa.sendFreeform; let release; const gate = new Promise((r) => { release = r; });
+  slow.wa.sendFreeform = async (...a) => { await gate; return orig(...a); };
+  const first = send(slow, { phone: `0${SOC}`, text: "a" });
+  await new Promise((r) => setTimeout(r, 10));
+  const second = await send(slow, { phone: `0${SOC}`, text: "a" });
+  release(); await first;
+  assert.deepEqual([second.status, second.body.why], [429, "in_flight"]);
+  // the count itself unreadable ⇒ refuse (no blind send)
+  const z = world({ waTeam: { members: WITH_SOC } }); z.wrote(SOC, 1); z.db.rateFail = true;
+  const u = await send(z, { phone: `0${SOC}`, text: "x" });
+  assert.deepEqual([u.status, u.body.error], [503, "rate_unknown"]); assert.equal(z.calls.length, 0);
+}));
+
+test("WT2 seed: 544139417 «مسؤول السوشيال» is added ONCE as social when absent; never re-added after the owner removes him; an existing entry (any role) is left alone", withEnv(OPEN, async () => {
+  const S = T.SOCIAL_SEED.phone;
+  const w = world({ seed: true });
+  await w.team.ready;
+  assert.equal(w.team.seeded(), "added");
+  assert.deepEqual(w.db.settings.waTeam.members.at(-1), { phone: S, name: "مسؤول السوشيال", role: "social", active: true });
+  assert.equal(w.db.settings.waTeam.members.length, 6); assert.equal(w.db.state[T.SOCIAL_SEED.key].closed_nudge_via, "added");
+  assert.equal(T.staffRoleOf(w.db.settings, S), "social");
+  assert.equal(await w.team.seedSocial(), "done_before"); assert.equal(w.db.settings.waTeam.members.length, 6);
+  // the owner removes him in the dashboard; the next boot does not bring him back (the marker stays)
+  w.db.settings.waTeam.members = w.db.settings.waTeam.members.slice(0, 5);
+  assert.equal(await w.team.seedSocial(), "done_before"); assert.equal(w.db.settings.waTeam.members.length, 5);
+  // already in the directory (as a cashier, written 05… form) ⇒ untouched
+  const p = world({ seed: true, waTeam: { members: [...MEMBERS, { phone: `0${S}`, name: "تجربة", role: "cashier" }] } });
+  await p.team.ready; assert.equal(p.team.seeded(), "present");
+  assert.equal(p.db.settings.waTeam.members.at(-1).role, "cashier"); assert.equal(p.db.settings.waTeam.members.length, 6);
+  // directory not written yet (fallback = alert phones) ⇒ nothing, no marker ⇒ retried on a later boot
+  const f = world({ seed: true, waTeam: null, settings: { waBot: { alertPhones: [`0${CASH1}`], testPhones: [] } } });
+  await f.team.ready; assert.equal(f.team.seeded(), "no_directory"); assert.equal(f.db.settings.waTeam, undefined); assert.equal(f.db.state[T.SOCIAL_SEED.key], undefined);
+  // full directory ⇒ not added, marker says so
+  const many = Array.from({ length: 30 }, (_, i) => ({ phone: `05700000${String(i).padStart(2, "0")}`, name: "", role: "cashier" }));
+  const full = world({ seed: true, waTeam: { members: many } });
+  await full.team.ready; assert.equal(full.team.seeded(), "full"); assert.equal(full.db.settings.waTeam.members.length, 30);
+  assert.deepEqual(T.seedParams().slice(0, 2), [T.SOCIAL_SEED.key, "544139417"]);
+  assert.equal(T.seedOutcome({ dir: 1, claimed: 1, added: 0, present: true }), "present");
+  assert.equal(w.calls.length + w.sms.length, 0, "the seed sends nothing");
 }));

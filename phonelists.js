@@ -152,7 +152,9 @@ export function cfgOf(x = {}) {
 }
 
 /* دليل الفريق (settings.waTeam.members) — نفس قاعدة wateam.teamConfig: الأعضاء الشغّالين بدور معروف، ولو الدليل لسه مااتكتبش ⇒ أرقام تنبيهات البوت */
-const TEAM_ROLES = ["cashier", "manager", "owner"];
+const TEAM_ROLES = ["cashier", "manager", "owner", "social"];      // WT2: + سوشيال ميديا (مهام يدوية)
+const TEAM_ROLE_AR = { cashier: "كاشير", manager: "مدير", owner: "مالك", social: "سوشيال ميديا" };
+export const teamRoleAr = (r) => TEAM_ROLE_AR[r] || "كاشير";
 export function teamMembers(settings) {
   const t = settings && settings.waTeam && typeof settings.waTeam === "object" ? settings.waTeam : {};
   if (Array.isArray(t.members)) {
@@ -233,7 +235,7 @@ export function planMigration({ legacy = [], team = [], alerts = [], ambassadors
     const mem = byTeam.get(phone), amb = ambassadors.has(phone);
     const name = clip((mem && mem.name) || names.get(phone) || (evidence && evidence.get(phone) && evidence.get(phone).name) || "", LIMITS.name);
     const base = { phone, name, added_by: who, added_at: at, source: "migration" };
-    if (mem) { staff.push({ ...base, reason: mem.role === "owner" ? "owner" : "employee", note: `في دليل الفريق (${mem.role === "owner" ? "مالك" : mem.role === "manager" ? "مدير" : "كاشير"})` }); continue; }
+    if (mem) { staff.push({ ...base, reason: mem.role === "owner" ? "owner" : "employee", note: `في دليل الفريق (${teamRoleAr(mem.role)})` }); continue; }
     if (alertSet.has(phone)) { staff.push({ ...base, reason: "employee", note: "رقم تنبيهات الطلبات (إعدادات التوصيل)" }); continue; }
     const ev = evidence ? evidence.get(phone) || { web: 0, chats: 0, intent: 0 } : null;
     const reason = amb ? "ambassador" : LEGACY_REASON.id;
@@ -271,7 +273,7 @@ export function addEntry(cur, body, { who, now = new Date(), settings = {} } = {
   if (!REASON_IDS.includes(reason)) return bad("bad_reason", "السبب مش من القايمة");
   if (b.list === "staff" && NO_ADS_ONLY_REASONS.includes(reason)) return bad("reason_wrong_list", "«عميل طلب مايوصلوش إعلانات» مكانه «مستثنين من الإعلانات بس» — ده عميل والبوت لازم يرد عليه");
   const mem = teamMembers(settings).find((m) => m.phone === pn);
-  if (mem && b.list === "noAds") return bad("team_member", `الرقم ده في دليل الفريق (${mem.role === "owner" ? "مالك" : mem.role === "manager" ? "مدير" : "كاشير"}) — البوت أصلاً مابيردش عليه. شيله من الدليل الأول لو عايزه عميل`);
+  if (mem && b.list === "noAds") return bad("team_member", `الرقم ده في دليل الفريق (${teamRoleAr(mem.role)}) — البوت أصلاً مابيردش عليه. شيله من الدليل الأول لو عايزه عميل`);
   const x = cur && typeof cur === "object" ? cur : {};
   const { out, from } = stripFrom(x, pn);
   const prev = from ? listsOf({ cms: { phoneLists: x } })[from].find((e) => e.phone === pn) : null;
@@ -520,7 +522,7 @@ export function register(app, ctx, deps = {}) {
       lists: { staff: L.staff.map((e) => out(e, "staff")), noAds: L.noAds.map((e) => out(e, "noAds")), review: L.review.map((e) => out(e, "review")) },
       implicit: [
         ...team.filter((m) => !listed.has(m.phone)).map((m) => ({ phone: owner ? `0${m.phone}` : mask(m.phone), last4: m.phone.slice(-4), name: m.name, source: "team", role: m.role,
-          why: m.fallback ? "من أرقام تنبيهات البوت (دليل الفريق لسه مااتكتبش)" : `في دليل الفريق (${m.role === "owner" ? "مالك" : m.role === "manager" ? "مدير" : "كاشير"})` })),
+          why: m.fallback ? "من أرقام تنبيهات البوت (دليل الفريق لسه مااتكتبش)" : `في دليل الفريق (${teamRoleAr(m.role)})` })),
         ...alerts.filter((p) => !listed.has(p) && !team.some((m) => m.phone === p)).map((p) => ({ phone: owner ? `0${p}` : mask(p), last4: p.slice(-4), name: "", source: "alert", why: "رقم تنبيهات الطلبات (إعدادات التوصيل)" })),
       ],
       legacyLeft: L.migrated ? 0 : legacyPhones(s).length,

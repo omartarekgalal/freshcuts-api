@@ -49,6 +49,10 @@
        مرة في الحلقة دي على طول بالحقيقة («اتبعتله الساعة … وفتحه بعدها وقفله، ورسالته الجاية …»).
      • اللي وصل بس هو اللي بيتقال وبيتحسب: السقف اليومي وsentToday = رسايل وصلت. جولة للكاشير فشلت بتمشّي السلّم (رقم مش بيوصله واتساب لازم
        يوصل للمدير) بس رسالة المدير بتقول الحقيقة («رغم N» = N وصلوا، و«مش قادرين نوصل للكاشير» لو ولا واحد)، و«المدير اتبلّغ» بس لو رسالته وصلت.
+     • WT2 (١٨/١٠ — طلب عمر): دور «social» = «سوشيال ميديا (مهام يدوية)». توزيعه [] افتراضياً (مابيوصلوش تحويلات ولا تنبيهات عملاء
+       إلا لو المالك علّم له مواضيع من اللوحة)، وحارس النافذة شغّال عليه زي أي عضو (عشان المهام اليدوية توصله ببلاش). ومسار المالك
+       POST /api/cms/wabot/team/send {phone, text} = رسالة حرة لعضو واحد من الدليل (داخل النافذة) — مقفولة ⇒ قالب الفريق المعتمد سطر
+       تنبيه بس (full:false) وإلا رفض window_closed؛ مع سقف وسطر في السجل. وترحيل مرة واحدة: 544139417 «مسؤول السوشيال» لو مش موجود.
      • المهلة بعد رجوع الشغل: service.resumedAt بيتقري مرة واحدة أول دورة بعد التشغيل (مش كل دورة)، والمهلة نفسها مابتمسحش الحلقة — بره الشغل بس.
      • الرسايل: نص المدير من غير تكرار ومن غير «مش بترن» (ممكن ماترنّش — إشعار البوابة لسه بيرن)، وسطر القالب ≤١٢٠ من غير قص في نص كلمة.
 ═══════════════════════════════════════════════════════════════════════════ */
@@ -58,8 +62,9 @@ import { maskText } from "./wabotllm.js";
 import { openState } from "./wabot.js";
 import { isReviewHandover } from "./reviewaudience.js";
 
-export const ROLES = Object.freeze(["cashier", "manager", "owner"]);
-export const ROLE_AR = Object.freeze({ cashier: "كاشير", manager: "مدير", owner: "مالك" });
+export const ROLES = Object.freeze(["cashier", "manager", "owner", "social"]);
+export const ROLE_AR = Object.freeze({ cashier: "كاشير", manager: "مدير", owner: "مالك", social: "سوشيال ميديا (مهام يدوية)" });
+export const DIGEST_ROLES = Object.freeze(["manager", "owner"]);      // أمر «ملخص» من الواتساب
 export const TOPICS = Object.freeze(["handover", "urgent", "odd", "digest"]);
 export const TOPIC_AR = Object.freeze({ handover: "كل التحويلات لموظف", urgent: "التحويلات العاجلة بس", odd: "حاجات غريبة", digest: "الملخص اليومي" });
 export const INBOX_URL = "https://freshcuts-invite.o2m8.me/#store/wa/inbox";
@@ -116,7 +121,7 @@ export const DEFAULTS = Object.freeze({
   /* TW1 (١٦/١٠ — عمر: «الموظف اللي مش داخل النافذة ماتبعتلوش حاجة، ابعت إشعار على البورتال بس»): كاشير / مدير نافذته مقفولة ⇒
      "portal" = إشعار على بورتال دوره بس (ولا قالب ولا SMS) · "template" = القالب المدفوع ثم SMS زي الأول. المالك مالوش بورتال ⇒ زي الأول. */
   outsideWindow: "portal",
-  routing: Object.freeze({ cashier: ["handover"], manager: ["handover", "odd"], owner: ["urgent", "odd", "digest"] }),
+  routing: Object.freeze({ cashier: ["handover"], manager: ["handover", "odd"], owner: ["urgent", "odd", "digest"], social: Object.freeze([]) }),      // WT2: السوشيال ولا موضوع
   smsFallback: true,             // تحويل ماقدرش يوصل واتساب (نافذة مقفولة ومفيش قالب معتمد / فشل) ⇒ SMS
   templatesApproved: [],         // أسماء قوالب المالك أكّد إنها معتمدة عند ميتا (لو حدث الاعتماد مااتسجّلش عندنا)
   staffAsTesters: false,         // true ⇒ رقم فريق موجود في أرقام التجربة بيفضل البوت يرد عليه كعميل تجربة (الأزرار والأوامر شغّالة برضه)
@@ -255,7 +260,7 @@ export function configFromBody(b, prev = {}) {
         const phone = normPh(m && m.phone);
         if (!phone) { errors.push("members: جوال سعودي 05XXXXXXXX لكل عضو"); break; }
         if (seen.has(phone)) { errors.push(`members: الرقم ${last4(phone)} مكرر`); break; }
-        if (!ROLES.includes(m.role)) { errors.push(`members: الدور cashier أو manager أو owner (${last4(phone)})`); break; }
+        if (!ROLES.includes(m.role)) { errors.push(`members: الدور ${ROLES.join(" أو ")} (${last4(phone)})`); break; }
         seen.add(phone);
         list.push({ phone, name: clip(String(m.name || "").trim(), LIMITS.name), role: m.role, active: m.active !== false });
       }
@@ -264,7 +269,7 @@ export function configFromBody(b, prev = {}) {
   }
   if ("routing" in src) {
     const r = src.routing && typeof src.routing === "object" ? src.routing : null, next = { ...(out.routing || {}) };
-    if (!r) errors.push("routing: كائن { cashier, manager, owner }");
+    if (!r) errors.push(`routing: كائن { ${ROLES.join(", ")} }`);
     else for (const role of Object.keys(r)) {
       if (!ROLES.includes(role) || !Array.isArray(r[role]) || r[role].some((t) => !TOPICS.includes(t))) { errors.push(`routing.${role}: مواضيع من ${TOPICS.join(" / ")}`); continue; }
       next[role] = [...new Set(r[role])];
@@ -596,6 +601,57 @@ export const portalBackText = ({ at = null, kept = false, afterMin = null } = {}
   : `✅ تمام، بورتال الكاشير اتفتح تاني${at ? ` ومفتوح من ${riyadhHHMM(at)}` : ""}.`);
 
 /* ═══ التشغيل ═════════════════════════════════════════════════════════════ */
+/* ── WT2: رسالة المالك لعضو واحد + ترحيل «مسؤول السوشيال» (صافي) ──────────────────────────────────────────────
+   النص حر (مهمة يدوية: رفع تيك توك/سناب، ستيكر/تصويت ستوري، ترند صوت…) ≤ ٤٠٩٦ حرف. لحد ١٠٢٤ حرف بيتبعت تفاعلي بزر «جدّد التنبيهات»
+   (ضغطته بتجدد النافذة)؛ أطول ⇒ نص عادي من غير زر (حد ميتا لجسم الرسالة التفاعلية). النافذة مقفولة ⇒ قالب الفريق المعتمد بسطر تنبيه
+   ≤١٢٠ (مش النص كله: full:false — المالك يبعته تاني بعد ما العضو يضغط الزر) ⇒ مش معتمد ⇒ window_closed. مفيش SMS ولا إشعار بورتال هنا. */
+export const DIRECT_TEXT_MAX = 4096;
+export const DIRECT_BUTTON_MAX = 1024;
+export const DIRECT_LIMITS = Object.freeze({ perPhoneHour: 20, allHour: 60, gapSec: 5 });
+export function directText(raw) {
+  const t = String(raw ?? "").replace(/\r\n?/g, "\n").replace(/[ \t]+\n/g, "\n").trim();
+  if (!t) return { ok: false, error: "text_required", message: "اكتب الرسالة" };
+  if (t.length > DIRECT_TEXT_MAX) return { ok: false, error: "text_too_long", message: `الرسالة أطول من ${DIRECT_TEXT_MAX} حرف` };
+  return { ok: true, text: t };
+}
+/* سطر قالب fc_staff_team_notice ({{1}}): سطر واحد من غير مسافات متكررة ≤١٢٠ */
+export const directNoticeLine = (text) => fitLine(`رسالة من الإدارة (اضغط «جدّد التنبيهات» عشان توصلك كاملة): ${String(text ?? "").replace(/\s+/g, " ").trim()}`, 120);
+/* حكم السقف من صف العدّ (SELECT في المسار) ⇒ null = مسموح · وإلا { error, retryAfterSec } */
+export function directRateVerdict(row, now, lim = DIRECT_LIMITS) {
+  const r = row || {}, t = new Date(now).getTime(), last = r.last_at ? new Date(r.last_at).getTime() : NaN;
+  if (Number.isFinite(last) && t - last < lim.gapSec * 1000) return { error: "rate_limited", why: "too_fast", retryAfterSec: Math.max(1, Math.ceil((last + lim.gapSec * 1000 - t) / 1000)) };
+  if (Number(r.phone_hour) >= lim.perPhoneHour) return { error: "rate_limited", why: "phone_hour", retryAfterSec: 3600 };
+  if (Number(r.all_hour) >= lim.allHour) return { error: "rate_limited", why: "all_hour", retryAfterSec: 3600 };
+  return null;
+}
+/* ترحيل مرة واحدة (طلب المالك ١٨/١٠): 544139417 بدور social واسم «مسؤول السوشيال» — لو مش موجود بأي دور. علامة في wa_team_state
+   (المفتاح SOCIAL_SEED.key) ⇒ عمره ما بيتعاد حتى لو المالك شاله بعدين. الدليل لسه مااتكتبش (members مش قايمة = أرقام التنبيهات مؤقتاً) ⇒
+   مفيش حاجة ومفيش علامة (لو كتبنا القايمة بعضو واحد، الكاشيرين اللي في الدليل المؤقت يقعوا) ⇒ بيتجرّب تاني أول تشغيل بعد ما الدليل يتكتب.
+   استعلام واحد: الحجز (INSERT … ON CONFLICT DO NOTHING) والإضافة في نفس الجملة ⇒ حاويتين في نفس الوقت = واحدة بس بتضيف. */
+export const SOCIAL_SEED = Object.freeze({ key: "_seed:wt2_social", phone: "544139417", name: "مسؤول السوشيال", role: "social" });
+export const SEED_SQL = `WITH seed_cur AS (
+    SELECT data->'waTeam'->'members' AS mem FROM settings WHERE id=1 AND jsonb_typeof(data->'waTeam'->'members') = 'array'),
+  seed_claim AS (
+    INSERT INTO wa_team_state(phone_norm, closed_nudge_via, updated_at) SELECT $1, 'claimed', NOW() FROM seed_cur
+    ON CONFLICT (phone_norm) DO NOTHING RETURNING phone_norm),
+  seed_add AS (
+    UPDATE settings SET data = jsonb_set(data, '{waTeam,members}', (data->'waTeam'->'members') || $3::jsonb, true), updated_at = NOW()
+     WHERE id=1 AND EXISTS (SELECT 1 FROM seed_claim) AND jsonb_typeof(data->'waTeam'->'members') = 'array'
+       AND jsonb_array_length(data->'waTeam'->'members') < $4
+       AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(data->'waTeam'->'members') e WHERE right(regexp_replace(COALESCE(e->>'phone', ''), '[^0-9]', '', 'g'), 9) = $2)
+    RETURNING id)
+  SELECT (SELECT count(*) FROM seed_cur)::int AS dir, (SELECT count(*) FROM seed_claim)::int AS claimed, (SELECT count(*) FROM seed_add)::int AS added,
+    EXISTS (SELECT 1 FROM seed_cur, jsonb_array_elements(seed_cur.mem) e WHERE right(regexp_replace(COALESCE(e->>'phone', ''), '[^0-9]', '', 'g'), 9) = $2) AS present`;
+export const seedParams = (seed = SOCIAL_SEED) => [seed.key, seed.phone, JSON.stringify([{ phone: seed.phone, name: seed.name, role: seed.role, active: true }]), LIMITS.members];
+/* صف نتيجة SEED_SQL ⇒ "added" | "present" | "full" | "done_before" | "no_directory" */
+export function seedOutcome(r) {
+  const x = r || {};
+  if (!Number(x.dir)) return "no_directory";
+  if (!Number(x.claimed)) return "done_before";
+  if (Number(x.added)) return "added";
+  return x.present === true ? "present" : "full";
+}
+
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData } = ctx;
   const isOwner = ctx.isOwner || (async () => true);
@@ -604,7 +660,19 @@ export function register(app, ctx, deps = {}) {
   const clock = deps.now || (() => new Date());
   const log = deps.log || console;
   const q = async (sql, p = []) => { try { return (await pool.query(sql, p)).rows || []; } catch (e) { log.error("[wa-team] db:", e.message); return null; } };
-  const ready = pool.query(DDL).then(() => pool.query(PORTAL_TO_SEED).catch((e) => log.error("[wa-team] portal seed:", e.message)))
+  /* WT2: ترحيل «مسؤول السوشيال» مرة واحدة (SEED_SQL) — عمره ما بيوقّع التشغيل */
+  let seeded = null;
+  async function seedSocial() {
+    try {
+      const r = await pool.query(SEED_SQL, seedParams());
+      const out = seedOutcome(r && r.rows && r.rows[0]);
+      if (["added", "present", "full"].includes(out)) await pool.query("UPDATE wa_team_state SET closed_nudge_via=$2 WHERE phone_norm=$1", [SOCIAL_SEED.key, out]);
+      if (out === "added" && typeof log.log === "function") log.log(`[wa-team] WT2 seed: ${last4(SOCIAL_SEED.phone)} اتضاف للدليل بدور social`);
+      if (out === "full") log.error(`[wa-team] WT2 seed: الدليل مليان (${LIMITS.members}) — ${last4(SOCIAL_SEED.phone)} مااتضافش`);
+      seeded = out; return out;
+    } catch (e) { log.error("[wa-team] WT2 seed:", e.message); seeded = "failed"; return "failed"; }
+  }
+  const ready = pool.query(DDL).then(() => seedSocial()).then(() => pool.query(PORTAL_TO_SEED).catch((e) => log.error("[wa-team] portal seed:", e.message)))
     .then(() => pool.query("DELETE FROM wa_team_log WHERE at < NOW() - INTERVAL '90 days'").catch(() => {}))
     .then(() => pool.query("DELETE FROM wa_team_odd WHERE at < NOW() - INTERVAL '90 days'").catch(() => {}))
     .then(() => pool.query("DELETE FROM wa_team_notices WHERE at < NOW() - INTERVAL '30 days'").catch(() => {})).then(() => true)
@@ -674,7 +742,7 @@ export function register(app, ctx, deps = {}) {
     } catch (e) { log.error("[wa-team] portal notice:", e.message); return { ok: false, error: "notice_failed" }; }
   }
 
-  /* إرسال لموظف واحد. msg: { topic, kind, body, button?, templates?: [{ name, data }], sms?: string|null, ref4?, urgent? }
+  /* إرسال لموظف واحد. msg: { topic, kind, body, button?, templates?: [{ name, data }], sms?: string|null, ref4?, urgent?, noPortal? }
      ⇒ { ok, via: "wa_free" | "wa_template" | "sms" | "none", error? }. عمرها ما بترمي، وكل محاولة بتتسجّل في wa_team_log. */
   async function sendToStaff(cfg, member, msg) {
     const m = { phone: normPh(member && member.phone), role: member && member.role };
@@ -694,7 +762,7 @@ export function register(app, ctx, deps = {}) {
         why = r.skipped || r.error || "send_failed";
       }
       /* TW1: برّه النافذة + «إشعار بورتال بس» (الافتراضي) ⇒ إشعار على بورتال دوره — ولا قالب مدفوع ولا SMS */
-      if (["window_closed", "WA_131047"].includes(String(why)) && portalMode(cfg, m.role)) {
+      if (["window_closed", "WA_131047"].includes(String(why)) && msg.noPortal !== true && portalMode(cfg, m.role)) {      // WT2: رسالة المالك المباشرة مش إشعار بورتال
         const r = await portalNotice({ ...m, name: (member && member.name) || "" }, msg);
         return done("portal", r.ok === true, r.ok ? (r.note || null) : (r.error || "portal_failed"));
       }
@@ -1102,7 +1170,7 @@ export function register(app, ctx, deps = {}) {
         await say(`👤 ${m.name || last4(phone)} — ${ROLE_AR[m.role]}\nبيوصلك: ${topics}\nالتنبيهات المجانية شغّالة لحد ${riyadhHHMM(new Date(now.getTime() + 24 * H))} بكرة.`, true);
       } else if (cmd === "help") await say(HELP_TEXT, true);
       else if (cmd === "digest") {
-        if (m.role === "cashier") await say("الملخص للمدير والملاك بس.");
+        if (!DIGEST_ROLES.includes(m.role)) await say("الملخص للمدير والملاك بس.");
         else await dailyDigest(cfg, now, { only: m });
       }
       return true;
@@ -1241,6 +1309,46 @@ export function register(app, ctx, deps = {}) {
       const r = await sendToStaff(cfg, m, { topic: "test", kind: "test", body: "🧪 رسالة تجربة من نظام تنبيهات فريش كاتس — لو وصلتك، التنبيهات شغّالة على واتساب.", templates: [{ name: TPL_NOTICE, data: { notice: { text: "رسالة تجربة لتنبيهات الفريق" } } }], sms: null });
       return c.json({ ok: r.ok, via: r.via, error: r.error || null });
     });
+    /* WT2: رسالة حرة من المالك لعضو واحد في الدليل (مهام السوشيال اليدوية وغيرها). العقد في slices/WT2-api-team-social/README.md.
+       الترتيب: مالك ⇒ جسم ⇒ نص ⇒ الرقم في الدليل وشغّال ⇒ مش بيتبعتله دلوقتي ⇒ السقف (من wa_team_log) ⇒ sendToStaff (الحارس) ⇒ سطر السجل. */
+    const directBusy = new Set();
+    app.post("/api/cms/wabot/team/send", async (c) => {
+      const err = await requireAdmin(c); if (err) return err;
+      if (!(await isOwner(c))) return c.json({ ok: false, error: "owner_only", message: "الرسايل للفريق للمالك بس" }, 403);
+      let b; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad_json" }, 400); }
+      const tx = directText(b && b.text);
+      if (!tx.ok) return c.json({ ok: false, error: tx.error, message: tx.message }, 400);
+      const settings = await settingsNow();
+      if (!settings) return c.json({ ok: false, error: "settings_unreadable" }, 503);
+      const cfg = teamConfig(settings), phone = normPh(b && b.phone);
+      const m = phone ? cfg.members.find((x) => x.phone === phone && x.active) : null;
+      if (!m) return c.json({ ok: false, error: "not_staff", message: "الرقم مش في دليل الفريق (أو موقوف)" }, 400);
+      if (directBusy.has(phone)) return c.json({ ok: false, error: "rate_limited", why: "in_flight", retryAfterSec: DIRECT_LIMITS.gapSec, message: "فيه رسالة لنفس الرقم بتتبعت دلوقتي" }, 429);
+      directBusy.add(phone);
+      try {
+        await ready;
+        const now = clock();
+        const rr = await q(`SELECT count(*) FILTER (WHERE phone_norm=$1)::int AS phone_hour, count(*)::int AS all_hour, max(at) FILTER (WHERE phone_norm=$1) AS last_at
+                              FROM wa_team_log WHERE topic='direct' AND at > $2`, [phone, new Date(now.getTime() - H).toISOString()]);
+        if (rr === null) return c.json({ ok: false, error: "rate_unknown", message: "مقدرناش نقرا سجل الفريق — جرّب تاني" }, 503);
+        const rate = directRateVerdict(rr[0], now);
+        if (rate) return c.json({ ok: false, ...rate, limits: DIRECT_LIMITS, message: rate.why === "too_fast" ? "استنى ثواني قبل الرسالة الجاية لنفس الرقم" : "وصلت لأقصى عدد رسايل في الساعة" }, 429);
+        const r = await sendToStaff(cfg, m, { topic: "direct", kind: "owner_text", body: tx.text, button: tx.text.length <= DIRECT_BUTTON_MAX, noPortal: true,
+          templates: [{ name: TPL_NOTICE, data: { notice: { text: directNoticeLine(tx.text) } } }], sms: null });
+        const note = `واتساب الفريق: رسالة لـ${last4(phone)} (${ROLE_AR[m.role]}) — ${r.via}${r.ok ? "" : ` ⛔ ${r.error || ""}`} · ${tx.text.length} حرف: ${fitLine(tx.text, 80)}`;
+        if (typeof ctx.auditNote === "function") { try { await ctx.auditNote(c, note); } catch { /* السجل مايوقعش الإرسال */ } }
+        const who = { to: last4(phone), name: m.name || null, role: m.role, roleAr: ROLE_AR[m.role], chars: tx.text.length };
+        if (r.ok && r.via === "wa_free") return c.json({ ok: true, via: "wa_free", full: true, ...who });
+        if (r.ok && r.via === "wa_template") return c.json({ ok: true, via: "wa_template", full: false, ...who,
+          message: "نافذة الـ٢٤ ساعة مقفولة — وصله سطر تنبيه بقالب الفريق بس. ابعت الرسالة تاني بعد ما يضغط «جدّد التنبيهات»." }, 200);
+        const why = String(r.error || "");
+        if (why === "window_closed" || why === "WA_131047") return c.json({ ok: false, error: "window_closed", ...who,
+          message: "نافذة الـ٢٤ ساعة بتاعته مقفولة وقالب الفريق مش معتمد — خليه يبعت أي رسالة (أو يضغط «جدّد التنبيهات») وابعت تاني." }, 409);
+        if (why === "wa_off") return c.json({ ok: false, error: "wa_off", ...who, message: "تنبيهات الفريق على واتساب مقفولة من الإعدادات" }, 409);
+        return c.json({ ok: false, error: "send_failed", detail: why || null, ...who, message: "الإرسال فشل — اتسجّل في سجل الفريق" }, 502);
+      } catch (e) { log.error("[wa-team] direct send:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
+      finally { directBusy.delete(phone); }
+    });
     if (deps.requirePortal) app.get("/api/portal/wa/team-status", async (c) => {
       const a = await deps.requirePortal(c); if (a.res) return a.res;
       if (!["cashier", "manager"].includes(a.user && a.user.role)) return c.json({ ok: false, error: "forbidden" }, 403);
@@ -1286,5 +1394,5 @@ export function register(app, ctx, deps = {}) {
     });
   }
 
-  return { ready, handover, odd, inbound, tick, status, portalWatch, portalStatus, sendToStaff, fanOut, lastCustomerText, dailyDigest, flushOdd, portalNotice, openNotices, ackNotice, stop: () => { if (timer) clearInterval(timer); } };
+  return { ready, seeded: () => seeded, seedSocial, handover, odd, inbound, tick, status, portalWatch, portalStatus, sendToStaff, fanOut, lastCustomerText, dailyDigest, flushOdd, portalNotice, openNotices, ackNotice, stop: () => { if (timer) clearInterval(timer); } };
 }
