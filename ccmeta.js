@@ -131,7 +131,8 @@ export function register(app, ctx, deps = {}) {
   const GRAPH = () => `https://graph.facebook.com/${env("META_API_VERSION") || GRAPH_VERSION}`;
   const PAGE_ID = () => env("FB_PAGE_ID") || env("META_PAGE_ID") || "1193489887177708";
   const IG_ID = () => env("IG_USER_ID") || env("META_IG_ID") || "17841414510113806";
-  const USER_TOKEN = () => env("META_CAPI_TOKEN");
+  /* توكن مستخدم النظام: META_INBOX_TOKEN (توكن جديد فيه pages_messaging) لو موجود، وإلا نفس توكن النشر/الإعلانات */
+  const USER_TOKEN = () => env("META_INBOX_TOKEN") || env("META_CAPI_TOKEN");
   const broadcast = (ev, d) => { try { deps.broadcast?.(ev, d); } catch { /* البث اختياري */ } };
 
   async function ensureSchema() {
@@ -217,10 +218,10 @@ export function register(app, ctx, deps = {}) {
     const preview = clip(String(m.body || (m.media?.length ? `📎 ${m.media[0].type}` : "")).replace(/\s+/g, " "), 120);
     if (m.dir === "in") {
       const sp = phoneInText(m.body);
-      await pool.query(`UPDATE cc_threads SET last_in_at = GREATEST(COALESCE(last_in_at, 'epoch'), COALESCE($2::timestamptz, NOW())), last_at = NOW(), last_text = $3, last_dir = 'in',
+      await pool.query(`UPDATE cc_threads SET last_in_at = GREATEST(COALESCE(last_in_at, 'epoch'), COALESCE($2::timestamptz, NOW())), last_at = GREATEST(COALESCE(last_at, 'epoch'), COALESCE($2::timestamptz, NOW())), last_text = CASE WHEN COALESCE($2::timestamptz, NOW()) >= COALESCE(last_at, 'epoch') THEN $3 ELSE last_text END, last_dir = CASE WHEN COALESCE($2::timestamptz, NOW()) >= COALESCE(last_at, 'epoch') THEN 'in' ELSE last_dir END,
         unread = unread + 1, status = 'open', done_at = NULL, suggested_phone = COALESCE($4, suggested_phone) WHERE id = $1`, [t.id, m.at || null, preview, sp]);
     } else if (m.status !== "failed") {
-      await pool.query("UPDATE cc_threads SET last_out_at = NOW(), last_at = NOW(), last_text = $2, last_dir = 'out' WHERE id = $1", [t.id, preview]);
+      await pool.query("UPDATE cc_threads SET last_out_at = GREATEST(COALESCE(last_out_at, 'epoch'), COALESCE($3::timestamptz, NOW())), last_at = GREATEST(COALESCE(last_at, 'epoch'), COALESCE($3::timestamptz, NOW())), last_text = CASE WHEN COALESCE($3::timestamptz, NOW()) >= COALESCE(last_at, 'epoch') THEN $2 ELSE last_text END, last_dir = CASE WHEN COALESCE($3::timestamptz, NOW()) >= COALESCE(last_at, 'epoch') THEN 'out' ELSE last_dir END WHERE id = $1", [t.id, preview, m.at || null]);
     }
     broadcast("cc_chat_update", { key: keyOf(t.id), dir: m.dir, at: new Date().toISOString() });
     return ins.rows[0].id;
@@ -426,10 +427,20 @@ export function register(app, ctx, deps = {}) {
       for (const rp of cm.comments?.data || []) await handleEvent({ type: "comment", platform: "fb", commentId: rp.id, parentId: cm.id, postId: po.id, text: rp.message || "", fromId: String(rp.from?.id || ""), fromName: rp.from?.name || null, at: rp.created_time, own: String(rp.from?.id || "") === PAGE_ID(), verb: "add" });
       void ts;
     } else res.errors.push(`fb posts: ${clip(gErr(fb), 160)}`);
+    await recomputeHeads();
     /* السحب مايعلّمش «غير مقروء» — ده تاريخ */
     await pool.query("UPDATE cc_threads SET unread = 0 WHERE read_at IS NULL AND last_at < NOW() - interval '1 minute'").catch(() => {});
     return { ok: true, ...res };
   }
+
+  /* رأس كل محادثة من رسايلها الحقيقية (وقت/نص/اتجاه آخر رسالة، وآخر وارد) — بعد السحب، ومرة في الإقلاع (تصحيح سحب ١٨/١٠ اللي اتسجّل بوقت السحب) */
+  async function recomputeHeads() {
+    await pool.query(`UPDATE cc_threads t SET last_at = x.at, last_text = left(regexp_replace(COALESCE(x.body, ''), '[[:space:]]+', ' ', 'g'), 120), last_dir = x.direction,
+        last_in_at = (SELECT max(at) FROM cc_messages WHERE thread_id = t.id AND direction = 'in')
+      FROM (SELECT DISTINCT ON (thread_id) thread_id, at, body, direction FROM cc_messages ORDER BY thread_id, at DESC, id DESC) x
+      WHERE x.thread_id = t.id`);
+  }
+  ready.then(() => recomputeHeads()).catch((e) => log.error("[cc] heads:", e.message));
 
   /* ── حالة الربط (المالك) ── */
   async function status() {

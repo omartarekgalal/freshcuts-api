@@ -90,7 +90,7 @@ function fakeDb() {
   let settings = {};
   const q = async (sql, p = []) => {
     const s = sql.replace(/\s+/g, " ").trim();
-    if (/^CREATE/.test(s)) return { rows: [] };
+    if (/^CREATE/.test(s) || s.startsWith("UPDATE cc_threads t SET last_at = x.at")) return { rows: [] };
     if (s.startsWith("INSERT INTO cc_webhook_health")) { health[p[0]] = (health[p[0]] || 0) + 1; return { rows: [] }; }
     if (s.startsWith("INSERT INTO cc_identities")) {
       let r = ids.find((x) => x.platform === p[0] && x.ext_id === p[1]);
