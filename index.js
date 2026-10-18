@@ -84,6 +84,7 @@ import * as wakb from "./wakb.js";
 import * as wabotllm from "./wabotllm.js";
 import * as extsettle from "./extsettle.js";
 import * as wasender from "./wasender.js";
+import * as sendHours from "./sendhours.js";      // عمر ١٨/١٠: إرسال واتساب الآلي بمواعيد المطعم (GET/PUT /api/cms/wa-send-hours)
 import * as wafavpick from "./wafavpick.js";
 import * as custprofile from "./custprofile.js";
 import * as waoffers from "./waoffers.js";
@@ -3325,6 +3326,7 @@ if (typeof waApi.setPayHold === "function") waApi.setPayHold((ctx) => waHealthAp
 /* 🍽 FD1 (١٤/١٠): حملة «طبقك المفضل» — عرض لكل عميل + سعر توصيله (wafavpick.js). المنيو/البوكسات/العروض من بوت واتساب
    (wabotApi.live — نفس الكاش، بيتسجّل تحت؛ النداء وقت التشغيل)، والتوصيل من delivery.quote نفسها (كاش المسافات بس). */
 const favPickApi = wafavpick.makeFavPick({ pool, getSettingsData, live: () => (wabotApi ? wabotApi.live : null), quote: (x) => deliveryApi.quote(x) });
+sendHours.register(app, moduleCtx);
 const waSenderApi = wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser, cms: () => cmsApi,
   wa: waApi, cloud: () => waCloudApi, fav: () => favPickApi, profile: () => profileApi, health: () => waHealthApi,
   /* QP1: تنبيه المالك لما بوابة الجودة توقّف الحملات — SMS لأرقام تنبيهات الإدارة + حدث للبورتال (portalApi بيتعرّف تحت؛ النداء وقت التشغيل) */

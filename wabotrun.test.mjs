@@ -4825,7 +4825,13 @@ test("SB4 window keeper: ~20 h after the customer's last message ONE free messag
   await quiet.say("هلا");
   const q1 = await quiet.tick(20 * 60 + 5);      // 05:05 UTC = 08:05 Riyadh: quiet (02–11)
   assert.equal(q1.filter((b) => b.type).length, 0, "quiet hours " + JSON.stringify(q1) + JSON.stringify(quiet.db.jobs.map((j) => [j.kind, j.status, j.reason])));
-  assert.equal(quiet.db.jobs.find((j) => j.kind === "window_keep").reason, "quiet_hours");
+  /* عمر ١٨/١٠: «الإرسال مرتبط بمواعيد المطعم» (افتراضي مفتوح) ⇒ السبب «closed» (المطعم مقفول ٨ الصبح) بدل ساعات الهدوء الثابتة */
+  assert.equal(quiet.db.jobs.find((j) => j.kind === "window_keep").reason, "closed");
+  const legacy = world({ at: "2026-10-12T09:00:00Z", extraSettings: { waSendHours: { enabled: false } }, waBot: { mode: "test", testPhones: TESTERS, paidNoteEnabled: false }, orders: [{ order_no: "W1790012347777", phone_norm: "512345678", status: "on_the_way", option: "delivery", created_at: "2026-10-13T04:30:00Z" }] });
+  await legacy.say("هلا");
+  const q0 = await legacy.tick(20 * 60 + 5);
+  assert.equal(q0.filter((b) => b.type).length, 0);
+  assert.equal(legacy.db.jobs.find((j) => j.kind === "window_keep").reason, "quiet_hours", "الإعداد مقفول ⇒ هدوء ٠٢–١١ القديم");
   const w = world({ at: "2026-10-12T15:00:00Z", waBot: { mode: "test", testPhones: TESTERS, paidNoteEnabled: false }, orders: [{ order_no: "W1790012347777", phone_norm: "512345678", status: "on_the_way", option: "delivery", created_at: "2026-10-13T10:30:00Z" }] });
   await w.say("هلا");
   const s = await w.tick(20 * 60 + 5);           // 11:05 UTC = 14:05 Riyadh

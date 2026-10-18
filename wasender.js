@@ -54,6 +54,7 @@ import { waRatesOf } from "./waaicost.js";
 import { FAV_PICK, FAV_AUDIENCE, FAV_DEFAULT_FILTERS, FAV_HOLD, favJobProblem, lineProblem } from "./wafavpick.js";
 import { PROFILE_ALL, PROFILE_TOKENS, PROFILE_TOKEN_KEYS, profileTokensIn, tokensOf, exampleProfileValues } from "./custprofile.js";
 import { habitCfg, habitSchemaRows, planJob, storedPlanHours, riyadhParts, HABIT_GROUP, HABIT_GROUP_AR, HABIT_WHY_AR } from "./wahabit.js";      // CJ1b (١٧/١٠): الإرسال على عادة العميل
+import { sendHoursCfg, isRestaurantOpenAt } from "./sendhours.js";      // عمر ١٨/١٠: «المطعم شغال طول اليوم» — ساعات الإرسال = مواعيد المطعم
 
 export const MIN_GAP_DAYS = 3;
 export const DEFAULTS = {
@@ -82,7 +83,7 @@ const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n
 export function senderCfg(settings) {
   const x = { ...DEFAULTS, ...(((settings || {}).waSender) || {}) };
   const minD = clampN(x.minDelaySec, 20, 1800, DEFAULTS.minDelaySec);
-  return {
+  const out = {
     enabled: x.enabled === true,
     gapDays: clampN(x.gapDays, MIN_GAP_DAYS, 60, 3),
     dailyCap: clampN(x.dailyCap, 1, 300, 40),
@@ -102,6 +103,10 @@ export function senderCfg(settings) {
     byHabit: habitCfg(x.byHabit),      // CJ1b (١٧/١٠): «الإيقاع» — الإرسال على عادة العميل (wahabit.js)؛ الافتراضي مقفول
     agentHash: x.agentHash || null,
   };
+  /* عمر ١٨/١٠ («كل الرسايل المربوطة إن المطعم مفتوح تتبعت عادي في وقتها»): بوابة مواعيد المطعم (sendhours.js) — مش enumerable عن قصد:
+     مابتتخزّنش مع waSender (POST /api/cms/wa-sender/settings بيكتب ناتج senderCfg) ومابتغيّرش أي مقارنة على الإعدادات. */
+  Object.defineProperty(out, "gate", { value: sendHoursCfg(settings), enumerable: false });
+  return out;
 }
 function warmupCfg(w) {
   const o = w && typeof w === "object" ? w : {};
@@ -113,6 +118,10 @@ const riyadh = (now) => new Date(new Date(now).toLocaleString("en-US", { timeZon
 export function inWindow(cfg, now = Date.now()) {
   const r = riyadh(now);
   if (!cfg.days.includes(DAYS[r.getDay()])) return false;
+  /* عمر ١٨/١٠: «الإرسال مرتبط بمواعيد المطعم» مفتوح والمواعيد متعرّفة ⇒ المطعم مفتوح (وقبل القفل بالهامش) بدل startHour/endHour.
+     أيام الإرسال (days) لسه فوقه. الإعداد مقفول أو المواعيد مش متعرّفة ⇒ الساعات القديمة زي ما هي. */
+  const open = cfg.gate ? isRestaurantOpenAt(now, cfg.gate) : null;
+  if (open !== null) return open;
   const h = r.getHours();
   return cfg.endHour > cfg.startHour ? h >= cfg.startHour && h < cfg.endHour : h >= cfg.startHour || h < cfg.endHour;
 }
@@ -320,7 +329,7 @@ export function register(app, ctx, deps = {}) {
     let outsideSenderHours = 0;
     for (const v of hp.byPn.values()) if (!inWindow(cfg, Date.parse(v.at))) outsideSenderHours++;
     return { enabled: cfg.byHabit.enabled, hours: hp.hours, total: hp.total, byHabit: hp.byHabit, noHour: hp.noHour, passed: hp.passed, outside: hp.outside, window: hp.window,
-      outsideSenderHours, senderHours: { startHour: cfg.startHour, endHour: cfg.endHour, days: cfg.days }, why: HABIT_WHY_AR };
+      outsideSenderHours, senderHours: { startHour: cfg.startHour, endHour: cfg.endHour, days: cfg.days, byRestaurantHours: Boolean(cfg.gate && cfg.gate.active) }, why: HABIT_WHY_AR };
   }
   /* لحظة البدء المجدول (startDueJobs): الخطة بتتعاد لصفوف الحملة اللي لسه pending من دلوقتي (مش من لحظة الإنشاء)؛ الإعداد اتقفل ⇒ المواعيد بتتشال (زي الأول) */
   async function applyHabitPlan(jobId, { s, channel, at }) {
@@ -840,7 +849,7 @@ export function register(app, ctx, deps = {}) {
     const { agentHash, ...pub } = cfg;
     const cloud = await cloudInfo(s, cfg);
     return c.json({ ok: true, cfg: pub, agentPaired: Boolean(agentHash), state: st, cloud,
-      pace: pacing(cfg, st, now(), () => 0), inWindow: inWindow(cfg, now()),
+      pace: pacing(cfg, st, now(), () => 0), inWindow: inWindow(cfg, now()), sendHours: { byRestaurantHours: cfg.gate.active, enabled: cfg.gate.enabled, stopBeforeCloseMin: cfg.gate.stopBeforeCloseMin },      // عمر ١٨/١٠
       effectiveDailyCap: effectiveDailyCap(cfg, now()),
       audiences: await audienceList(),
       jobs: jobs.map((j) => ({ ...j, id: Number(j.id), start_at_riyadh: j.start_at ? riyadhClock(j.start_at) : null })), minGapDays: MIN_GAP_DAYS, startMaxDays: START_MAX_DAYS,

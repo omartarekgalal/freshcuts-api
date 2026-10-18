@@ -38,6 +38,8 @@ import { recordPosReviewConsent, POS_REVIEW_CONSENT } from "./waconsent.js";
 import { isPlaceholderPhone, placeholderWhy, FAKE_PHONE_RE } from "./phonecheck.js";
 /* RV1: التقييمات الواطية في بورتال المدير — نفس صف التقييم (resolved/resolution_note) اللي الوارد في اللوحة بيقراه + سجل الإجراءات */
 import { REVIEW_PORTAL_DDL, OUTCOMES, outcomeOf, closeReview, closeStatus } from "./portalreviews.js";
+/* عمر ١٨/١٠: «المطعم شغال طول اليوم» — طلب التقييم على واتساب بيطلع والمطعم مفتوح (sendhours.js) بدل هدوء ٢٣:٣٠–١١:٣٠ */
+import { isRestaurantOpenAt, nextSendOpenAt, sendHoursCfg } from "./sendhours.js";
 
 const CATEGORIES = ["الأكل", "التوصيل", "الخدمة", "السعر", "النظافة", "الوقت"];
 export const DEFAULTS = {
@@ -226,6 +228,9 @@ export function register(app, ctx, deps = {}) {
   const ipOf = (c) => c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "";
   /* RV1: إعدادات المسار الجديد من لوحة البوت (waBot.reviewFlow — المخطط في wareviews.js) */
   const flowOf = (s) => reviewFlowConfig((((s || {}).waBot) || {}).reviewFlow);
+  /* عمر ١٨/١٠: «الإرسال مرتبط بمواعيد المطعم» شغّال (والمواعيد متعرّفة) ⇒ ميعاد الدعوة مابيتزقّش لساعات الهدوء الثابتة وقت التسجيل —
+     البوابة وقت الإرسال (runInvites) هي اللي بتأجّل لحد ما المطعم يفتح. مقفول ⇒ الهدوء القديم زي ما هو. */
+  const dueFlowOf = (s, flow) => (sendHoursCfg(s).active ? { ...flow, quietFromHour: 0, quietFromMinute: 0, quietToHour: 0, quietToMinute: 0 } : flow);
   /* RV6: استعلام بيرجّع الصفوف أو null لو القاعدة وقعت (نفس شكل q في wabotrun) — لدوال wareviews (حالة «قيّم على جوجل») */
   const qq = async (sql, p = []) => { try { return (await pool.query(sql, p)).rows; } catch (e) { console.error("[reviews] q:", e.message); return null; } };
   /* RV6: العميل ده معلَّم «قيّم على جوجل ✅»؟ (القاعدة وقعت ⇒ false: صفحة التقييم مابتتكسرش عشان العلامة) */
@@ -449,7 +454,8 @@ export function register(app, ctx, deps = {}) {
     if (o.is_test) return { ok: false, reason: "test_order" };
     if (!/^5\d{8}$/.test(o.phone_norm || "")) return { ok: false, reason: "no_phone" };
     /* RV1: النوع (توصيل / استلام / طاولة QR) — كل نوع له مفتاحه وميعاده في لوحة البوت (waBot.reviewFlow) */
-    const flow = flowOf(await getSettingsData());
+    const sNow = await getSettingsData();
+    const flow = flowOf(sNow);
     const kind = Number(o.table_no) > 0 ? "table" : o.option === "pickup" ? "pickup" : "delivery";
     if (flow.enabled && !kindOn(kind, flow)) return { ok: false, reason: "kind_off" };
     const mins = Math.min(720, Math.max(1, Number(cf.askAfterMinutes) || 30));
@@ -473,7 +479,7 @@ export function register(app, ctx, deps = {}) {
       } catch { /* من غير بيانات الشحنة: الحساب العادي */ }
     }
     const due = flow.enabled
-      ? dueFor(kind, { orderAt: o.created_at, deliveredAt: at, createdAt: o.created_at, pickedAt, courierConfirmed }, flow)
+      ? dueFor(kind, { orderAt: o.created_at, deliveredAt: at, createdAt: o.created_at, pickedAt, courierConfirmed }, dueFlowOf(sNow, flow))
       : reviewDueAt({ deliveredAt: at, askAfterMin: mins, option: o.option, createdAt: o.created_at, pickedAt, courierConfirmed });
     const ins = await pool.query(
       `INSERT INTO review_invites(order_no, code, phone_norm, option, due_at, kind, order_at, ref)
@@ -531,7 +537,7 @@ export function register(app, ctx, deps = {}) {
       if (!/^5\d{8}$/.test(String(r.pn || "")) || r.web_near) continue;
       const kind = posKindOf(r);
       if (!kind || !kindOn(kind, flow)) continue;
-      const due = dueFor(kind, { orderAt: r.order_date }, flow, now.getTime());
+      const due = dueFor(kind, { orderAt: r.order_date }, dueFlowOf(settings, flow), now.getTime());
       const ref = String(r.receipt || "").trim() ? `فاتورة ${String(r.receipt).trim().slice(0, 20)}` : null;
       const bad = skipSet.has(String(r.pn)) ? "staff" : isPlaceholderPhone(r.pn) ? "bad_number" : (bills.get(String(r.pn)) || 0) >= POS_REVIEW_CONSENT.sharedBills ? "shared_phone" : null;
       if (bad) {
@@ -603,8 +609,20 @@ export function register(app, ctx, deps = {}) {
         [now.toISOString(), String(maxAge)]);
       /* ساعات الهدوء: المسار الجديد (٢٣:٣٠ ← ١١:٣٠ افتراضياً، دقيقة بدقيقة) بيأجّل اللي ميعاده جه لـ«resume» (١ الضهر) بدل ما يسيبه يطلع أول ما الهدوء يخلص.
          المسار القديم: ساعات صفحة التقييمات زي ما كانت. */
+      /* عمر ١٨/١٠: البوابة الجديدة — المطعم مفتوح (وقبل القفل بالهامش) بدل ساعات الهدوء الثابتة. مقفول ⇒ اللي ميعاده جه بيتأجّل لأول لحظة
+         مسموحة (مش بيتلغي إلا لو عدّى «أقصى عمر للدعوة»). الإعداد مقفول / المواعيد مش متعرّفة ⇒ الهدوء القديم تحت زي ما هو. */
+      const openGate = flow.enabled ? isRestaurantOpenAt(now, s) : null;
+      if (openGate === false) {
+        const nx = nextSendOpenAt(now, s);
+        if (nx) {
+          const until = nx.toISOString();
+          const d0 = await pool.query(`UPDATE review_invites SET due_at=$1::timestamptz WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at < $1::timestamptz`, [until]);
+          return { skipped: "closed", deferredTo: until, deferred: d0.rowCount || 0 };
+        }
+        return { skipped: "closed" };
+      }
       if (flow.enabled) {
-        if (inQuiet(now, flow)) {
+        if (openGate === null && inQuiet(now, flow)) {
           const until = nextAllowed(now, flow).toISOString();
           /* مراجعة RV1: براميتر واحد ومستخدم ($1) — Postgres بيرفض أي براميتر مش مستخدم نوعه مش معروف (42P18) فالمسح كله كان بيقع بالليل */
           const d0 = await pool.query(`UPDATE review_invites SET due_at=$1::timestamptz WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at < $1::timestamptz`, [until]);
@@ -713,6 +731,9 @@ export function register(app, ctx, deps = {}) {
           if (r && r.skipped) { waWhy = String(r.skipped).slice(0, 80); await mark("wa_skip", waWhy); }
         }
         if (visit && !flow.smsVisits) { await skip(`no_sms_visit${waWhy ? `:${waWhy}` : ""}`.slice(0, 80)); continue; }
+        /* عمر ١٨/١٠: البوابة الجديدة بتسيب طلب التقييم يطلع بالليل والمطعم مفتوح — ده لواتساب. الـSMS البديلة لسه بتحترم هدوء التقييم القديم
+           (رسالة SMS الساعة ٢ الفجر = صحيان) ⇒ تتأجّل لأول وقت مسموح بالهدوء القديم بدل ما تتبعت دلوقتي. */
+        if (openGate === true && inQuiet(now, flow)) { await mark("due_at", nextAllowed(now, flow).toISOString()); out.deferred = (out.deferred || 0) + 1; continue; }
         const body = askBody(cf.askText, `${STORE_PUBLIC()}/r?c=${iv.code}`);
         try {
           const ok = await n?.sendSmsTo?.(iv.phone_norm, body, { kind: "review_invite", ref: iv.order_no });

@@ -113,7 +113,7 @@ function pgParamsCheck(sql, params = []) {
   for (let i = 1; i <= params.length; i++) if (!used.has(i)) throw Object.assign(new Error("could not determine data type of parameter $" + i), { code: "42P18" });
   for (const i of used) if (i > params.length) throw Object.assign(new Error("bind message supplies " + params.length + " parameters, but prepared statement requires " + Math.max(...used)), { code: "08P01" });
 }
-function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {}, shop = [], flow = {}, reviewsCfg = {}, waReply = null, sms = true, failRe = null, bills = {}, billCounts = {} } = {}) {
+function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {}, shop = [], flow = {}, reviewsCfg = {}, waReply = null, sms = true, failRe = null, bills = {}, billCounts = {}, extra = {} } = {}) {
   const db = { invites: invites.map((x) => ({ ...x })), reviews: reviewsRows.map((x) => ({ ...x })), sms: [], asked: [], sql: [] };
   const inv = (no) => db.invites.find((x) => x.order_no === no);
   const pool = { async query(q, p = []) {
@@ -173,7 +173,7 @@ function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {
   } };
   const routes = {}; const add = (mm) => (path, h) => { routes[`${mm} ${path}`] = h; };
   const app = { get: add("GET"), post: add("POST"), put: add("PUT"), delete: add("DELETE") };
-  const settings = { reviews: { threshold: 4, googleUrl: "https://g.page/r/CSG0gPAqlvHMEBM/review", askMaxAgeHours: 20, ...reviewsCfg }, delivery: { alertPhones: ["0544775082"] }, waBot: { testPhones: ["0561186075"], reviewFlow: flow } };
+  const settings = { reviews: { threshold: 4, googleUrl: "https://g.page/r/CSG0gPAqlvHMEBM/review", askMaxAgeHours: 20, ...reviewsCfg }, delivery: { alertPhones: ["0544775082"] }, waBot: { testPhones: ["0561186075"], reviewFlow: flow }, ...extra };
   const api = reviews.register(app, { pool, requireAdmin: async () => null, getSettingsData: async () => settings, jb: (x) => JSON.stringify(x), normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "") },
     { notify: () => ({ sendSmsTo: async (phone, body, meta) => { db.sms.push({ phone, body, meta }); return sms; } }),
       ...(waReply ? { waReview: () => ({ reviewAsk: async (x) => { db.asked.push(x); return typeof waReply === "function" ? waReply(x) : waReply; } }) } : {}) });
@@ -360,4 +360,24 @@ test("review fix (pre-orders, SB2): a next-day pre-order is asked after delivery
   await sm.api.queueInvite("W1790012349001", { at: new Date(delivered) });
   await sm.run("2026-10-15T18:31:00Z");
   assert.deepEqual([sm.db.invites[0].skip_reason, sm.db.invites[0].channel, sm.db.sms.length], [undefined, "sms", 1]);
+});
+
+/* عمر ١٨/١٠: «المطعم شغال طول اليوم — كل الرسايل المربوطة إن المطعم مفتوح تتبعت عادي في وقتها» ⇒ طلب التقييم بمواعيد المطعم (sendhours.js) */
+const OPEN_HOURS = { enabled: true, days: Object.fromEntries(["sun", "mon", "tue", "wed", "thu", "fri", "sat"].map((d) => [d, { open: "13:00", close: d === "thu" || d === "fri" ? "03:00" : "02:00" }])) };
+test("open-hours gate: 00:30 Riyadh with the restaurant open ⇒ the WhatsApp ask goes now (the old 23:30–11:30 quiet would hold it to 13:00); 11:00 closed ⇒ deferred to the 13:00 opening; the SMS fallback still keeps the old quiet; setting off ⇒ old quiet", async () => {
+  const late = "2026-10-15T21:30:00Z";      // 00:30 Riyadh (Thursday shift → open till 03:00)
+  const inv = (no, due) => ({ order_no: no, code: `c${no.replace(/\D/g, "").slice(-6)}xx`, phone_norm: "531478260", option: "dinein", kind: "dinein", due_at: due, order_at: due, created_at: due });
+  const a = rig({ invites: [inv("pos:7001", "2026-10-15T21:00:00Z")], extra: { hours: OPEN_HOURS }, waReply: { ok: true, channel: "wa_list" } });
+  const o1 = await a.run(late);
+  assert.equal(o1.sent, 1, JSON.stringify(o1)); assert.equal(a.db.asked.length, 1);
+  const b = rig({ invites: [inv("pos:7002", "2026-10-16T07:30:00Z")], extra: { hours: OPEN_HOURS }, waReply: { ok: true, channel: "wa_list" } });
+  const o2 = await b.run("2026-10-16T08:00:00Z");      // 11:00 Riyadh — closed
+  assert.equal(o2.skipped, "closed"); assert.equal(o2.deferredTo, "2026-10-16T10:00:00.000Z", "the 13:00 opening"); assert.equal(b.db.asked.length, 0);
+  const c = rig({ invites: [inv("pos:7003", "2026-10-15T21:00:00Z")], flow: { smsVisits: true }, extra: { hours: OPEN_HOURS }, waReply: { ok: false, skipped: "no_visit_template" } });
+  const o3 = await c.run(late);
+  assert.equal(c.db.sms.length, 0, "no SMS at 00:30"); assert.equal(o3.deferred, 1);
+  assert.equal(c.db.invites[0].due_at, "2026-10-16T10:00:00.000Z", "the SMS waits for the old resume time (13:00)");
+  const d = rig({ invites: [inv("pos:7004", "2026-10-15T21:00:00Z")], extra: { hours: OPEN_HOURS, waSendHours: { enabled: false } }, waReply: { ok: true, channel: "wa_list" } });
+  const o4 = await d.run(late);
+  assert.equal(o4.skipped, "quiet", "setting off ⇒ the old 23:30–11:30 quiet"); assert.equal(d.db.asked.length, 0);
 });

@@ -40,6 +40,7 @@ import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL, ORDER_BUTTON, ORDER_BUTTON_EN } from "./watemplates.js";
 import { CR_DEFAULTS, makeCampaignReply } from "./wacampreply.js";      // CR2 (١٦/١٠): «أبغى أطلب» على رسالة حملة ⇒ عرض الحملة نفسها
 import { isOpenNow } from "./carts.js";
+import { isRestaurantOpenAt, nextSendOpenAt } from "./sendhours.js";      // عمر ١٨/١٠: «المطعم شغال طول اليوم» — رسايل البوت الآلية بمواعيد المطعم بدل ساعات الهدوء الثابتة
 import { preorderCfg } from "./preorder.js";
 import { makeBotCarts, reorderPlan, planSummary, orderDay, chatLocation } from "./wabotcart.js";
 import { makeAssistTools, validateReply, profileSummaryAr, grillFamilies } from "./waassist.js";
@@ -57,6 +58,10 @@ import { ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import { makeStt, STT_PROVIDERS } from "./wasttkey.js";
 import { emitOrder } from "./order-events.js";      // MJ1 (١٧/١٠): ملاحظة العميل على طلبه الشغّال ⇒ سطر في سجل الطلب
 const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
+/* عمر ١٨/١٠ — FU1 «متابعة اللي ردّ»: «الإرسال مرتبط بمواعيد المطعم» شغّال ⇒ المطعم مفتوح (وقبل القفل بالهامش) بدل replyFollowUpFrom/To؛
+   مقفول (أو المواعيد مش متعرّفة) ⇒ الساعات القديمة. التأجيل لأول لحظة مسموحة. صافيين ومتجرّبين (sendhours.test.mjs). */
+export function followHoursOk(now, cfg, settings) { const g = isRestaurantOpenAt(now, settings); return g === null ? inFollowHours(now, cfg) : g; }
+export function followNext(now, cfg, settings) { const g = isRestaurantOpenAt(now, settings); if (g === null) return nextFollowStart(now, cfg); return nextSendOpenAt(new Date(now.getTime() + 60_000), settings) || nextFollowStart(now, cfg); }
 import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
 import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, noteCampaignTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro, heardContext, planReminder } from "./waassistrun.js";
 import { declineMemory } from "./wapersonal.js";      // S1: ذاكرة الرفض بين المحادثات
@@ -3322,7 +3327,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
        وأول دقيقة جوّاها بتلقط اللي سكتوا بالليل طول ما نافذتهم مفتوحة. شغلة واحدة لكل نافذة (rf:<الرقم>:<وقت آخر رسالة ليه>)، وكل الشروط بتتراجع في runReplyFollowUp. */
     if (cfg.replyFollowUp && cfg.replyFollowUpDailyCap > 0) {
       let br = null; try { br = await brakeTick(settings, cfg, now); } catch (e) { console.error("[wabot] followup brake:", e.message); br = null; }
-      if (br && !br.on && inFollowHours(now, cfg)) {
+      if (br && !br.on && followHoursOk(now, cfg, settings)) {
         const cs = await q(FU_SQL.candidates, [Math.ceil(cfg.replyFollowUpMin), 24 * 60 - 10, Math.ceil(cfg.replyFollowUpCampaignHours), [...FU_TAP_KEYS], Math.ceil(cfg.replyFollowUpTapHours), cfg.mode === "test" ? cfg.testPhones : null, 30]);
         for (const c of cs || []) {
           const li = new Date(c.last_in);
@@ -3482,8 +3487,11 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const [why, m, chat, op] = await ownGate(phone, settings, cfg, now, new Date(lastInMs + 1).toISOString());
     if (why) return no(why);
     if (Number(m.wrote) > 0) return no("customer_wrote");
+    /* عمر ١٨/١٠: «الإرسال مرتبط بمواعيد المطعم» ⇒ المطعم مفتوح (وقبل القفل بالهامش) بدل هدوء windowKeeperQuietStart/End. الإعداد مقفول ⇒ الهدوء القديم. */
+    const wkOpen = isRestaurantOpenAt(now, settings);
+    if (wkOpen === false) return no("closed");
     const hr = new Date(now.getTime() + 3 * 3600_000).getUTCHours(), qs = Math.round(cfg.windowKeeperQuietStart), qe = Math.round(cfg.windowKeeperQuietEnd);
-    if (qs !== qe && (qs < qe ? hr >= qs && hr < qe : hr >= qs || hr < qe)) return no("quiet_hours");
+    if (wkOpen === null && qs !== qe && (qs < qe ? hr >= qs && hr < qe : hr >= qs || hr < qe)) return no("quiet_hours");
     if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
     /* SB5: window_sell_at جاية من pg كـDate، و Date.parse(Date) بيعدّي على toString فبيقطّع للثانية (سطر بيع في نفس ثانية رسالته كان بيتشاف «قبلها» ⇒ رسالة تانية في نفس النافذة).
        getTime() بالمللي، و >= : نفس المللي يتحسب «اتبعت» — يغلط ناحية «مانبعتش» زي done_at تحت. */
@@ -3729,10 +3737,10 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const ig = await q(FU_SQL.ignored, [phone, [...FU_PROACTIVE_KEYS], Math.ceil(cfg.replyFollowUpIgnoredDays)]);
     if (ig === null || !ig[0]) return no("ignored_check_failed");
     if (Number(ig[0].n) >= cfg.replyFollowUpIgnoredMax) return no("ignored");
-    if (!inFollowHours(now, cfg)) return later(nextFollowStart(now, cfg).getTime(), "quiet_hours");
+    if (!followHoursOk(now, cfg, settings)) return later(followNext(now, cfg, settings).getTime(), "quiet_hours");
     let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
     if (!open) return no("hours_unknown");
-    if (open.open !== true) { const nx = now.getTime() + 15 * 60_000; return later(inFollowHours(new Date(nx), cfg) ? nx : nextFollowStart(now, cfg).getTime(), "closed"); }
+    if (open.open !== true) { const nx = now.getTime() + 15 * 60_000; return later(followHoursOk(new Date(nx), cfg, settings) ? nx : followNext(now, cfg, settings).getTime(), "closed"); }
     const dc = await q(FU_SQL.dayCount, [bizDayStart(now).toISOString()]);
     if (dc === null || !dc[0]) return no("cap_check_failed");
     if (Number(dc[0].n) >= cfg.replyFollowUpDailyCap) return later(nextFollowStart(now, cfg).getTime(), "daily_cap");
@@ -4134,8 +4142,10 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     sales: (key, vars, lang) => salesTextOf(cfg, key, vars, lang),      // SB1: نصوص عقل البيع (من اللوحة) بأرقام النظام
     firstLead: async (v, lang) => fill("first_lead", textOf(cfg, "first_lead", lang === "en" ? "en" : "ar"), { from: money(v.from), code: v.code }),      // PS5      // PS4: نص لحظة الرسوم من نصوص اللوحة
     /* PS3: خطة التذكير — آخر رسالة للعميل = الرسالة دي (النافذة ٢٤ ساعة منها)، ساعات الهدوء من الإعدادات، والمطعم لازم يكون فاتح في الميعاد. */
-    reminder: async ({ day, time, lang }) => planReminder({ now: clock(), day, time, lastInMs: clock().getTime(), quietStart: cfg.assist.reminderQuietStart, quietEnd: cfg.assist.reminderQuietEnd, lang,
-      isOpenAt: (dt) => { try { return settings?.hours ? isOpenNow(settings.hours, dt) : null; } catch { return null; } } }),
+    /* عمر ١٨/١٠: «الإرسال مرتبط بمواعيد المطعم» شغّال ⇒ مفيش ساعات هدوء ثابتة للتذكير (quiet 0→0) والشرط = المطعم مفتوح وقبل القفل بالهامش */
+    reminder: async ({ day, time, lang }) => { const gate = isRestaurantOpenAt(clock(), settings) !== null;
+      return planReminder({ now: clock(), day, time, lastInMs: clock().getTime(), quietStart: gate ? 0 : cfg.assist.reminderQuietStart, quietEnd: gate ? 0 : cfg.assist.reminderQuietEnd, lang,
+        isOpenAt: (dt) => { try { if (gate) return isRestaurantOpenAt(dt, settings); return settings?.hours ? isOpenNow(settings.hours, dt) : null; } catch { return null; } } }); },
     onCall: async (m) => { const rec = await aicost.record({ ...m, purpose: "assistant", logId }, cfg.llm.prices); return { costSar: rec.costSar, in: rec.in, out: rec.out, cached: rec.cached }; } });
   async function assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone, held = false, allowed = false }) {
     const acfg = cfg.assist;
@@ -4352,8 +4362,11 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const chat = await chatOf(phone);
     if (chat.muted_until && Date.parse(chat.muted_until) > now.getTime()) return no("muted");
     if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
+    /* عمر ١٨/١٠: «الإرسال مرتبط بمواعيد المطعم» ⇒ الشرط = المطعم مفتوح وقبل القفل بالهامش (بدل هدوء reminderQuietStart/End). الإعداد مقفول ⇒ الهدوء القديم. */
+    const rmOpen = isRestaurantOpenAt(now, settings);
+    if (rmOpen === false) return no("closed");
     const hr = new Date(now.getTime() + 3 * 3600_000).getUTCHours(), qs = Math.round(acfg.reminderQuietStart), qe = Math.round(acfg.reminderQuietEnd);
-    if (qs !== qe && (qs < qe ? hr >= qs && hr < qe : hr >= qs || hr < qe)) return no("quiet_hours");
+    if (rmOpen === null && qs !== qe && (qs < qe ? hr >= qs && hr < qe : hr >= qs || hr < qe)) return no("quiet_hours");
     let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
     if (!open) return no("hours_unknown"); if (open.open !== true) return no("closed");
     const lang = ev.lang === "en" ? "en" : "ar";
