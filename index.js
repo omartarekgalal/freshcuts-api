@@ -103,6 +103,7 @@ import * as revpulse from "./revpulse.js";      // RP2 (١٦/١٠): رسالة �
 import * as carts from "./carts.js";
 import * as freebar from "./freebar.js";
 import * as openwait from "./openwait.js";
+import * as game from "./game.js";      // RTG2 (١٨/١٠): لعبة الجري + لوحة الأبطال بالاسم الأول (/api/game/* + /api/cms/game)
 import * as service from "./service.js";
 import * as preorder from "./preorder.js";
 import * as journey from "./journey.js";
@@ -3367,6 +3368,9 @@ searchMod.register(app, moduleCtx, { cms: () => cmsApi, c360: () => c360Api });
 // «نبّهني لما تفتحوا»: العميل اللي جه والمطعم مقفول بيسيب رقمه، وسلته بتتحفظ
 // ورا نفس رابط الاسترداد بتاع carts، والرسالة بتتبعت وقت الفتح بس.
 openwait.register(app, moduleCtx, { notify: () => notifyApi, carts: () => cartsApi });
+/* 🎮 RTG2: لعبة الجري على المتجر (/play + صفحة التتبّع) — توكن جولة موقّع، نعلّم على الغش مش نرفضه، لوحة أبطال بالاسم الأول بس.
+   accounts متسجّل قبلها، بس الربط getter زي باقي الموديولات. */
+game.register(app, moduleCtx, { accounts: () => accountsApi });
 /* ⏸️ إيقاف الخدمة مؤقتاً (٢٣/٩): وقف التوصيل أو الاستلام لفترة برجوع تلقائي.
    اللي اتمنع بيتسجّل في نفس قايمة «نبّهني لما تفتحوا» وبتوصله رسالة عند الرجوع. */
 /* التقرير بياخد مقبض bizreports (getter متأخر — bizreports بيتسجل بعده)

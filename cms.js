@@ -151,6 +151,7 @@ const PATH_SECTIONS = [
   [/^\/api\/(shop\/(orders|board|summary)|day\b|day\/|staff\/|cashier|chef|notifications)/, "orders"],
   // «منتظرين الفتح» — نفس قسم السلات المتروكة (نمو): استرداد طلب ضايع
   [/^\/api\/(cms\/)?openwait/, "growth"],
+  [/^\/api\/cms\/game/, "growth"],      // RTG2: لعبة الجري + أبطال الأسبوع (الخصم بعدين = تسويق)
   [/^\/api\/(ads|autopilot|attribution|funnel|audiences|retargeting|retarget|marketing|mkhub|content|social|promo|catalog|tracking|offers|carts|menuplan|scorecard|ai\/|chat)/, "growth"],
   [/^\/api\/(customers|account\/admin)/, "customers"],
   // تحكم كيتا (٧/١٠): إتاحة الأصناف والعروض = «المنتجات» (زي «خلص النهارده» عندنا)،

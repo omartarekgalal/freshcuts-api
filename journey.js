@@ -81,6 +81,13 @@ const PICKUP_BLOCKER_ALIAS = Object.freeze({ ios_not_installed: "ios_install", i
 export const PICKUP_PUSH_HOW = Object.freeze({ web: "من المتصفح", fcm: "من تطبيق فريش كاتس", silent: "إذن قديم (من غير سؤال)", other: "غير معروف" });
 export const PICKUP_DENIED_HOW = Object.freeze({ pre: "كان رافض من قبل", prompt: "رفض لما سألناه", other: "غير معروف" });
 
+/* RTG2 (١٨/١٠): لعبة الجري على المتجر (/play + جوّه صفحة التتبّع). props: game_play {src} · game_over {score, ms, src} ·
+   game_leaderboard_view {period, src} — src = play | track. زي JE1: ماتختمش الجلسة (NO_STAMP_RE) ومالهاش خطوة قمع (stepOf ⇒ null). */
+export const GAME_EVENTS = Object.freeze(["game_play", "game_over", "game_leaderboard_view"]);
+export const GAME_EVENT_LABELS = Object.freeze({
+  game_play: "بدأ يلعب لعبة الجري", game_over: "خلّص جولة في اللعبة", game_leaderboard_view: "فتح لوحة أبطال اللعبة",
+});
+
 // أحداث المتصفح المسموحة — أي اسم تاني بيترفض
 export const WEB_EVENTS = Object.freeze([
   "session_start", "page_view", "offer_view", "picker_open", "item_view",
@@ -115,6 +122,8 @@ export const WEB_EVENTS = Object.freeze([
   "wa_follow_shown", "wa_follow_tap", "wa_follow_close",
   // 17/10 (JE1): the five opt-in events of the pickup «نبّهك لما يجهز؟» card (RT4) — see PICKUP_OPTIN_EVENTS above
   ...PICKUP_OPTIN_EVENTS,
+  // 18/10 (RTG2): the endless-runner game on /play and the tracking page — see GAME_EVENTS above
+  ...GAME_EVENTS,
 ]);
 
 /* نوع خطأ الـJS. المتصفح بيبعت kind من ١٩/٩؛ القديم بنصنّفه من الرسالة والملف.
@@ -344,7 +353,7 @@ const ANON_RE = /^[a-z0-9_-]{2,64}$/i;
 const ORDER_RE = /^[A-Z]{0,3}\d{6,20}$/;
 /* أحداث مابتختمش الجلسة برقم طلب: «تابع طلبك على واتساب» (TRK6) وكارت «نبّهك لما يجهز؟» (JE1). بتطلع على صفحة التتبّع في جلسة ممكن تكون
    غير جلسة الشراء (بعد الطلب بساعات)، ولو ختمناها بالطلب القديم الـsweep بيعدّ فلوسه مرتين على قناة غلط. المتجر بيبعت الرقم فيهم كـprops.ord مش order_no. */
-const NO_STAMP_RE = /^(wa_follow|pickup_optin)_/;
+const NO_STAMP_RE = /^(wa_follow|pickup_optin|game)_/;      // RTG2: game_* كمان (اللعبة على صفحة التتبّع بعد الطلب)
 export const stampsSession = (name) => !NO_STAMP_RE.test(String(name || ""));
 /* رقم الطلب اللي الحدث بيختم بيه الجلسة (journey_sessions.order_no + shop_orders.journey_sid) */
 export const eventOrderNo = (e) => (e && e.props && stampsSession(e.name) && ORDER_RE.test(String(e.props.order_no || "")) ? String(e.props.order_no) : null);

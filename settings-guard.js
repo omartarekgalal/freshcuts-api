@@ -50,6 +50,7 @@ export const SERVER_OWNED_PATHS = [
   "waMaster",                   // wacloud.js (SEC: مفتاح واتساب الرئيسي — المالك بس، POST /api/cms/wa-cloud/master)
   "waCloudActive",              // wacloud.js (W5: أرقام آخر ربط ناجح — الأرقام الفعّالة)
   "keeta",                      // keeta_control.js (keeta.control — PUT /api/keeta/control/settings) + keeta_pull.js (KA2: keeta.pull — PUT /api/keeta/pull/settings)، المالك بس
+  "game",                       // game.js (RTG2: PUT /api/cms/game — اللعبة + فترة لوحة الأبطال + حد النقاط)
   "waSendHours",                // sendhours.js (عمر ١٨/١٠: «الإرسال مرتبط بمواعيد المطعم» — PUT /api/cms/wa-send-hours، المالك بس)
   "waHealth",                   // wahealth.js (WH1: مراقب صحة واتساب — POST /api/cms/wa-health/settings، المالك بس)
   "revenuePulse",               // revpulse.js (RP2: رسالة الدخل الدورية — POST /api/cms/revenue-pulse/settings، المالك بس)

@@ -63,6 +63,7 @@ import { smartTrackContext, recordShownEta } from "./smarteta.js";
 import { pickupTrackState, pickupLateCfg } from "./pickuptrack.js";
 import { courierOf, courierToken, COURIER_TEMPLATE_BASE } from "./couriercontact.js";
 import { followLinkOf, waPolicyCfg, WINDOW_OPEN_SQL, FOLLOW_WINDOW_HOURS } from "./wapolicy.js";
+import { gameCfg } from "./game.js";      // RTG2: track.game = اللعبة شغّالة؟
 
 /* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
    لو الملفات مش موجودة أو الـimport وقع، shop.js بيشتغل عادي والأحداث بتتجاهل.
@@ -1926,6 +1927,8 @@ export function register(app, ctx, deps = {}) {
       late: Boolean(pickup && pickup.late), promiseAt: pickup ? pickup.promiseAt : null,
       promiseText: pickup ? pickup.promiseText : null, promiseBasis: pickup ? pickup.promiseBasis : null,
       stages, eta, wa,
+      /* 🎮 RTG2: كارت لعبة الجري في صفحة التتبّع بيستخبى لما game:false (اللوحة ← اللعبة). الإعدادات فشلت ⇒ st = {} ⇒ الافتراضي (شغّالة). */
+      game: gameCfg(st).enabled,
       // 🍽 رقم الطاولة: صفحة التتبع بتعرض خطوات الصالة بدل «جاهز للاستلام من الفرع»
       table: Number(row.table_no) > 0 ? Number(row.table_no) : null,
       // 🎁 الولاء: «كل N طلبات = توصيل مجاني» — العميل يشوف هو فين (من غير جوال)
