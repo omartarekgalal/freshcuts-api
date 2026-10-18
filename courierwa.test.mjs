@@ -147,8 +147,10 @@ test("sendJob: window open ⇒ free interactive message with «استلمت ال
   const { api, state } = rig();
   const r = await api.sendJob(ORDER.order_no, { link: "https://freshcuts.sa/d/x", by: "مدير" });
   assert.equal(r.sent, true); assert.equal(r.via, "free");
-  assert.equal(state.sends.length, 1);
-  const s = state.sends[0];
+  /* CX1: زر «📍 شارك موقعي» (cta_url) بييجي الأول، وكارت الأزرار آخر رسالة */
+  assert.equal(state.sends.length, 2);
+  assert.equal(state.sends[0].payload.interactive.type, "cta_url");
+  const s = state.sends[1];
   assert.equal(s.phoneNorm, COURIER); assert.equal(s.source, "courier");
   assert.equal(s.orderNo, undefined, "not an order message for the customer reports (wapolicy) — the order timeline gets its own line");
   assert.ok(s.preview.includes(ORDER.order_no));
@@ -234,9 +236,9 @@ test("«عندي مشكلة» ⇒ manager push + order timeline, reply keeps the
 test("inbound: courier on a live run ⇒ claimed (bot quiet) + card once per 10 min; strangers untouched", async () => {
   const { state, wa } = rig();
   assert.equal(await wa.hooks[0]({ phoneNorm: COURIER, text: "السلام عليكم وصلت المطعم" }), true);
-  assert.equal(state.sends.length, 1);
+  assert.equal(state.sends.length, 2, "CX1: location button + card");
   assert.equal(await wa.hooks[0]({ phoneNorm: COURIER, text: "؟" }), true);
-  assert.equal(state.sends.length, 1, "no second card within 10 minutes");
+  assert.equal(state.sends.length, 2, "no second card within 10 minutes");
   assert.equal(await wa.hooks[0]({ phoneNorm: OTHER, text: "أبي أطلب" }), false);
   assert.equal(await wa.hooks[0]({ phoneNorm: COURIER, isEcho: true, text: "x" }), false);
 });

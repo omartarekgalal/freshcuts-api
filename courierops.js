@@ -820,6 +820,13 @@ export function register(app, ctx, deps = {}) {
           `SELECT order_no, wa_sent_at, wa_via, wa_error, wa_last_tap, wa_last_tap_at, problem_at FROM dl_ext_runs WHERE order_no = ANY($1::text[])`, [nos])).rows;
         waBy = new Map(ws.map((x) => [x.order_no, x]));
       } catch { /* courierwa لسه ما ضافش الأعمدة */ }
+      /* CX1: حالة الموقع (آخر نبضة وصلت حتى لو اترفضت + دقتها، وآخر زر «شارك موقعي») — استعلام لوحده برضه */
+      let locBy = new Map();
+      try {
+        const ls = (await pool.query(
+          `SELECT order_no, seen_at, last_acc, loc_sent_at, loc_nudges FROM dl_ext_runs WHERE order_no = ANY($1::text[])`, [nos])).rows;
+        locBy = new Map(ls.map((x) => [x.order_no, x]));
+      } catch { /* الأعمدة لسه ما اتضافتش */ }
       /* محاولات الإرسال (delivery.js، ٢١ سبتمبر): الكارت لازم يقول «آخر
          محاولة فشلت ليه» — قبل كده الفشل كان بيختفي تماماً والمدير بيفضل
          يدوس على نفس الزرار. أي عطل هنا بيتبلع: الخريطة بتفضل فاضية. */
@@ -865,6 +872,11 @@ export function register(app, ctx, deps = {}) {
                 deliveredAt: isoOf(rn.delivered_at), lastAt: isoOf(rn.last_at), pings: Number(rn.pings) || 0,
                 live: !rn.delivered_at && !rn.revoked_at && new Date(rn.expires_at).getTime() > t,
                 expiresAt: isoOf(rn.expires_at),
+                ...(() => {
+                  const l = locBy.get(r.order_no) || null;
+                  return l ? { seenAt: isoOf(l.seen_at), lastAcc: l.last_acc == null ? null : Math.round(Number(l.last_acc)),
+                               locSentAt: isoOf(l.loc_sent_at), locNudges: Number(l.loc_nudges) || 0 } : {};
+                })(),
                 wa: (() => {
                   const w = waBy.get(r.order_no) || null;
                   return w && (w.wa_sent_at || w.wa_error || w.wa_last_tap_at || w.problem_at) ? {

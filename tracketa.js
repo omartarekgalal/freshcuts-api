@@ -78,6 +78,14 @@ function driverOf(sh) {
   if (typeof d === "string") { try { d = JSON.parse(d); } catch { d = null; } }
   return d && typeof d === "object" ? d : null;
 }
+/* CX1 (١٨/١٠): وقت الموقع نفسه. صفحة المندوب الخارجي (/d/) بتكتب driver.at مع كل نبضة ومابتلمسش updated_at —
+   فالحكم بـupdated_at بس كان بيعتبر موقع حيّ «قديم» بعد ٨ دقايق من «استلمت» (والعكس: حدث جديد على الشحنة كان بيخلّي موقع
+   قديم يبان جديد). driver.at لو موجود ومعقول هو الأصدق، وإلا updated_at زي الأول (لاجلك وغيرها مابيكتبوش at). */
+export function positionAtMs(sh, drv = driverOf(sh), now = Date.now()) {
+  const a = ms(drv && (drv.at || (drv.location && drv.location.at)));
+  if (a != null) return Math.min(a, now);
+  return ms(sh && sh.updated_at);
+}
 function historyAt(row, status) {
   let h = row && row.history;
   if (typeof h === "string") { try { h = JSON.parse(h); } catch { h = null; } }
@@ -130,7 +138,7 @@ export function computeTrackEta({ row, sh = null, settings = {}, now = Date.now(
   if (picked != null || status === "on_the_way") {
     const drv = driverOf(sh);
     const pos = drv ? driverLatLng(drv) : { lat: null, lng: null };
-    const posAt = ms(sh && sh.updated_at);
+    const posAt = positionAtMs(sh, drv, now);
     const fresh = pos.lat != null && posAt != null && now - posAt <= cfg.staleMin * 60_000;
     if (fresh && cust) {
       const straight = haversineKm(pos, cust);
@@ -228,7 +236,7 @@ export function computeSmartEta({ row, sh = null, settings = {}, now = Date.now(
     const sla = courierSlaCfg(settings);
     const drv = driverOf(sh);
     const pos = drv ? driverLatLng(drv) : { lat: null, lng: null };
-    const posAt = ms(sh && sh.updated_at);
+    const posAt = positionAtMs(sh, drv, now);
     const fresh = pos.lat != null && posAt != null && now - posAt <= cfg.staleMin * 60_000;
     if (fresh && cust) {
       const straight = haversineKm(pos, cust);

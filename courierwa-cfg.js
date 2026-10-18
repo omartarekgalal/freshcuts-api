@@ -4,12 +4,13 @@ export const CW_TEMPLATE = "fc_courier_job_v1";
 export const COURIER_JOB_TEMPLATES = Object.freeze([CW_TEMPLATE]);
 
 /* ── الإعدادات (settings.waBot.courierJob) ───────────────────────────────── */
-const BOOL_ON = ["enabled", "arrivedButton", "problemButton", "openerLink", "openerReply"];
+const BOOL_ON = ["enabled", "arrivedButton", "problemButton", "openerLink", "openerReply", "locationButton"];
 const BOOL_OFF = ["useTemplate"];
-const NUM = { confirmMin: [0, 30] };
+const NUM = { confirmMin: [0, 30], locationNudgeMin: [0, 30] };
 export const COURIER_JOB_DEFAULTS = Object.freeze({
   enabled: true, arrivedButton: true, problemButton: true, openerLink: true, openerReply: true,
   useTemplate: false, templateName: CW_TEMPLATE, confirmMin: 3,
+  locationButton: true, locationNudgeMin: 5,      // CX1 (١٨/١٠): زر «📍 شارك موقعي» + تذكير لما موقعه يقف
 });
 export function courierJobConfig(x) {
   const src = x && typeof x === "object" && !Array.isArray(x) ? x : {};
@@ -46,6 +47,8 @@ export const COURIER_JOB_SCHEMA = Object.freeze({
   "courierJob.openerLink": B("سطر «تبي الأزرار على الواتساب؟» في رسالة الواتساب اليدوي", "لما الرسالة الحرة ماتتبعتش (المندوب ماكلّمناش آخر ٢٤ ساعة): رسالة الواتساب اليدوي (wa.me) بيبقى فيها رابط لرقم المطعم برسالة جاهزة فيها رمز الطلب. المندوب يضغط إرسال ⇒ نرد عليه بالأزرار ببلاش. الرمز موقّع ولرحلة واحدة."),
   "courierJob.openerReply": B("لو المندوب كتب لنا: ابعتله الأزرار", "أي رسالة من مندوب على رحلة شغّالة (والأزرار ما اتبعتتلوش آخر ١٠ دقايق) ⇒ نبعتله رسالة الأزرار بحالة الطلب الحالية. والبوت عمره ما بيبيع لرقم مندوب على رحلة شغّالة."),
   "courierJob.useTemplate": B("بره النافذة: قالب fc_courier_job_v1", "افتحه بعد ما ميتا تعتمد القالب: المندوب اللي ماكلّمناش آخر ٢٤ ساعة بياخد القالب بـ٣ أزرار (استلمت / وصلت / تم التسليم) بدل الواتساب اليدوي. القالب خدمي (UTILITY) وبيتحاسب. مقفول = الواتساب اليدوي زي الأول."),
+  "courierJob.locationButton": B("زر «📍 شارك موقعي» على الواتساب", "مع رسالة الأزرار (جوّه النافذة) وبعد ما المندوب يضغط «استلمت الطلب» (حتى لو وصله القالب): رسالة فيها زر واحد «📍 شارك موقعي» بيفتح صفحة المندوب على freshcuts.sa — موقعه بيظهر للعميل في صفحة التتبّع وللمدير على خريطة البورتال لحد ما يسلّم. بيتبعت بس لو موقعه مش واصل دلوقتي. مقفول = الأزرار من غير رابط موقع (القالب أصلاً مافيهوش رابط)."),
+  "courierJob.locationNudgeMin": Object.freeze({ group: G, type: "number", ar: "ذكّر المندوب لو موقعه وقف أكتر من", help: "المندوب ضغط «استلمت» أو «ابدأ التوصيل» وموقعه ماوصلش المدة دي (قفل الصفحة / فتح خرائط جوجل / ماشاركش خالص) ⇒ نبعتله على الواتساب زر «📍 شارك موقعي» تاني — بحد أقصى مرتين للطلب، و١٠ دقايق بين المرتين، وبس لو النافذة مفتوحة (ببلاش). صفر = من غير تذكير.", min: NUM.locationNudgeMin[0], max: NUM.locationNudgeMin[1], unit: "دقيقة" }),
   "courierJob.templateName": Object.freeze({ group: G, type: "enum", ar: "اسم قالب المندوب", help: "القالب اللي بيتبعت بره النافذة (لازم يكون معتمد عند ميتا).", options: [...COURIER_JOB_TEMPLATES] }),
 });
 

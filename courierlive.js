@@ -47,6 +47,37 @@ export const PING_MAX_ACC_M = 500;        // نبضة بدقة أوحش من ك�
 export const TRAIL_MAX = 400;             // أقصى نقاط بترجع للخريطة
 export const DEFAULT_LINK_HOURS = 6;      // عمر رابط المندوب الخارجي
 export const EXT_PAGE_BASE = "https://freshcuts.sa";
+export const PING_EVERY_SEC = 15;         // CX1: صفحة المندوب بتبعت كل كده (وأول ما الموقع يتحرك، بحد أدنى PING_MIN_MS)
+
+/* ═══ CX1 (عمر ١٨/١٠: «التتبع بتاع المندوب الخارجي مش شغال كويس — لينك أو واتس») ═══════════════════════════
+   رابط ثابت للرحلة: r<رقم الرحلة>x<توقيع ٢٢> = HMAC(سر السيرفر, رقم الرحلة + hash التوكن).
+   قبل كده التوكن العشوائي كان بيظهر مرة واحدة بس (مابيتخزّنش)، فـ«💬 ابعتله على واتساب» التانية كانت بتبعت للمندوب
+   حرفياً «https://freshcuts.sa/d/…» (رابط ميّت)، وكارت/قالب الواتساب ماكانش فيه رابط موقع خالص ⇒ المندوب مايقدرش يشارك موقعه.
+   دلوقتي أي حتة (البوابة / زر «شارك موقعي» على الواتساب / التذكير) تقدر تطلّع رابط شغّال لنفس الرحلة من غير ما نخزّن مفتاح:
+   «🔁 رابط جديد» (توكن جديد = hash جديد) بيموّت الرابط ده وأزرار الواتساب القديمة مع بعض، والإلغاء والانتهاء زي التوكن بالظبط. */
+const linkSecret = () => String(process.env.SECRETS_KEY || process.env.ADMIN_TOKEN || "fc-courier-wa");
+const LINK_RE = /^r(\d{1,12})x([A-Za-z0-9]{22})$/;
+function linkSig(runId, tokenHash) {
+  return crypto.createHmac("sha256", linkSecret()).update(`cx1|d|${Number(runId)}|${tokenHash || ""}`).digest("base64url").replace(/[^A-Za-z0-9]/g, "").slice(0, 22);
+}
+export function extLinkToken(run) {
+  if (!run || !run.id || !run.token_hash) return null;
+  return `r${Number(run.id)}x${linkSig(run.id, run.token_hash)}`;
+}
+export function parseLinkToken(t) {
+  const m = LINK_RE.exec(String(t || ""));
+  return m ? { runId: Number(m[1]), sig: m[2] } : null;
+}
+export function verifyLinkToken(p, run) {
+  if (!p || !run || Number(run.id) !== p.runId || !run.token_hash) return false;
+  const a = Buffer.from(p.sig), b = Buffer.from(linkSig(run.id, run.token_hash));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+export function extLinkUrl(run, base = EXT_PAGE_BASE) {
+  const t = extLinkToken(run);
+  return t ? `${String(base || EXT_PAGE_BASE).replace(/\/+$/, "")}/d/${t}` : null;
+}
+export const extLinkBase = (settings) => String((((settings || {}).delivery || {}).extLink || {}).base || EXT_PAGE_BASE).replace(/\/+$/, "");
 
 const R_EARTH = 6371;
 const rad = (d) => (Number(d) * Math.PI) / 180;
@@ -251,7 +282,25 @@ export function register(app, ctx, deps = {}) {
       log.error(`[courierlive] schema failed: ${e?.message || e}`);
       schemaOk = false;
     }
+    if (schemaOk) await ensureCols();
     return schemaOk;
+  }
+  /* CX1: seen_at = آخر نبضة وصلت من صفحة المندوب (حتى لو اترفضت عشان الدقة)، last_acc = دقتها بالمتر — البوابة بتقول
+     «موقعه تقريبي — قوله يفعّل الموقع الدقيق» بدل «٠ نقطة» من غير سبب. استعلام لوحده: لو فشل، النبضات بتشتغل زي الأول. */
+  let colsOk = null;
+  async function ensureCols() {
+    if (colsOk) return true;
+    try {
+      await pool.query(`
+        ALTER TABLE dl_ext_runs ADD COLUMN IF NOT EXISTS seen_at TIMESTAMPTZ;
+        ALTER TABLE dl_ext_runs ADD COLUMN IF NOT EXISTS last_acc REAL;
+      `);
+      colsOk = true;
+    } catch (e) {
+      log.error?.(`[courierlive] cx1 columns failed: ${e?.message || e}`);
+      colsOk = null;
+    }
+    return Boolean(colsOk);
   }
   ensureSchema();
 
@@ -482,7 +531,7 @@ export function register(app, ctx, deps = {}) {
     if (String(sh.status) === "delivered") return { ok: false, error: "delivered", message: "الطلب اتسلّم خلاص", status: 409 };
     const all = await getSettingsData().catch(() => ({}));
     const hours = Math.min(24, Math.max(1, Number(((all.delivery || {}).extLink || {}).hours) || DEFAULT_LINK_HOURS));
-    const base = String(((all.delivery || {}).extLink || {}).base || EXT_PAGE_BASE).replace(/\/+$/, "");
+    const base = extLinkBase(all);
     const drv = (sh.driver && typeof sh.driver === "object") ? sh.driver : {};
     const cName = name || drv.name || null, cPhone = phone || drv.phone || null;
 
@@ -508,10 +557,11 @@ export function register(app, ctx, deps = {}) {
         [cur.id, cName, cPhone]);
       run = r.rows[0];
     }
-    /* التوكن نفسه مابيتخزّنش — لو المدير قفل الشاشة قبل ما يبعت، بيعمل
-       واحد جديد (زرار «رابط جديد»). ده مقصود: hash واحد في الجدول يعني
-       مفيش نسخة من المفتاح عندنا تتسرّب. */
-    const link = token ? `${base}/d/${token}` : null;
+    /* التوكن العشوائي نفسه مابيتخزّنش (hash بس). CX1: الرابط اللي بيتبعت دايماً هو الرابط الثابت للرحلة (extLinkUrl) —
+       شغّال في كل مرة المدير يضغط «💬 ابعتله على واتساب»، مش أول مرة بس. قبل كده المرة التانية كانت بتحط في الرسالة
+       «…/d/…» حرفياً (رابط ميّت). «🔁 رابط جديد» = توكن جديد ⇒ hash جديد ⇒ الرابط القديم مات. */
+    void token;
+    const link = extLinkUrl(run, base);
     /* ── نشر في جروب ولا رسالة لشخص؟ ──────────────────────────────────
        «طلباتك» = جروب (عمر ٢١/٩). بنقرّر تلقائياً: لو الطلب طلب حي ومفيش
        جوال مندوب لسه → وضع الجروب. والمدير يقدر يفرض الاتنين بـ`mode`. */
@@ -523,14 +573,14 @@ export function register(app, ctx, deps = {}) {
       providerName = (dd && dd.provider && dd.provider.name) || null;
       groupUrl = (dd && dd.provider && dd.provider.groupUrl) || null;
       text = groupHandoffText(row, {
-        link: link || `${base}/d/…`,
+        link,
         district: dd ? dd.district : null,
         cost: dd && dd.cost != null ? dd.cost : null,
         providerName,
         pickup: pickupLabel({ readyAt: row.pos_ready_at, delayMin }),
       });
     } else {
-      text = handoffText(row, { link: link || `${base}/d/…` });
+      text = handoffText(row, { link });
     }
     /* CW1: سطر «تبي الأزرار على الواتساب؟» — رابط لرقم المطعم برسالة جاهزة فيها رمز الرحلة. المندوب يبعتها ⇒ النافذة بتتفتح ⇒
        courierwa بيرد عليه بالأزرار ببلاش. مقفول من اللوحة (courierJob.openerLink) ⇒ الرسالة زي الأول بالظبط. */
@@ -551,7 +601,8 @@ export function register(app, ctx, deps = {}) {
       courierName: cName, courierPhone: cPhone ? localPhone(cPhone) : null,
       needsCourier: grp && !cPhone,
       expiresAt: iso(run.expires_at), run: extRunView(run),
-      note: token ? null : "الرابط القديم لسه شغّال — اضغط «رابط جديد» لو محتاج واحد تاني",
+      fresh: Boolean(token),
+      note: token ? null : "نفس رابط المندوب (لسه شغّال) — «🔁 رابط جديد» بيلغيه ويعمل واحد تاني",
     };
   }
 
@@ -597,6 +648,12 @@ export function register(app, ctx, deps = {}) {
     if (!(await ensureSchema())) return null;
     const t = String(tok || "");
     if (!/^[A-Za-z0-9_-]{16,64}$/.test(t)) return null;
+    /* CX1: الرابط الثابت r<id>x<sig> — بنتحقق من التوقيع مقابل hash التوكن الحالي للرحلة (رابط جديد ⇒ مات) */
+    const lp = parseLinkToken(t);
+    if (lp) {
+      const run = await runById(lp.runId);
+      return run && verifyLinkToken(lp, run) ? run : null;
+    }
     const hash = crypto.createHash("sha256").update(t).digest("hex");
     const r = await pool.query(
       `SELECT r.*, sh.status AS ship_status, sh.provider, sh.shop_order_no
@@ -634,6 +691,14 @@ export function register(app, ctx, deps = {}) {
     const run = await runByToken(c.req.param("token"));
     if (!run) return c.json({ ok: false, error: "bad_token", message: "الرابط غير صالح" }, 404);
     const st = runState(run);
+    /* CX1: الرابط انتهى بالوقت والطلب لسه ماتسلّمش ⇒ «تم التسليم» لسه مسموح (نفس قاعدة POST /delivered — مندوب اتأخر في الزحمة)،
+       بس الصفحة كانت بتقول «انتهت صلاحية الرابط» ومافيهاش زرار خالص ⇒ الطلب يفضل «في الطريق». دلوقتي بترجع حالة مختصرة
+       (من غير بيانات العميل) والصفحة بتعرض «تم التسليم» بس. الملغي = مقفول على طول زي الأول. */
+    if (!st.ok && !run.delivered_at && st.error === "expired") {
+      return c.json({ ok: true, expired: true, done: false, message: st.message,
+        stage: run.arrived_at ? "arrived" : run.started_at ? "started" : "new", orderNo: run.order_no,
+        startedAt: iso(run.started_at), arrivedAt: iso(run.arrived_at), expiresAt: iso(run.expires_at) });
+    }
     if (!st.ok && !run.delivered_at) return c.json({ ...st, done: false }, 410);
     const sp = shop();
     const row = sp ? await sp.getOrderRow(run.order_no) : null;
@@ -660,7 +725,9 @@ export function register(app, ctx, deps = {}) {
       startedAt: iso(run.started_at), arrivedAt: iso(run.arrived_at), deliveredAt: iso(run.delivered_at),
       receivedBy: run.received_by || null,
       expiresAt: iso(run.expires_at),
-      pingEverySec: 20,
+      /* CX1: الصفحة بتقول «آخر تحديث من X ث» من أول ما تتفتح (حتى لو اتقفلت واتفتحت تاني) */
+      lastPingAt: iso(run.last_at),
+      pingEverySec: PING_EVERY_SEC, minPingSec: Math.round(PING_MIN_MS / 1000), maxAccM: PING_MAX_ACC_M,
     });
   });
 
@@ -680,7 +747,14 @@ export function register(app, ctx, deps = {}) {
   async function extStart(run, { lat = null, lng = null, via = "ext_link" } = {}) {
     const at = new Date(now()).toISOString();
     const V = viaOf(via);
-    if (lat != null && lng != null) await recordPing(run.shipment_id, run.order_no, { lat, lng, source: "ext" });
+    if (lat != null && lng != null) {
+      await recordPing(run.shipment_id, run.order_no, { lat, lng, source: "ext" });
+      /* CX1: أول نقطة مع «ابدأ» بتظهر للعميل والمدير على طول (قبل كده كانت بتستنى أول نبضة بعد ٢٠ ث) */
+      await pool.query(
+        `UPDATE dl_shipments SET driver = COALESCE(driver,'{}'::jsonb) || $2::jsonb WHERE id=$1`,
+        [run.shipment_id, J({ location: { latitude: lat, longitude: lng }, at, source: "external" })]).catch(() => {});
+      await pool.query("UPDATE dl_ext_runs SET last_at = NOW() WHERE id=$1", [run.id]).catch(() => {});
+    }
     await pool.query("UPDATE dl_ext_runs SET started_at = COALESCE(started_at, NOW()) WHERE id=$1", [run.id]);
     await pool.query(
       `UPDATE dl_shipments SET status = CASE WHEN status IN ('pending','assigned','created') THEN 'picked' ELSE status END,
@@ -771,22 +845,37 @@ export function register(app, ctx, deps = {}) {
 
   app.post("/api/d/:token/ping", (c) => courierView(c, async ({ run, b }) => {
     const lat = num(b.lat), lng = num(b.lng), acc = num(b.acc);
-    if (lat == null || lng == null) return c.json({ ok: false, error: "bad_point" }, 400);
-    if (acc != null && acc > PING_MAX_ACC_M) return c.json({ ok: true, skipped: "accuracy" });
+    if (lat == null || lng == null || Math.abs(lat) > 90 || Math.abs(lng) > 180 || (!lat && !lng)) return c.json({ ok: false, error: "bad_point" }, 400);
     const t = now();
-    if (t - (pingGate.get(run.id) || 0) < PING_MIN_MS) return c.json({ ok: true, skipped: "throttled" });
+    const nextSec = PING_EVERY_SEC;
+    if (t - (pingGate.get(run.id) || 0) < PING_MIN_MS) return c.json({ ok: true, skipped: "throttled", nextSec });
     pingGate.set(run.id, t);
-    const saved = await recordPing(run.shipment_id, run.order_no, { lat, lng, acc, source: "ext" });
-    if (saved) {
-      await pool.query("UPDATE dl_ext_runs SET pings = pings + 1, last_at = NOW(), started_at = COALESCE(started_at, NOW()) WHERE id=$1", [run.id]);
-      /* نفس العمود اللي البوابة والتتبع بيقرأوا منه — يعني المندوب الخارجي
-         بيبان في كل مكان بيبان فيه كابتن لاجلك، من غير شاشة خاصة. */
-      await pool.query(
-        `UPDATE dl_shipments SET driver = COALESCE(driver,'{}'::jsonb) || $2::jsonb WHERE id=$1`,
-        [run.shipment_id, J({ location: { latitude: lat, longitude: lng }, source: "external",
-                              name: run.courier_name || null, phone: run.courier_phone || null })]).catch(() => {});
+    if (pingGate.size > 500) for (const k of [...pingGate.keys()].slice(0, 250)) pingGate.delete(k);
+    const cols = await ensureCols();
+    if (acc != null && acc > PING_MAX_ACC_M) {
+      /* CX1: دقة أوحش من ٥٠٠ م (آيفون «الموقع الدقيق» مقفول ≈ ±٣ كم) — مابنرسمهاش للعميل، بس بنسجّل إنه بيحاول وبكام متر،
+         والصفحة بتقوله يفعّل الموقع الدقيق (قبل كده كانت بتترمي في صمت والمندوب فاكر إن موقعه بيوصل). */
+      if (cols) await pool.query("UPDATE dl_ext_runs SET seen_at = NOW(), last_acc = $2 WHERE id=$1", [run.id, acc]).catch(() => {});
+      return c.json({ ok: true, skipped: "accuracy", acc: Math.round(acc), maxAcc: PING_MAX_ACC_M, nextSec });
     }
-    return c.json({ ok: true, saved });
+    const saved = await recordPing(run.shipment_id, run.order_no, { lat, lng, acc, source: "ext" });
+    const at = new Date(t).toISOString();
+    /* CX1: «آخر تحديث» + الموقع على الشحنة بيتكتبوا مع **كل** نبضة مقبولة — مش بس لما النقطة تتسجّل في الأثر (≥٨ م أو كل دقيقتين).
+       و`at` جوّه driver: صفحة تتبّع العميل (tracketa) كانت بتحكم على «حداثة» الموقع من dl_shipments.updated_at — والنبضة مابتلمسوش —
+       فبعد ٨ دقايق من «استلمت» كانت بتقول للعميل «قد لا يكون موقع المندوب محدّثاً» وتحسب الوقت من غير موقعه، والمندوب ماشي فعلاً.
+       والنبضة **مابتعلّمش** «بدأ» (started_at) زي الأول: زر «📍 شارك موقعي» بيتبعت من وقت التسجيل، والمندوب ممكن يشارك وهو رايح المطعم —
+       ده مايخلّيش أزرار الواتساب تقفز لـ«تم التسليم» ولا الطلب «في الطريق». «استلمت» / «ابدأ التوصيل» بس هما اللي بيبدأوا. */
+    await pool.query(
+      cols ? "UPDATE dl_ext_runs SET pings = pings + $2, last_at = NOW(), seen_at = NOW(), last_acc = $3 WHERE id=$1"
+           : "UPDATE dl_ext_runs SET pings = pings + $2, last_at = NOW() WHERE id=$1",
+      cols ? [run.id, saved ? 1 : 0, acc] : [run.id, saved ? 1 : 0]).catch(() => {});
+    /* نفس العمود اللي البوابة والتتبع بيقرأوا منه — يعني المندوب الخارجي
+       بيبان في كل مكان بيبان فيه كابتن لاجلك، من غير شاشة خاصة. */
+    await pool.query(
+      `UPDATE dl_shipments SET driver = COALESCE(driver,'{}'::jsonb) || $2::jsonb WHERE id=$1`,
+      [run.shipment_id, J({ location: { latitude: lat, longitude: lng }, at, acc: acc == null ? null : Math.round(acc), source: "external",
+                            name: run.courier_name || null, phone: run.courier_phone || null })]).catch(() => {});
+    return c.json({ ok: true, saved, at, nextSec });
   }));
 
   app.post("/api/d/:token/arrived", (c) => courierView(c, async ({ run, b }) =>
@@ -799,5 +888,5 @@ export function register(app, ctx, deps = {}) {
   }, { needLive: false }));
 
   return { liveOf, recordPing, sweepTrails, refreshPosition, makeHandoff, handoffText, waUrl, ensureSchema,
-           extStart, extArrived, extDelivered, runById, runState, extRunView };
+           extStart, extArrived, extDelivered, runById, runByToken, runState, extRunView };
 }

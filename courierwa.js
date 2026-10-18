@@ -29,7 +29,7 @@
    المفاتيح كلها في اللوحة: «كل إعدادات البوت ← 🛵 المندوب الخارجي: الأزرار على واتساب» (waBot.courierJob).
 ═══════════════════════════════════════════════════════════════════════════ */
 import crypto from "node:crypto";
-import { handoffText, localPhone } from "./courierlive.js";
+import { handoffText, localPhone, extLinkUrl, extLinkBase } from "./courierlive.js";
 import { readableAddress } from "./couriers.js";
 import { emitOrder } from "./order-events.js";
 import { pushPayload } from "./portal-core.js";
@@ -137,6 +137,24 @@ export function cwMessage(body, acts, run) {
   return { type: "interactive", interactive: { type: "button", body: { text: cut(body, 1024) },
     action: { buttons: list.map((a) => ({ type: "reply", reply: { id: cwPayload(run, a), title: BTN[a] } })) } } };
 }
+/* CX1 (عمر ١٨/١٠): زر «📍 شارك موقعي» — رسالة cta_url بزر واحد بيفتح صفحة المندوب (/d/ بالرابط الثابت للرحلة).
+   أزرار الرد (استلمت/تم التسليم) مايتجمعوش مع زر رابط في نفس الرسالة (قيد ميتا) ⇒ رسالة لوحدها، بتتبعت **قبل** كارت الأزرار
+   عشان الأزرار تفضل آخر حاجة في المحادثة. نص الزر ≤ ٢٠ حرف. */
+export const LOC_BTN = "📍 شارك موقعي";
+export function locationText(order, { nudge = false, no = null } = {}) {
+  const n = no || (order && order.order_no) || "";
+  return nudge
+    ? `📍 موقعك ما وصلنا من شوي (الطلب ${n}). اضغط «شارك موقعي» وخلّ الصفحة مفتوحة لين تسلّم — العميل يشوفك على الخريطة.`
+    : `📍 خلّ العميل والمطعم يشوفونك على الخريطة لين تسلّم الطلب ${n}: اضغط «شارك موقعي» واسمح بالموقع، وخلّ الصفحة مفتوحة.`;
+}
+export function locationCta(body, url) {
+  if (!url || !/^https:\/\//.test(url)) return null;
+  return { type: "interactive", interactive: { type: "cta_url", body: { text: cut(body, 1024) },
+    action: { name: "cta_url", parameters: { display_text: LOC_BTN, url } } } };
+}
+/* موقعه واصل دلوقتي؟ (آخر نبضة أحدث من دقيقتين) ⇒ مانزعجهوش بزر الموقع تاني */
+export const sharingNow = (run, nowMs = Date.now()) => Boolean(run && run.last_at && nowMs - new Date(run.last_at).getTime() < 2 * 60_000);
+
 export function templateParams(order, run) {
   const cust = (order && order.customer && typeof order.customer === "object") ? order.customer : {};
   const addr = readableAddress({ ...((order && order.address) || {}), leave_at_door: false }, { withPin: false });
@@ -185,6 +203,8 @@ export function register(app, ctx, deps = {}) {
         ALTER TABLE dl_ext_runs ADD COLUMN IF NOT EXISTS wa_last_tap TEXT;
         ALTER TABLE dl_ext_runs ADD COLUMN IF NOT EXISTS wa_last_tap_at TIMESTAMPTZ;
         ALTER TABLE dl_ext_runs ADD COLUMN IF NOT EXISTS problem_at TIMESTAMPTZ;
+        ALTER TABLE dl_ext_runs ADD COLUMN IF NOT EXISTS loc_sent_at TIMESTAMPTZ;
+        ALTER TABLE dl_ext_runs ADD COLUMN IF NOT EXISTS loc_nudges INT NOT NULL DEFAULT 0;
       `);
       schemaOk = true;
     } catch (e) {
@@ -205,6 +225,20 @@ export function register(app, ctx, deps = {}) {
     "UPDATE dl_shipments SET events = events || $2::jsonb WHERE id=$1",
     [run.shipment_id, J([{ at: new Date(now()).toISOString(), provider: "external", event, via: "courier_wa", note: note || null }])]).catch(() => {});
 
+  const markLocSent = (run, nudge = false) => pool.query(
+    nudge ? "UPDATE dl_ext_runs SET loc_sent_at = NOW(), loc_nudges = COALESCE(loc_nudges,0) + 1 WHERE id=$1"
+          : "UPDATE dl_ext_runs SET loc_sent_at = NOW() WHERE id=$1", [run.id]).catch(() => {});
+  /* زر «📍 شارك موقعي» لوحده (بعد «استلمت» / التذكير). جوّه النافذة بس — مابيرميش. */
+  async function sendLocation(run, pn, row, { nudge = false } = {}) {
+    const url = extLinkUrl(run, extLinkBase(await settingsNow()));
+    const body = locationText(row, { nudge, no: run.order_no });
+    const pl = locationCta(body, url);
+    if (!pl) return { ok: false, skipped: "no_link" };
+    const r = await freeSend(pn, run, body, null, pl);
+    if (r && r.ok) await markLocSent(run, nudge);
+    return r || { ok: false };
+  }
+
   async function latestRun(orderNo) {
     const r = await pool.query(
       `SELECT r.*, sh.status AS ship_status FROM dl_ext_runs r JOIN dl_shipments sh ON sh.id = r.shipment_id
@@ -224,10 +258,10 @@ export function register(app, ctx, deps = {}) {
   /* رسايل المندوب بتتسجّل في wa_messages بمصدر "courier" ومن غير order_no/stage عن قصد: تقارير «رسايل الطلب» (wapolicy.orderMessagesReport)
      وفاصل «قالب مدفوع قريب» قبل طلب التقييم (reviewDecision) بيعدّوا صفوف الطلب — ورسالة المندوب مش رسالة للعميل. سجل الطلب نفسه بياخد سطر
      لكل رسالة من timeline() (courier_manual). */
-  async function freeSend(pn, run, body, acts) {
+  async function freeSend(pn, run, body, acts, custom = null) {
     const w = wa();
     if (!w || !w.sendFreeform) return { ok: false, skipped: "unavailable" };
-    const payload = cwMessage(body, acts, run);
+    const payload = custom || cwMessage(body, acts, run);
     try {
       return await w.sendFreeform({ phoneNorm: pn, payload, source: "courier", preview: cut(body, 500) });
     } catch (e) { return { ok: false, error: String(e?.message || e).slice(0, 120) }; }
@@ -246,9 +280,17 @@ export function register(app, ctx, deps = {}) {
       return { sent: false, via: null, reason: "customer_phone", reasonAr: reasonAr("customer_phone"), wamid: null };
     }
     const stage = stageOf(run);
-    const body = jobCardText(row, { link, stage });
+    /* CX1: الرابط = الرابط الثابت للرحلة (شغّال دايماً، مش بس لما التوكن يتعمل دلوقتي). مع زر الموقع مفتوح ⇒ الرابط بيروح في زر
+       «📍 شارك موقعي» (رسالة لوحدها قبل الكارت) بدل سطر «(اختياري)» في آخر نص طويل محدش بيضغطه. */
+    const url = extLinkUrl(run, extLinkBase(await settingsNow())) || link || null;
+    let loc = null;
+    if (cfg.locationButton && url && stage !== "delivered" && !sharingNow(run, now())) {
+      loc = await freeSend(pn, run, locationText(row), null, locationCta(locationText(row), url));
+    }
+    const body = jobCardText(row, { link: cfg.locationButton ? null : url, stage });
     let r = await freeSend(pn, run, body, buttonsFor(stage, cfg));
     let via = "free";
+    if (loc && loc.ok) await markLocSent(run);
     if (!r.ok && r.skipped === "window_closed" && allowTemplate && cfg.useTemplate && stage !== "delivered") {
       const w = wa();
       via = "template";
@@ -345,6 +387,8 @@ export function register(app, ctx, deps = {}) {
     if (p.act === "p") {
       await base.extStart(run, { via: "wa_button" });
       const r2 = await fresh();
+      /* CX1: القالب مافيهوش رابط موقع — الضغطة دي فتحت النافذة، فنبعت زر «📍 شارك موقعي» ببلاش قبل أزرار المرحلة الجاية */
+      if (cfg.locationButton && !sharingNow(r2, now())) await sendLocation(r2, pn, row);
       await say("started", buttonsFor(stageOf(r2), cfg));
     } else if (p.act === "a") {
       if (!run.started_at) await base.extStart(run, { via: "wa_button" });
@@ -439,6 +483,49 @@ export function register(app, ctx, deps = {}) {
   }
   try { const w = wa(); if (w && typeof w.on === "function") w.on("claim", onClaim); } catch {}
 
+  /* CX1: تذكير «موقعك وقف». المندوب بدأ (استلمت / ابدأ التوصيل) وموقعه ماوصلش من locationNudgeMin دقيقة (قفل الصفحة، فتح خرائط جوجل
+     والآيفون وقّف الموقع، أو ماشاركش خالص) ⇒ زر «📍 شارك موقعي» تاني على الواتساب. مرتين بالكتير للرحلة، ١٠ د بينهم، جوّه النافذة بس
+     (بره النافذة الإرسال بيفشل وبنعدّها محاولة عشان مانخبطش كل دقيقة). موظف من عندنا / رقم فريق / جوال العميل ⇒ لا. */
+  async function nudgeSweep() {
+    try {
+      const s = await settingsNow();
+      const cfg = cfgOf(s);
+      if (!cfg.enabled || !cfg.locationButton || !(cfg.locationNudgeMin > 0)) return 0;
+      if (!(await ensureSchema())) return 0;
+      const rows = (await pool.query(
+        `SELECT r.* FROM dl_ext_runs r JOIN dl_shipments sh ON sh.id = r.shipment_id
+          WHERE sh.provider = 'external' AND COALESCE(sh.driver->>'source', '') <> 'staff'
+            AND r.started_at IS NOT NULL AND r.delivered_at IS NULL AND r.revoked_at IS NULL
+            AND r.expires_at > NOW() AND r.created_at > NOW() - INTERVAL '12 hours'
+            AND COALESCE(r.loc_nudges, 0) < 2
+            AND COALESCE(r.last_at, r.started_at) < NOW() - make_interval(mins => $1::int)
+            AND (r.loc_sent_at IS NULL OR r.loc_sent_at < NOW() - INTERVAL '10 minutes')
+          ORDER BY r.id DESC LIMIT 10`, [cfg.locationNudgeMin])).rows;
+      let n = 0;
+      const team = teamPhones(s);
+      for (const run of rows) {
+        const pn = pn9(run.wa_phone || run.courier_phone);
+        if (!pn || team.has(pn)) { await markLocSent(run, true); continue; }
+        const sp = shop();
+        const row = sp ? await sp.getOrderRow(run.order_no).catch(() => null) : null;
+        if (!row || row.status === "delivered" || pn === customerPn(row)) { await markLocSent(run, true); continue; }
+        const r = await sendLocation(run, pn, row, { nudge: true });
+        if (!(r && r.ok)) { await markLocSent(run, true); continue; }
+        n++;
+        timeline(run.order_no, "موقع المندوب الخارجي وقف — اتبعتله على الواتساب زر «📍 شارك موقعي» تاني", { stage: "loc_nudge" });
+        try { portal()?.scheduleRefresh?.(run.order_no); } catch {}
+      }
+      return n;
+    } catch (e) {
+      log.error?.(`[courierwa] location nudge failed: ${e?.message || e}`);
+      return 0;
+    }
+  }
+  if (deps.boot !== false && deps.timers !== false) {
+    const t = setInterval(() => { nudgeSweep(); }, 60_000);
+    t.unref?.();
+  }
+
   /* زر «📲 ابعتله الأزرار من رقم المطعم» في البوابة (المدير بس) */
   app.post("/api/portal/orders/:orderNo/courier/wa-job", async (c) => {
     const p = portal();
@@ -465,5 +552,5 @@ export function register(app, ctx, deps = {}) {
       return { sent: ok, reason: ok ? null : String((r && (r.skipped || r.error)) || "failed").slice(0, 80) };
     } catch (e) { return { sent: false, reason: String(e?.message || e).slice(0, 80) }; }
   }
-  return { sendJob, sendCard, openerFor, onClaim, handleTap, ensureSchema, noteToCourier };
+  return { sendJob, sendCard, sendLocation, nudgeSweep, openerFor, onClaim, handleTap, ensureSchema, noteToCourier };
 }
