@@ -2,20 +2,23 @@
    🎮 لعبة الجري (RTG2 — ١٨/١٠): لعبة زي ديناصور كروم على المتجر
    (freshcuts.sa/play + جوّه صفحة تتبّع الطلب) ولوحة أبطال «أحسن ١٠» بالاسم الأول بس.
 
-   المالك: عايز بعدين يدّي أبطال الأسبوع خصم. الشريحة دي **مابتعملش كوبونات** —
-   بتجهّز القايمة بس (GET /api/cms/game ⇒ top بالجوال للمالك) والخصم شغل بعدين.
+   v2.1 (المالك بعد ما جرّب الديمو، ١٨/١٠): **الاسم إجباري ومربوط بالجوال** — اللاعب لازم يكون داخل بجلسة المتجر
+   (نفس OTP بتاع الشيك أوت: Bearer cust:<token>). اللاعب = الجوال، اسمه في game_players (أول مرة ببلاش + تعديل واحد بس).
+   اللوحة كل الوقت افتراضياً. مفيش رسايل خصم/مكافأة. الجولات القديمة من غير جوال بتفضل في الجدول بس مابتترتّبش.
+   الخصم بعدين: GET /api/cms/game ⇒ topWeek بالجوال للمالك.
 
    المسارات العامة:
      GET  /api/game/config                 { ok, enabled, period }
-     POST /api/game/start                  توكن جولة موقّع من السيرفر (HMAC) + الاسم لو العميل معروف
-     POST /api/game/score                  النتيجة — بنحفظ كل حاجة وبنعلّم على المشكوك فيه بدل ما نرفضه
-     GET  /api/game/leaderboard?period=    أحسن ١٠ (لاعب واحد = صف واحد بأحسن نتيجة)
+     POST /api/game/start                  توكن جولة موقّع من السيرفر (HMAC) — من غير دخول؛ لو داخل ⇒ اسمه في اللعبة
+     GET  /api/game/me | POST /api/game/me  اسم اللاعب (دخول إجباري): الاسم الحالي + المقترح من سجله + canEdit + best
+     POST /api/game/score                  النتيجة (دخول + اسم إجباريين، قبل ما التوكن يتحرق) — بنعلّم على المشكوك فيه بدل ما نرفضه
+     GET  /api/game/leaderboard?period=    أحسن ١٠ (جوال واحد = صف واحد بأحسن نتيجة، بالاسم الحالي)
    المالك (requireAdmin، قسم «النمو»):
-     GET  /api/cms/game                    الإعدادات + أبطال الأسبوع (الجوال كامل للمالك بس) + أرقام + آخر المعلَّم عليهم
+     GET  /api/cms/game                    الإعدادات + الأبطال (الفترة المضبوطة) + أبطال الأسبوع (الجوال كامل للمالك بس) + أرقام + آخر المعلَّم عليهم
      PUT  /api/cms/game                    الإعدادات (jsonb_set '{game}')
 
    ضد الغش (نعلّم مش نرفض — الرد شكله عادي فالغشاش مابيتعلّمش حاجة):
-     • توكن مزوّر / أقدم من ٣ ساعات / اتستخدم قبل كده ⇒ 400 bad_token ومفيش حفظ.
+     • توكن مزوّر / أقدم من ٢٤ ساعة (جولات من غير نت بتتبعت لما يرجع) / اتستخدم قبل كده ⇒ 400 bad_token ومفيش حفظ.
      • مدة الجولة أطول من الوقت الحقيقي من ساعة التوكن + ٣ ث ⇒ duration_gt_wall
      • نقاط أكتر من maxScorePerSec × الثواني + ٥٠ ⇒ score_rate
      • أقل من ١٫٥ ث ونقاط > ٠ ⇒ too_short
@@ -26,10 +29,10 @@ import crypto from "node:crypto";
 import { bizDay, bizStart, shiftDay, weekdayOf, DEFAULT_WEEK_START } from "./bizday.js";
 import { teamPhoneSet } from "./smsrules.js";
 
-export const GAME_DEFAULTS = Object.freeze({ enabled: true, leaderboardPeriod: "week", maxScorePerSec: 45 });
+export const GAME_DEFAULTS = Object.freeze({ enabled: true, leaderboardPeriod: "all", maxScorePerSec: 45 });
 export const GAME_LABELS = Object.freeze({
   enabled: "اللعبة شغّالة",
-  leaderboardPeriod: "لوحة الأبطال: الأسبوع ده ولا كل الوقت",
+  leaderboardPeriod: "لوحة الأبطال: كل الوقت ولا الأسبوع ده",
   maxScorePerSec: "أقصى نقاط في الثانية (اللي فوقه يتعلّم عليه)",
   periods: { week: "الأسبوع ده (من السبت ٤ الفجر)", all: "كل الوقت" },
   flags: {
@@ -41,10 +44,10 @@ export const GAME_LABELS = Object.freeze({
 });
 export const PERIODS = Object.freeze(["week", "all"]);
 export const LIMITS = Object.freeze({
-  tokenMaxAgeMs: 3 * 3600_000, wallSlackMs: 3000, rateSlack: 50, minDurationMs: 1500,
+  tokenMaxAgeMs: 24 * 3600_000, wallSlackMs: 3000, rateSlack: 50, minDurationMs: 1500,
   outlierFactor: 3, outlierMinRuns: 20, maxScore: 1_000_000, maxDurationMs: 7_200_000,
   startsPerHourIp: 60, startsPerHourSession: 60, scoresPerHourIp: 30, scoresPerHourSession: 20,
-  boardCacheMs: 30_000, topN: 10,
+  boardCacheMs: 30_000, topN: 10, meWritesPerHour: 20,
 });
 
 const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
@@ -52,7 +55,7 @@ export function gameCfg(settings) {
   const x = { ...GAME_DEFAULTS, ...(((settings || {}).game) || {}) };
   return {
     enabled: typeof x.enabled === "boolean" ? x.enabled : true,
-    leaderboardPeriod: PERIODS.includes(x.leaderboardPeriod) ? x.leaderboardPeriod : "week",
+    leaderboardPeriod: PERIODS.includes(x.leaderboardPeriod) ? x.leaderboardPeriod : "all",
     maxScorePerSec: Math.round(clampN(x.maxScorePerSec, 10, 500, 45)),
   };
 }
@@ -147,29 +150,25 @@ export function flagReasons({ score, durationMs, issuedAt, now, maxScorePerSec, 
   return out;
 }
 
-/* ── مفتاح اللاعب (نفس COALESCE بتاع الـSQL) ── */
-export const playerKeyOf = (r) => (r.phone_norm ? r.phone_norm : r.device_id ? "d:" + r.device_id : r.session_id ? "s:" + r.session_id : "r:" + r.run_id);
 
-/* ── اللوحة من الصفوف: لاعب واحد = صف واحد (أحسن نتيجة، والتعادل للأقدم)، من غير المعلَّم عليهم والفريق — صافي ── */
+/* ── اللوحة من الصفوف: جوال واحد = صف واحد (أحسن نتيجة، والتعادل للأقدم)، بالاسم الحالي من game_players،
+      من غير المعلَّم عليهم والفريق، والجولات من غير جوال مابتترتّبش (v2.1) — صافي ── */
 export function leaderboardOf(rows, { exclude = new Set(), topN = LIMITS.topN } = {}) {
   const best = new Map();
   for (const r of rows || []) {
-    if (!r || r.flagged === true) continue;
-    if (r.phone_norm && exclude.has(r.phone_norm)) continue;
-    const k = r.pk || playerKeyOf(r);
+    if (!r || r.flagged === true || !r.phone_norm) continue;
+    if (exclude.has(r.phone_norm)) continue;
+    const k = r.phone_norm;
     const score = Number(r.score) || 0;
     const at = new Date(r.created_at || 0).getTime();
-    const cur = best.get(k);
     const runs = Number(r.runs) || 0;
-    if (!cur) { best.set(k, { ...r, pk: k, score, _at: at, _runs: runs || 1, _name: r.first_name || r.any_name || null }); continue; }
+    const cur = best.get(k);
+    if (!cur) { best.set(k, { ...r, score, _at: at, _runs: runs || 1 }); continue; }
     if (!runs) cur._runs += 1;
-    if (!cur._name && (r.first_name || r.any_name)) cur._name = r.first_name || r.any_name;
-    if (score > cur.score || (score === cur.score && at < cur._at)) {
-      best.set(k, { ...r, pk: k, score, _at: at, _runs: cur._runs, _name: r.first_name || cur._name || r.any_name || null });
-    }
+    if (score > cur.score || (score === cur.score && at < cur._at)) best.set(k, { ...r, score, _at: at, _runs: cur._runs });
   }
   return [...best.values()].sort((a, b) => b.score - a.score || a._at - b._at).slice(0, topN)
-    .map((r, i) => ({ rank: i + 1, firstName: r._name || null, score: r.score, pk: r.pk, runId: r.run_id, phone: r.phone_norm || null,
+    .map((r, i) => ({ rank: i + 1, firstName: r.player_name || r.first_name || null, score: r.score, runId: r.run_id, phone: r.phone_norm,
       runs: r._runs, durationMs: Number(r.duration_ms) || 0, bestAt: r.created_at ? new Date(r.created_at).toISOString() : null }));
 }
 
@@ -186,23 +185,22 @@ export function excludedPhones(settings = {}) {
   return out;
 }
 
-const W_ORDER_RE = /^W\d{6,20}$/;
 const SID_RE = /^[a-z0-9_-]{6,64}$/i;
 const cleanId = (v) => (typeof v === "string" && SID_RE.test(v) ? v : null);
 
 const TOP_SQL = `/*game:top*/
   WITH r AS (
-    SELECT g.*, COALESCE(g.phone_norm, 'd:'||g.device_id, 's:'||g.session_id, 'r:'||g.run_id) AS pk
-      FROM game_scores g
-     WHERE NOT g.flagged AND ($1::timestamptz IS NULL OR g.created_at >= $1::timestamptz)
-       AND (g.phone_norm IS NULL OR NOT (g.phone_norm = ANY($2::text[])))
+    SELECT g.* FROM game_scores g
+     WHERE NOT g.flagged AND g.phone_norm IS NOT NULL
+       AND ($1::timestamptz IS NULL OR g.created_at >= $1::timestamptz)
+       AND NOT (g.phone_norm = ANY($2::text[]))
   ), b AS (
-    SELECT DISTINCT ON (pk) pk, run_id, phone_norm, device_id, session_id, first_name, score, duration_ms, created_at,
-           count(*) OVER (PARTITION BY pk)::int AS runs,
-           max(first_name) FILTER (WHERE first_name IS NOT NULL) OVER (PARTITION BY pk) AS any_name
-      FROM r ORDER BY pk, score DESC, created_at ASC
+    SELECT DISTINCT ON (phone_norm) phone_norm, run_id, first_name, score, duration_ms, created_at,
+           count(*) OVER (PARTITION BY phone_norm)::int AS runs
+      FROM r ORDER BY phone_norm, score DESC, created_at ASC
   )
-  SELECT * FROM b ORDER BY score DESC, created_at ASC LIMIT 50`;
+  SELECT b.*, p.first_name AS player_name FROM b LEFT JOIN game_players p ON p.phone_norm = b.phone_norm
+   ORDER BY b.score DESC, b.created_at ASC LIMIT 50`;
 
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb } = ctx;
@@ -230,8 +228,19 @@ export function register(app, ctx, deps = {}) {
         flagged BOOLEAN NOT NULL DEFAULT FALSE,
         flag_reason TEXT
       );
+      -- v2.1: الجولة اتلعبت من غير نت واتبعتت بعدين (للمالك يعرف بس)
+      ALTER TABLE game_scores ADD COLUMN IF NOT EXISTS queued BOOLEAN;
       CREATE INDEX IF NOT EXISTS game_scores_created_idx ON game_scores(created_at DESC);
       CREATE INDEX IF NOT EXISTS game_scores_score_idx ON game_scores(score DESC) WHERE NOT flagged;
+      CREATE INDEX IF NOT EXISTS game_scores_phone_idx ON game_scores(phone_norm, score DESC) WHERE NOT flagged;
+      -- v2.1: اسم اللاعب مربوط بجواله — أول مرة ببلاش، وبعدها تعديل واحد بس (name_edits 0 ⇒ 1)
+      CREATE TABLE IF NOT EXISTS game_players (
+        phone_norm TEXT PRIMARY KEY,
+        first_name TEXT NOT NULL,
+        name_edits INT NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
   }
   const ready = ensureSchema().then(() => console.log("[game] ready"))
@@ -250,7 +259,11 @@ export function register(app, ctx, deps = {}) {
   const settingsOf = async () => { try { return (await getSettingsData()) || {}; } catch { return {}; } };
   const readJson = async (c) => { try { const b = await c.req.json(); return b && typeof b === "object" && !Array.isArray(b) ? b : null; } catch { return null; } };
 
-  /* ── مين بيلعب: جلسة المتجر > طلب W > ولا حد ── */
+  /* ── مين بيلعب: جلسة المتجر بس (v2.1) ── */
+  async function custOf(c) {
+    if (!/^Bearer cust:/i.test(c.req.header("Authorization") || "")) return null;
+    try { const a = await accounts()?.customerOf?.(c); return a && /^5\d{8}$/.test(String(a.phone_norm || "")) ? a : null; } catch { return null; }
+  }
   async function nameFromHistory(pn) {
     const q = async (sql) => { try { return String((await pool.query(sql, [pn])).rows[0]?.n || "").trim(); } catch { return ""; } };
     let n = await q(`/*game:hist-order*/ SELECT customer->>'name' AS n FROM shop_orders WHERE phone_norm = $1
@@ -258,24 +271,12 @@ export function register(app, ctx, deps = {}) {
     if (!n) n = await q(`/*game:hist-pos*/ SELECT name AS n FROM ts_customers WHERE phone_norm = $1 AND coalesce(name,'') <> '' ORDER BY updated_at DESC NULLS LAST LIMIT 1`);
     return n || null;
   }
-  async function identityOf(c, ord) {
-    let acct = null;
-    if (/^Bearer cust:/i.test(c.req.header("Authorization") || "")) {
-      try { acct = await accounts()?.customerOf?.(c); } catch { acct = null; }
-    }
-    if (acct && acct.phone_norm) {
-      const full = acct.name && String(acct.name).trim() && acct.name !== "عميل" ? acct.name : await nameFromHistory(acct.phone_norm);
-      return { known: true, via: "account", phone: acct.phone_norm, firstName: firstNameOfRecord(full) };
-    }
-    if (typeof ord === "string" && W_ORDER_RE.test(ord)) {
-      const r = await pool.query(`/*game:order*/ SELECT phone_norm, customer->>'name' AS name FROM shop_orders
-          WHERE order_no = $1 AND created_at > NOW() - INTERVAL '7 days'
-            AND status NOT IN ('pending_payment','expired') LIMIT 1`, [ord]).catch(() => ({ rows: [] }));
-      const o = r.rows[0];
-      if (o && /^5\d{8}$/.test(String(o.phone_norm || ""))) return { known: true, via: "order", phone: o.phone_norm, firstName: firstNameOfRecord(o.name) };
-    }
-    return { known: false, via: null, phone: null, firstName: null };
+  /* المقترح: أول كلمة من اسم الحساب (ولو فاضي آخر طلب أونلاين ثم نقطة البيع)، بنفس فلتر الاسم */
+  async function suggestedOf(acct) {
+    const full = acct.name && String(acct.name).trim() && acct.name !== "عميل" ? acct.name : await nameFromHistory(acct.phone_norm);
+    return firstNameOfRecord(full);
   }
+  const playerOf = async (pn) => (await pool.query("/*game:player*/ SELECT first_name, name_edits FROM game_players WHERE phone_norm = $1", [pn])).rows[0] || null;
 
   /* ── اللوحة: كاش ٣٠ ث لكل فترة ── */
   const boardCache = new Map();
@@ -308,9 +309,49 @@ export function register(app, ctx, deps = {}) {
     const ih = ipHashOf(ipOf(c), sec, new Date(nowMs()));
     const sid = cleanId(b.sid) || cleanId(b.dev);
     if (limited("st:ip:" + ih, LIMITS.startsPerHourIp) || limited(sid ? "st:s:" + sid : null, LIMITS.startsPerHourSession)) return bad(c, "rate_limited", 429);
-    const id = await identityOf(c, b.ord);
+    let known = false, firstName = null, named = false;
+    const acct = await custOf(c);
+    if (acct) {
+      known = true;
+      const p = await playerOf(acct.phone_norm).catch(() => null);
+      if (p) { firstName = p.first_name; named = true; } else firstName = await suggestedOf(acct);
+    }
     const token = signToken({ r: crypto.randomBytes(12).toString("hex"), t: nowMs(), ih: ih.slice(0, 8), s: b.src === "track" ? "track" : "play" }, sec);
-    return c.json({ ok: true, enabled: true, token, maxScorePerSec: cfg.maxScorePerSec, period: cfg.leaderboardPeriod, known: id.known, firstName: id.firstName || null });
+    return c.json({ ok: true, enabled: true, token, maxScorePerSec: cfg.maxScorePerSec, period: cfg.leaderboardPeriod, known, firstName: firstName || null, named });
+  });
+
+  /* ── اسم اللاعب (دخول إجباري) ── */
+  app.get("/api/game/me", async (c) => {
+    const acct = await custOf(c);
+    if (!acct) return bad(c, "login_required", 401);
+    const p = await playerOf(acct.phone_norm);
+    const b = (await pool.query("/*game:mybest*/ SELECT max(score)::int AS best FROM game_scores WHERE NOT flagged AND phone_norm = $1", [acct.phone_norm])).rows[0];
+    return c.json({
+      ok: true, firstName: p ? p.first_name : null, suggested: await suggestedOf(acct),
+      canEdit: !p || Number(p.name_edits) === 0, best: b && b.best != null ? Number(b.best) : null,
+    });
+  });
+
+  app.post("/api/game/me", async (c) => {
+    const acct = await custOf(c);
+    if (!acct) return bad(c, "login_required", 401);
+    const pn = acct.phone_norm;
+    if (limited("me:" + pn, LIMITS.meWritesPerHour)) return bad(c, "rate_limited", 429);
+    const b = (await readJson(c)) || {};
+    const n = cleanFirstName(b.firstName);
+    if (!n.name) return bad(c, "bad_name");
+    const cur = await playerOf(pn);
+    if (cur && cur.first_name === n.name) return c.json({ ok: true, firstName: cur.first_name, canEdit: Number(cur.name_edits) === 0 });   // نفس الاسم ⇒ مابيحرقش التعديل
+    if (!cur) {
+      const ins = await pool.query(`/*game:player-insert*/ INSERT INTO game_players(phone_norm, first_name) VALUES ($1,$2)
+          ON CONFLICT (phone_norm) DO NOTHING RETURNING first_name, name_edits`, [pn, n.name]);
+      if (ins.rowCount) { boardCache.clear(); return c.json({ ok: true, firstName: n.name, canEdit: true }); }
+    }
+    const up = await pool.query(`/*game:player-edit*/ UPDATE game_players SET first_name = $2, name_edits = name_edits + 1, updated_at = NOW()
+        WHERE phone_norm = $1 AND name_edits = 0 RETURNING first_name, name_edits`, [pn, n.name]);
+    if (!up.rowCount) return bad(c, "name_locked", 403);
+    boardCache.clear();      // الاسم الجديد يظهر في اللوحة على طول
+    return c.json({ ok: true, firstName: n.name, canEdit: false });
   });
 
   app.post("/api/game/score", async (c) => {
@@ -324,15 +365,17 @@ export function register(app, ctx, deps = {}) {
     const ih = ipHashOf(ipOf(c), sec, new Date(now));
     const sid = cleanId(b.sid) || cleanId(b.dev);
     if (limited("sc:ip:" + ih, LIMITS.scoresPerHourIp) || limited(sid ? "sc:s:" + sid : null, LIMITS.scoresPerHourSession)) return bad(c, "rate_limited", 429);
+    /* الدخول والاسم قبل التوكن: مرفوض هنا ⇒ التوكن لسه صالح (العميل يدخل/يكتب اسمه ويبعت نفس الجولة تاني) */
+    const acct = await custOf(c);
+    if (!acct) return bad(c, "login_required", 401);
+    const pn = acct.phone_norm;
+    if (limited("sc:p:" + pn, LIMITS.scoresPerHourSession)) return bad(c, "rate_limited", 429);
+    const player = await playerOf(pn);
+    if (!player) return bad(c, "name_required", 409);
     const tk = verifyToken(b.token, sec, now);
     if (!tk) return bad(c, "bad_token");
     const score = b.score, durationMs = b.durationMs;
     if (!Number.isInteger(score) || score < 0 || score > LIMITS.maxScore || !Number.isInteger(durationMs) || durationMs < 0 || durationMs > LIMITS.maxDurationMs) return bad(c, "bad_score");
-
-    const id = await identityOf(c, b.ord);
-    let firstName = null, nameRejected = false;
-    if (id.known) firstName = id.firstName || null;
-    else { const n = cleanFirstName(b.firstName); firstName = n.name; nameRejected = n.rejected; }
 
     let allTimeBest = 0, allTimeRuns = 0;
     try {
@@ -342,32 +385,25 @@ export function register(app, ctx, deps = {}) {
     const reasons = flagReasons({ score, durationMs, issuedAt: tk.t, now, maxScorePerSec: cfg.maxScorePerSec, allTimeBest, allTimeRuns });
     const flagged = reasons.length > 0;
     const src = b.src === "track" || b.src === "play" ? b.src : (tk.s === "track" ? "track" : "play");
-    const ord = typeof b.ord === "string" && W_ORDER_RE.test(b.ord) ? b.ord : null;
     const dev = cleanId(b.dev), sess = cleanId(b.sid);
+    const firstName = player.first_name;
 
     const ins = await pool.query(
-      `/*game:insert*/ INSERT INTO game_scores(run_id, phone_norm, first_name, score, duration_ms, session_id, device_id, ip_hash, source, order_no, flagged, flag_reason)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (run_id) DO NOTHING RETURNING id, created_at`,
-      [tk.r, id.phone, firstName, score, durationMs, sess, dev, ih, src, ord, flagged, flagged ? reasons.join(",") : null]);
+      `/*game:insert*/ INSERT INTO game_scores(run_id, phone_norm, first_name, score, duration_ms, session_id, device_id, ip_hash, source, order_no, flagged, flag_reason, queued)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (run_id) DO NOTHING RETURNING id, created_at`,
+      [tk.r, pn, firstName, score, durationMs, sess, dev, ih, src, null, flagged, flagged ? reasons.join(",") : null, b.queued === true ? true : null]);
     if (!ins.rowCount) return bad(c, "bad_token");      // التوكن اتستخدم قبل كده
 
-    const period = cfg.leaderboardPeriod;
     let rank = null, best = score;
     try {
-      const v = await board(period, s, { fresh: true });
+      const v = await board(cfg.leaderboardPeriod, s, { fresh: true });
       const me = v.top.find((r) => r.runId === tk.r);
       rank = flagged || !me ? null : me.rank;
-      const from = v.from;
-      const [col, val] = id.phone ? ["phone_norm", id.phone] : dev ? ["device_id", dev] : sess ? ["session_id", sess] : ["run_id", tk.r];
-      const keyCond = id.phone ? "phone_norm = $1" : `phone_norm IS NULL AND ${col} = $1`;
       const q = (await pool.query(`/*game:best*/ SELECT COALESCE(max(score),0)::int AS best FROM game_scores
-          WHERE NOT flagged AND ${keyCond} AND ($2::timestamptz IS NULL OR created_at >= $2::timestamptz)`, [val, from ? from.toISOString() : null])).rows[0];
-      best = Math.max(Number(q && q.best) || 0, flagged ? score : 0);
-      if (!flagged) best = Math.max(best, score);
+          WHERE NOT flagged AND phone_norm = $1 AND ($2::timestamptz IS NULL OR created_at >= $2::timestamptz)`, [pn, v.from ? v.from.toISOString() : null])).rows[0];
+      best = Math.max(Number(q && q.best) || 0, score);      // المعلَّم عليه بيشوف رقمه هو برضه — مابيتعلّمش حاجة
     } catch (e) { console.error("[game] rank failed:", e.message); }
-    const out = { ok: true, saved: true, firstName, rank, best };
-    if (nameRejected) out.nameRejected = true;
-    return c.json(out);
+    return c.json({ ok: true, saved: true, firstName, rank, best });
   });
 
   app.get("/api/game/leaderboard", async (c) => {
@@ -394,27 +430,29 @@ export function register(app, ctx, deps = {}) {
     const to = new Date(from.getTime() + 7 * 86400_000);
     const today = bizStart(bizDay(now));
     const owner = Boolean(isOwner(c));
-    const v = await topRows("week", s, now);
-    const top = v.top.map((r) => ({
+    const view = (top) => top.map((r) => ({
       rank: r.rank, firstName: r.firstName || null, score: r.score,
       phone: r.phone ? (owner ? fullPhone(r.phone) : maskPhone(r.phone)) : null, phoneKnown: Boolean(r.phone),
       runs: r.runs, durationMs: r.durationMs, bestAt: r.bestAt,
     }));
+    const [main, week] = await Promise.all([topRows(cfg.leaderboardPeriod, s, now), topRows("week", s, now)]);
     const st = (await pool.query(`/*game:stats*/ SELECT
         count(*) FILTER (WHERE created_at >= $2::timestamptz)::int AS runs_today,
-        count(*)::int AS runs_week,
-        count(DISTINCT COALESCE(phone_norm, 'd:'||device_id, 's:'||session_id, 'r:'||run_id)) FILTER (WHERE NOT flagged)::int AS players_week,
-        count(*) FILTER (WHERE flagged)::int AS flagged_week,
-        count(DISTINCT COALESCE(phone_norm, 'd:'||device_id, 's:'||session_id, 'r:'||run_id)) FILTER (WHERE NOT flagged AND first_name IS NOT NULL)::int AS named_week
-      FROM game_scores WHERE created_at >= $1::timestamptz`, [from.toISOString(), today.toISOString()])).rows[0] || {};
+        count(*) FILTER (WHERE created_at >= $1::timestamptz)::int AS runs_week,
+        count(DISTINCT phone_norm) FILTER (WHERE created_at >= $1::timestamptz AND NOT flagged)::int AS players_week,
+        count(*) FILTER (WHERE created_at >= $1::timestamptz AND flagged)::int AS flagged_week,
+        count(DISTINCT phone_norm) FILTER (WHERE created_at >= $1::timestamptz AND NOT flagged AND first_name IS NOT NULL)::int AS named_week,
+        count(*) FILTER (WHERE created_at >= $1::timestamptz AND queued)::int AS queued_week,
+        count(DISTINCT phone_norm) FILTER (WHERE NOT flagged)::int AS players
+      FROM game_scores`, [from.toISOString(), today.toISOString()])).rows[0] || {};
     const fl = (await pool.query(`/*game:flagged*/ SELECT id, first_name, score, duration_ms, flag_reason, created_at
         FROM game_scores WHERE flagged ORDER BY created_at DESC LIMIT 20`)).rows;
     return c.json({
       ok: true, config: cfg, defaults: GAME_DEFAULTS, labels: GAME_LABELS,
       week: { from: from.toISOString(), to: to.toISOString() },
-      top,
+      top: view(main.top), topWeek: view(week.top),
       stats: { runsToday: Number(st.runs_today) || 0, runsWeek: Number(st.runs_week) || 0, playersWeek: Number(st.players_week) || 0,
-        flaggedWeek: Number(st.flagged_week) || 0, namedWeek: Number(st.named_week) || 0 },
+        flaggedWeek: Number(st.flagged_week) || 0, namedWeek: Number(st.named_week) || 0, players: Number(st.players) || 0, queuedWeek: Number(st.queued_week) || 0 },
       flagged: fl.map((r) => ({ id: Number(r.id), firstName: r.first_name || null, score: Number(r.score) || 0, durationMs: Number(r.duration_ms) || 0,
         reason: r.flag_reason || null, createdAt: r.created_at ? new Date(r.created_at).toISOString() : null })),
     });
