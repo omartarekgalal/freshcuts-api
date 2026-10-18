@@ -17,9 +17,11 @@
          (مفتاح محادثة، صف مستلم حملة، تقييم، رقم طلب W… أو pos:…، أو الجوال). الـref بصمة مش الرقم.
      GET /api/cms/customers/order/:no      تفاصيل طلب واحد: موقع (W…) أو فاتورة الكاشير/التطبيقات (pos:<id> أو رقم الفاتورة) —
          الأصناف، الإجمالي، القناة (كيتا/هنقر/صالة…)، الدفع، ووقت الطلب + ref العميل.
-     GET /api/portal/customer-card?key=|review=|order=   كارت عميل صغير للمدير في البورتال (عدد الطلبات، القيمة، آخر ٥ طلبات،
-         التقييمات). الجوال كامل للمدير (زي كارت التقييم عنده)، والمالك بس بياخد رابط الملف الكامل في اللوحة.
-     GET /api/portal/order-peek/:no        نفس تفاصيل الطلب للمدير في البورتال (من «⭐ التقييمات»).
+     GET /api/portal/customer-card?key=|review=|order=   كارت عميل صغير في البورتال للمدير والكاشير (PV2b، عمر ١٨/١٠: «الكاشير يفتح
+         ملف العميل زي المدير») — عدد الطلبات، القيمة، آخر ٥ طلبات، التقييمات. الجوال كامل للاتنين (زي الطلب نفسه في البورتال).
+         الكاشير من «تقييم» (review=) بس لو التقييمات مفتوحة له (reviewPortalRole — نفس قاعدة تبويب التقييمات)؛ المطبخ أبداً.
+         المالك بس بياخد رابط الملف الكامل في اللوحة.
+     GET /api/portal/order-peek/:no        نفس تفاصيل الطلب في البورتال (المدير والكاشير — من الملف/التقييمات/المحادثة).
 
    كل المسارات تحت /api/cms/customers ⇒ قسم «العملاء» في الصلاحيات (cms.js) من غير سطر جديد.
 ═══════════════════════════════════════════════════════════════════════════ */
@@ -34,8 +36,11 @@ import { CHANNEL_LABELS, posChannel, isVoid } from "./customer360.js";
 import { KIND_AR, googleRatedState, reviewFlowConfig } from "./wareviews.js";
 import { phoneOut } from "./phones.js";
 import { profileView, ENUM_AR } from "./custprofile.js";      // IBX1a: تصنيف العميل في كارت المحادثة
+import { reviewPortalRole } from "./reviewaudience.js";      // PV2b: الكاشير يفتح الملف من التقييم بس لو التقييمات مفتوحة له
 
 export const WA_FILE_ROLES = Object.freeze(["owner", "operations"]);
+/* PV2b (عمر ١٨/١٠): أدوار البورتال اللي بتفتح «👤 ملف العميل» (الكارت + تفاصيل طلباته). المطبخ لأ. */
+export const CARD_ROLES = Object.freeze(["manager", "cashier"]);
 export const PAGE_DEFAULT = 40, PAGE_MAX = 100;
 const iso = (v) => (v instanceof Date ? v.toISOString() : v ? new Date(v).toISOString() : null);
 const ms = (v) => { const t = v instanceof Date ? v.getTime() : Date.parse(v || ""); return Number.isFinite(t) ? t : 0; };
@@ -507,12 +512,17 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, ...page, summary, threadKey: SALT ? keyOf(pn) : null, partial, limit: lim });
   });
 
-  /* ═══ البورتال: كارت العميل + تفاصيل الطلب (المدير، والمالك من اللوحة) ═══ */
+  /* ═══ البورتال: كارت العميل + تفاصيل الطلب (المدير والكاشير — PV2b عمر ١٨/١٠؛ المالك من اللوحة) ═══
+     requirePortal بيقفل المطبخ لوحده. الكاشير بياخد نفس الكارت بالظبط (الجوال كامل زي الطلب عنده، من غير ref). */
   const requirePortal = deps.requirePortal || null;
   if (requirePortal) {
     app.get("/api/portal/customer-card", async (c) => {
-      const a = await requirePortal(c, "manager"); if (a.res) return a.res;
+      const a = await requirePortal(c, "cashier"); if (a.res) return a.res;
       const q = (k) => String(c.req.query(k) || "").trim().slice(0, 60);
+      if (q("review") && !q("key") && a.user?.role !== "manager") {
+        const s = await getSettingsData().catch(() => null);
+        if (!reviewPortalRole(a.user?.role, s)) return bad(c, "forbidden", 403, "التقييمات للمدير بس");
+      }
       let pn = null;
       try {
         if (q("key")) pn = await pnOfWaKey(q("key"));
@@ -539,7 +549,7 @@ export function register(app, ctx, deps = {}) {
       catch (e) { log.error("[c360wa] order-customer:", e.message); return bad(c, "unavailable", 500); }
       if (!row) return bad(c, "not_found", 404, "الطلب مش موجود");
       const pn = normPhone(row.phone_norm) || null;
-      if (!pn) return c.json({ ok: true, badges: orderBadges({}), chat: { has: false }, card: a.user?.role === "manager" });
+      if (!pn) return c.json({ ok: true, badges: orderBadges({}), chat: { has: false }, card: CARD_ROLES.includes(a.user?.role) });
       const safe = (p) => p.catch(() => null);
       const qq = (sql, vals) => Q(sql, vals).catch(() => null);
       const [firsts, tagRows, thread, gr] = await Promise.all([
@@ -549,10 +559,10 @@ export function register(app, ctx, deps = {}) {
         safe((async () => googleRatedState(qq, pn, reviewFlowConfig(((await getSettingsData()) || {}).waBot?.reviewFlow)))()),
       ]);
       const badges = orderBadges({ firstDay: firsts ? firsts.get(pn) || null : null, orderAt: row.created_at, tags: tagRows?.[0]?.tags || [], googleRated: Boolean(gr && gr.rated) });
-      return c.json({ ok: true, badges, chat: { has: Boolean(thread && thread.length), key: thread && thread.length && SALT ? keyOf(pn) : null }, card: a.user?.role === "manager" });
+      return c.json({ ok: true, badges, chat: { has: Boolean(thread && thread.length), key: thread && thread.length && SALT ? keyOf(pn) : null }, card: CARD_ROLES.includes(a.user?.role) });
     });
     app.get("/api/portal/order-peek/:no", async (c) => {
-      const a = await requirePortal(c, "manager"); if (a.res) return a.res;
+      const a = await requirePortal(c, "cashier"); if (a.res) return a.res;      // PV2b: الكاشير كمان (طلبات الملف بتفتح هنا)
       try {
         const f = await findOrder(c.req.param("no"));
         if (!f) return bad(c, "not_found", 404, "الطلب مش موجود");

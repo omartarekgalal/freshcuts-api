@@ -6,7 +6,7 @@ import { Hono } from "hono";
 import {
   canSeeWaFile, parseOrderRef, campaignState, messageItem, campaignItem, mergePage, summaryOf, cardOf, webOrderOut, posOrderOut,
   handoverItem, ownerItem, ratingItem, consentItem, register, currentOrderOut, etaOut, profileBrief, FINAL_ORDER_STATUSES, ATTENTION_ORDER_STATUSES,
-  CURRENT_ORDER_SQL, orderBadges, bizDayOf,
+  CURRENT_ORDER_SQL, orderBadges, bizDayOf, CARD_ROLES,
 } from "./c360wa.js";
 import { profileView, profileCfg } from "./custprofile.js";
 
@@ -177,6 +177,7 @@ function makeApp({ role = "owner", settings = {}, portalUser = { role: "manager"
   const requireAdmin = async (c) => (c.req.header("Authorization") === `Bearer ${ADMIN}` ? null : c.json({ error: "Unauthorized" }, 401));
   const requirePortal = async (c, need) => {
     if (c.req.header("Authorization") !== "Bearer portal:ok") return { res: c.json({ ok: false, error: "unauthorized" }, 401) };
+    if (portalUser.role === "kitchen") return { res: c.json({ ok: false, error: "kitchen_only" }, 403) };      // زي portal.js: المطبخ مقفول على البورتال
     if (need === "manager" && portalUser.role !== "manager") return { res: c.json({ ok: false, error: "forbidden" }, 403) };
     return { user: portalUser };
   };
@@ -235,7 +236,7 @@ test("whatsapp timeline: merged page + summary for the owner; 403 for roles outs
   assert.equal((await get("/api/cms/customers/360/cdeadbeefdeadbee/whatsapp")).status, 404);
 });
 
-test("portal card: manager gets the card without ref; owner (admin) gets ref; cashier 403", async () => {
+test("portal card: manager gets the card without ref; owner (admin) gets ref; cashier (PV2b) gets it from review only when reviews are open to them", async () => {
   const mgr = await makeApp().get("/api/portal/customer-card?key=" + "b".repeat(32), "Bearer portal:ok");
   assert.equal(mgr.status, 200);
   assert.equal(mgr.body.card.orders, 2);
@@ -244,7 +245,9 @@ test("portal card: manager gets the card without ref; owner (admin) gets ref; ca
   const own = await makeApp({ portalUser: { role: "manager", admin: true } }).get("/api/portal/customer-card?review=11", "Bearer portal:ok");
   assert.equal(own.body.card.ref, "c000000500000001");
   const cashier = await makeApp({ portalUser: { role: "cashier" } }).get("/api/portal/customer-card?review=11", "Bearer portal:ok");
-  assert.equal(cashier.status, 403);
+  assert.equal(cashier.status, 403, "reviews closed to the cashier ⇒ no file from a review id");
+  const cashierRv = await makeApp({ portalUser: { role: "cashier" }, settings: { waBot: { reviewFlow: { portalCashier: true } } } }).get("/api/portal/customer-card?review=11", "Bearer portal:ok");
+  assert.equal(cashierRv.status, 200);
   const peek = await makeApp().get("/api/portal/order-peek/pos:88", "Bearer portal:ok");
   assert.equal(peek.body.order.channelLabel, "كيتا");
 });
@@ -385,7 +388,7 @@ test("PV2 order-customer route: cashier + manager (no phone in the reply), badge
   assert.deepEqual(cashier.body.badges.list.map((b) => b.id), ["new", "vip", "google"]);
   assert.equal(cashier.body.chat.has, true);
   assert.match(cashier.body.chat.key, /^[0-9a-f]{32}$/);
-  assert.equal(cashier.body.card, false, "the cashier has no customer-file button");
+  assert.equal(cashier.body.card, true, "PV2b: the cashier opens the customer file too");
   assert.equal(JSON.stringify(cashier.body).includes(PN), false, "no phone number in the reply");
   const mgr = await makeApp({ extra }).get("/api/portal/order-customer/W1077", "Bearer portal:ok");
   assert.equal(mgr.body.card, true);
@@ -398,4 +401,38 @@ test("PV2 order-customer route: a failing badge source only drops that badge", a
   const r = await makeApp({ portalUser: { role: "cashier" }, extra }).get("/api/portal/order-customer/W1077", "Bearer portal:ok");
   assert.equal(r.status, 200);
   assert.equal(r.body.badges.vip, false);
+});
+
+/* ═══ PV2b (عمر ١٨/١٠: «الكاشير يفتح ملف العميل زي المدير») ═══ */
+test("PV2b customer-card: cashier gets the same card as the manager (full phone, money, last orders) but never the owner ref", async () => {
+  const mgr = await makeApp().get("/api/portal/customer-card?order=W1077", "Bearer portal:ok");
+  const cas = await makeApp({ portalUser: { role: "cashier" } }).get("/api/portal/customer-card?order=W1077", "Bearer portal:ok");
+  assert.equal(cas.status, 200);
+  assert.deepEqual(cas.body.card, mgr.body.card, "identical card for cashier and manager");
+  assert.equal(cas.body.card.phone, "0" + PN);
+  assert.equal(cas.body.card.spend, 150);
+  assert.equal(cas.body.card.ref, undefined);
+  assert.equal(cas.body.owner, false);
+  const byChat = await makeApp({ portalUser: { role: "cashier" } }).get("/api/portal/customer-card?key=" + "b".repeat(32), "Bearer portal:ok");
+  assert.equal(byChat.status, 200, "from the chat header");
+  /* key + review together: the chat key wins (no review gate) */
+  assert.equal((await makeApp({ portalUser: { role: "cashier" } }).get("/api/portal/customer-card?key=" + "b".repeat(32) + "&review=11", "Bearer portal:ok")).status, 200);
+});
+
+test("PV2b customer-card + order-peek: kitchen never, no login ⇒ 401", async () => {
+  const k = makeApp({ portalUser: { role: "kitchen" } });
+  assert.equal((await k.get("/api/portal/customer-card?order=W1077", "Bearer portal:ok")).status, 403);
+  assert.equal((await k.get("/api/portal/order-peek/pos:88", "Bearer portal:ok")).status, 403);
+  assert.equal((await k.get("/api/portal/order-customer/W1077", "Bearer portal:ok")).status, 403);
+  assert.equal((await makeApp({ portalUser: { role: "cashier" } }).get("/api/portal/customer-card?order=W1077", "Bearer nope")).status, 401);
+});
+
+test("PV2b order-peek: cashier opens a POS order from the file", async () => {
+  const r = await makeApp({ portalUser: { role: "cashier" } }).get("/api/portal/order-peek/pos:88", "Bearer portal:ok");
+  assert.equal(r.status, 200);
+  assert.equal(r.body.order.channelLabel, "كيتا");
+});
+
+test("PV2b CARD_ROLES: manager + cashier, not kitchen", () => {
+  assert.deepEqual([...CARD_ROLES], ["manager", "cashier"]);
 });
