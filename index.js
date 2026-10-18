@@ -33,6 +33,7 @@ import * as mffees from "./mffees.js";
 import * as ads from "./ads.js";
 import * as keeta from "./keeta.js";
 import * as keetaControl from "./keeta_control.js";
+import * as keetaPull from "./keeta_pull.js";      // KA2 (١٨/١٠): بعد طلب كيتا — التقييم الأول، وبعدين «اطلب مباشرة من موقعنا» بشرط
 import * as hsControl from "./hs_control.js";
 import * as appSync from "./app_sync.js";
 import * as hsPortal from "./hs_portal.js";
@@ -1903,6 +1904,7 @@ async function runLinkPass(cfg, reason) {
   }, { reason });
 }
 
+let keetaPullApi = null;   // KA2 (keeta_pull.register تحت) — الدورة بتناديه بعد فيدأس
 async function runInsightsSync() {
   const cfg = posLinkCfg(await getSettingsData());
   const { count: n, created } = await syncOrdersCache(daysAgoISO(3));
@@ -1932,6 +1934,8 @@ async function runInsightsSync() {
       insightsState.lastFeedusError = e.message;
       console.error("[feedus] sync error:", e.message);
     }
+    /* KA2: جوالات كيتا لسه نازلة من فيدأس ⇒ عملاء كيتا الجداد بيدخلوا في نفس الدورة (أول بأول، من غير دفعات). المفتاح مقفول ⇒ ولا حاجة. */
+    if (keetaPullApi) await keetaPullApi.tick().catch((e) => console.error("[ka2]", e.message));
   }
   // Link EVERY customer active in the last 2 days (not a top-N slice) — a day
   // is only ~15-25 unique customers, and full coverage is what makes a NULL
@@ -3346,6 +3350,8 @@ const waBotApi = wabot.register(app, moduleCtx, { app });
 /* 🤖 ١٢/١٠: بوت واتساب v1 (wabotrun.js) — بيمسك الوارد من whatsapp.js (setBotRuntime). الوضع وكل إعداداته من اللوحة
    (settings.waBot: off الافتراضي / dry / test / live) — مفيش مفتاح env. off = مابيلمسش أي رسالة. */
 wabotApi = wabotrun.register(app, moduleCtx, { app, wa: waApi, team: () => waTeamApi, flow: () => waFlowApi, sendSms: accounts.sendSms, whoami: (c) => cmsApi.whoami(c), assist: { expandBundle: (...a) => cmsApi.expandBundle(...a), modifiersCatalog: () => modifiersApi.catalog(), modifiersResolve: (id, ids) => modifiersApi.resolve(id, ids), quote: (x) => deliveryApi.quote(x), buildProfile: (pn) => c360Api.buildProfile(pn) }, fav: () => favPickApi, kb: () => waKbApi, courierWa: () => courierWaApi, portalEmit: (event, data) => { try { if (event === "wa_handover" && waHandoverApi) waHandoverApi.emit(data).catch(() => {}); else if (portalApi && typeof portalApi.broadcast === "function") portalApi.broadcast(event, data); } catch (e) { console.error("[wabot] portal emit:", e.message); } }, llm: wabotllm.makeClassifier({ faqKeys: wabotrun.FAQ_KEYS }) });
+/* KA2 (١٨/١٠): wa = sendTemplate (الحارس المركزي)، sender = recentMap (دفتر «رسالة الأسبوع») + optOut. الدورة من runInsightsSync بعد فيدأس. */
+keetaPullApi = keetaPull.register(app, moduleCtx, { wa: waApi, sender: () => waSenderApi });
 /* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
    وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
    الـCMS يتسجّل، والموديولات بتناديها وقت الطلب (ctx.canSeePhones) مش وقت التسجيل. */

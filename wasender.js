@@ -2420,5 +2420,5 @@ export function register(app, ctx, deps = {}) {
   });
 
   return { reconcileStatuses, recentSet, recentMap, build, cloudTick, onCloudStatus, onCloudInbound, onQualityEvent, stateNow, schemaReady, imageHosts,
-    startDueJobs, recoverStuck };
+    startDueJobs, recoverStuck, optOut };      // KA2 (١٨/١٠): نفس مسار الإيقاف (131050 على رسالة KA2)
 }

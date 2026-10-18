@@ -31,6 +31,7 @@ import { FIRST_ORDER_CTE, shopPaidSql, maskPhone, appSourceSql } from "./identit
 import { LINK_TARGET_TYPES, linkTargetParams } from "./cmslinks.js";
 import { logSms } from "./smslog.js";
 import { parseRecipientSlug, recipientLink } from "./wamsg.js";
+import { resolveKa2Link } from "./keeta_pull.js";      // KA2 (١٨/١٠): /l/keeta-first-<code>
 import { couponQueries, firstEligibility } from "./couponrules.js";
 import * as loyaltyLib from "./loyalty.js";
 import { profileCmsSegments, profileCfg } from "./custprofile.js";
@@ -155,6 +156,8 @@ const PATH_SECTIONS = [
   // تحكم كيتا (٧/١٠): إتاحة الأصناف والعروض = «المنتجات» (زي «خلص النهارده» عندنا)،
   // وإعداداته للمالك بس — لازم يسبقوا سطر keeta العام بتاع التحليلات.
   [/^\/api\/keeta\/control\/settings/, "settings"],
+  // KA2 (١٨/١٠): رسايل ما بعد طلب كيتا (تقييم ثم «اطلب من موقعنا») — قراية = «العملاء»، الكتابة للمالك بس جوّه المسار
+  [/^\/api\/keeta\/pull/, "customers"],
   [/^\/api\/keeta\/control/, "products"],
   [/^\/api\/hs\/control/, "products"],
   [/^\/api\/hs\/portal/, "products"],
@@ -2184,6 +2187,19 @@ export function register(app, ctx, deps = {}) {
         if (l) {
           rcp = { slug, coupon: ly.coupon };
           if (count) await pool.query("UPDATE cms_loyalty SET clicks = clicks + 1, clicked_at = COALESCE(clicked_at, NOW()) WHERE phone_norm=$1 AND reward_no=$2", [ly.phone_norm, ly.reward_no]).catch(() => {});
+        }
+      }
+      /* KA2 (١٨/١٠) — رسالة «اطلب مباشرة من موقعنا» بعد طلب كيتا: /l/keeta-first-<code> → صف المستلم في ka2_sends (أو صف تجربة ka2_tests).
+         الضغطة على رابط keeta-first (cms_links 606) + على الرقم نفسه، والكوبون FIRST. */
+      const k2 = !l && p ? await resolveKa2Link(pool, slug) : null;
+      if (k2) {
+        const r5 = count
+          ? await pool.query(`UPDATE cms_links SET clicks = clicks + 1, last_click_at = NOW() WHERE slug=$1 AND active RETURNING *`, [k2.base])
+          : await pool.query(`SELECT * FROM cms_links WHERE slug=$1 AND active`, [k2.base]);
+        l = r5.rows[0];
+        if (l) {
+          rcp = { slug, coupon: k2.coupon };
+          if (count) await pool.query(`UPDATE ${k2.table === "ka2_tests" ? "ka2_tests" : "ka2_sends"} SET clicks = clicks + 1, clicked_at = COALESCE(clicked_at, NOW()) WHERE id=$1`, [k2.id]).catch(() => {});
         }
       }
     }

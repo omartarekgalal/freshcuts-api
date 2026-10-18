@@ -41,7 +41,7 @@ import { isOptOutText } from "./wamsg.js";
 import { echoKind, echoSettings, ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import * as CAT from "./watemplates.js";
 import { staffPhones } from "./staffalerts.js";
-import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS, POS_REVIEW_CONSENT, posReviewConsentOn, posReviewConsentCovers } from "./waconsent.js";
+import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS, POS_REVIEW_CONSENT, posReviewConsentOn, posReviewConsentCovers, KA2_REVIEW_CONSENT, ka2ReviewConsentOn, ka2ReviewConsentCovers } from "./waconsent.js";
 import { custCapOf, custCapReason } from "./waquality.js";
 import { waStageOn, FREE_STAGES, freeStageText } from "./waswitches.js";      // RT2 مراجعة: سجل المراحل الحرة الواحد
 import { staffRoleOf } from "./wateam.js";
@@ -810,8 +810,9 @@ export function register(app, ctx, deps = {}) {
     if (!POS_REVIEW_CONSENT.templates.includes(template) || source !== "review") return false;
     if (!/^pos:/.test(String(orderNo || ""))) return false;
     if (Object.keys(CAT.META_CATEGORY || {}).some((k) => k.startsWith(`${template}:`))) return false;
-    if (!posReviewConsentOn(s)) return false;
-    return posReviewConsentCovers(pool, pn, orderNo);
+    if (posReviewConsentOn(s) && await posReviewConsentCovers(pool, pn, orderNo)) return true;
+    /* KA2 (عمر ١٨/١٠: «كيتا هي اللي بتبعتلنا الرقم، موافقين») — طلب التقييم لطلب كيتا اللي KA2 دخّلته (صف keeta_order لنفس الجوال والطلب) والمفتاح مفتوح */
+    return KA2_REVIEW_CONSENT.templates.includes(template) && ka2ReviewConsentOn(s) && ka2ReviewConsentCovers(pool, pn, orderNo);
   }
   const TICKETS = new WeakSet();
   const TICKET_TTL_MS = 60_000;
@@ -1056,7 +1057,7 @@ export function register(app, ctx, deps = {}) {
        مطلوبة)؛ الاستثناء الوحيد = أرقام التجربة اللي في اللوحة (test / allowList). */
     void requireOptIn;
     const g = await guardSend({ phoneNorm, kind: "template", template, source, purpose: source === "campaign" ? "marketing" : null,
-      test, allowList, orderNo, staff, courier, proactive: proactive === true || source === "campaign" || source === "review", stage });      // CJ1a: الحملة وطلب التقييم مبادِرين دايماً
+      test, allowList, orderNo, staff, courier, proactive: proactive === true || source === "campaign" || source === "review" || source === "ka2", stage });      // CJ1a: الحملة وطلب التقييم ورسالة KA2 مبادِرين دايماً
     if (!g.ok) return { ok: false, skipped: g.reason, ...(g.until ? { until: g.until } : {}), ...(g.policy ? { policy: true } : {}) };
     const language = lang || t.language || "ar";
     const bad = paramProblem(template, params, language);

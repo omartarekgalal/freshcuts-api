@@ -3384,7 +3384,9 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
   /* RV1 (عمر ١٥/١٠): kind = نوع الطلب (delivery/pickup/table = موقع، dinein/takeaway/app = كاشير)، ref = الرقم اللي العميل يعرفه.
      المسار الجديد (waBot.reviewFlow.enabled): جوّه النافذة ⇒ قايمة نجوم (channel wa_list). بره النافذة ⇒ قالب النجوم fc_review_stars لو اتفتح بعد اعتماده
      (wa_stars)، وإلا القالب المعتمد القديم لطلبات الموقع بس؛ طلب الكاشير من غير قالب نجوم ⇒ { skipped: "no_visit_template" } (reviews.js يقرر SMS ولا لأ). */
-  async function reviewAsk({ phone: raw, orderNo, code, kind = null, ref = null }) {
+  /* KA2 (عمر ١٨/١٠): ka2 = دعوة طلب كيتا اللي KA2 دخّلته (أول رسالة بعد الطلب بـ٥٠ د) ⇒ بره النافذة قالب النجوم fc_review_stars المعتمد حتى لو مفتاح
+     starsTemplate لسه مقفول (المالك ١٨/١٠: «قالب fc_review_stars المعتمد بره النافذة»)، والموافقة = صف keeta_order (waconsent.js). */
+  async function reviewAsk({ phone: raw, orderNo, code, kind = null, ref = null, ka2 = false }) {
     try {
       const phone = normPh(raw); if (!/^5\d{8}$/.test(phone)) return { ok: false, skipped: "bad_phone" };
       if (!/^[a-z0-9]{4,16}$/i.test(String(code || "")) || !orderNo) return { ok: false, skipped: "bad_invite" };
@@ -3440,7 +3442,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         return null;
       };
       if (!web) {
-        if (flow.enabled && flow.starsTemplate) { const s = await starsTpl(); if (s) return s; }
+        if (flow.enabled && (flow.starsTemplate || ka2 === true)) { const s = await starsTpl(); if (s) return s; }
         return { ok: false, skipped: "no_visit_template" };
       }
       if (cfg.closedPolicy) {

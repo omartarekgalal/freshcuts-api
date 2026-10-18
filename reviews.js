@@ -40,6 +40,8 @@ import { isPlaceholderPhone, placeholderWhy, FAKE_PHONE_RE } from "./phonecheck.
 import { REVIEW_PORTAL_DDL, OUTCOMES, outcomeOf, closeReview, closeStatus } from "./portalreviews.js";
 /* عمر ١٨/١٠: «المطعم شغال طول اليوم» — طلب التقييم على واتساب بيطلع والمطعم مفتوح (sendhours.js) بدل هدوء ٢٣:٣٠–١١:٣٠ */
 import { isRestaurantOpenAt, nextSendOpenAt, sendHoursCfg } from "./sendhours.js";
+/* KA2 (عمر ١٨/١٠): نسبة «إيقاف» لرسايل KA2 لوحدها في إحصائيات التقييمات */
+import { ka2ReviewSummary } from "./keeta_pull.js";
 
 const CATEGORIES = ["الأكل", "التوصيل", "الخدمة", "السعر", "النظافة", "الوقت"];
 export const DEFAULTS = {
@@ -186,6 +188,8 @@ export function register(app, ctx, deps = {}) {
       -- «يحتاج تحسين» من القالب = ٣ أو أقل من غير رقم مضبوط ⇒ مابيدخلش المتوسط ولا توزيع النجوم
       ALTER TABLE reviews ADD COLUMN IF NOT EXISTS rating_exact BOOLEAN NOT NULL DEFAULT TRUE;
       ALTER TABLE reviews ADD COLUMN IF NOT EXISTS kind TEXT;
+      -- KA2 (١٨/١٠): دعوة طلب كيتا اللي keeta_pull.js دخّلته (طلب التقييم الأول بعد ٥٠ د، والسحب للموقع بعده بشرط)
+      ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS ka2 BOOLEAN NOT NULL DEFAULT FALSE;
       CREATE TABLE IF NOT EXISTS cms_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     `);
     await pool.query(REVIEW_PORTAL_DDL);      // RV1: نتيجة القفل (outcome) + «شافها» في البورتال + سجل الإجراءات (review_actions)
@@ -630,7 +634,7 @@ export function register(app, ctx, deps = {}) {
         }
       } else if (inAskQuiet(riyadhHour(now), cf.askQuietStart, cf.askQuietEnd)) return { skipped: "quiet" };
       const due = (await pool.query(
-        `SELECT order_no, code, phone_norm, kind, option, ref, order_at FROM review_invites
+        `SELECT order_no, code, phone_norm, kind, option, ref, order_at, ka2 FROM review_invites
           WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at <= $1::timestamptz
           ORDER BY due_at LIMIT 40`, [now.toISOString()])).rows;
       if (!due.length) return { sent: 0 };
@@ -658,7 +662,7 @@ export function register(app, ctx, deps = {}) {
         if (await one("SELECT 1 FROM cms_contacts WHERE phone_norm=$1 AND is_staff", [iv.phone_norm])) { await skip("staff"); continue; }
         /* RV1: طلب كاشير والمسار اتقفل بعد ما الدعوة اتعملت ⇒ مفيش رسالة. النوع اتقفل من اللوحة ⇒ برضه. */
         if (visit && !flow.enabled) { await skip("flow_off"); continue; }
-        if (flow.enabled && !kindOn(kind, flow)) { await skip("kind_off"); continue; }
+        if (flow.enabled && !kindOn(kind, flow) && iv.ka2 !== true) { await skip("kind_off"); continue; }      // KA2: مفتاحها الخاص (keeta.pull.enabled) هو اللي بيحكم دعوتها
         /* طلب كاشير: الفاتورة بتتقري تاني دلوقتي (مش اللي اتسجّل وقت الدعوة):
              • اتلغت/اترجعت بعد ما الدعوة اتعملت (تاب سينس بيقلب نوعها Void/Refund) ⇒ مانسألش عن طلب ماحصلش.
              • اتربطت بطلب موقع (order_sources.source = website) أو بقت QR-Menu ⇒ ده طلب موقع، دعوته من مسار الموقع.
@@ -717,7 +721,7 @@ export function register(app, ctx, deps = {}) {
           catch (e) { console.error("[reviews] pos consent:", e.message); throw CHECK_FAILED; }
         }
         if (wr && typeof wr.reviewAsk === "function") {
-          let r = null; try { r = await wr.reviewAsk({ phone: iv.phone_norm, orderNo: iv.order_no, code: iv.code, ...(iv.kind ? { kind: iv.kind } : {}), ...(iv.ref ? { ref: iv.ref } : {}) }); } catch { r = null; }
+          let r = null; try { r = await wr.reviewAsk({ phone: iv.phone_norm, orderNo: iv.order_no, code: iv.code, ...(iv.kind ? { kind: iv.kind } : {}), ...(iv.ref ? { ref: iv.ref } : {}), ...(iv.ka2 === true ? { ka2: true } : {}) }); } catch { r = null; }
           if (r && r.ok) {
             await pool.query("UPDATE review_invites SET sent_at=NOW(), channel=$2 WHERE order_no=$1", [iv.order_no, String(r.channel || "wa")]);
             if (r.wamid) await mark("wa_msg_id", String(r.wamid).slice(0, 200)).catch(() => {});      // ضغطة زر القالب بترجع بالرسالة دي (context.id)
@@ -730,6 +734,8 @@ export function register(app, ctx, deps = {}) {
           if (r && r.defer && r.until && Number.isFinite(Date.parse(r.until))) { await mark("due_at", new Date(r.until).toISOString()); out.deferred = (out.deferred || 0) + 1; continue; }
           if (r && r.skipped) { waWhy = String(r.skipped).slice(0, 80); await mark("wa_skip", waWhy); }
         }
+        /* KA2 (عمر ١٨/١٠): طلب التقييم بعد طلب كيتا واتساب بس — مفيش SMS بديلة (SMS موقوفة لشرايح كيتا) */
+        if (iv.ka2 === true) { await skip(`ka2_no_sms${waWhy ? `:${waWhy}` : ""}`.slice(0, 80)); continue; }
         if (visit && !flow.smsVisits) { await skip(`no_sms_visit${waWhy ? `:${waWhy}` : ""}`.slice(0, 80)); continue; }
         /* عمر ١٨/١٠: البوابة الجديدة بتسيب طلب التقييم يطلع بالليل والمطعم مفتوح — ده لواتساب. الـSMS البديلة لسه بتحترم هدوء التقييم القديم
            (رسالة SMS الساعة ٢ الفجر = صحيان) ⇒ تتأجّل لأول وقت مسموح بالهدوء القديم بدل ما تتبعت دلوقتي. */
@@ -833,6 +839,8 @@ export function register(app, ctx, deps = {}) {
       google: await placeCache(),
       /* RV6 (عمر ١٧/١٠): كام عميل معلَّم «قيّم على جوجل ✅» (الكل / الأسبوع / بالمصدر)، كام اتسأل السؤال الوحيد، وكام دعوة اتقفلت بسببه في المدة */
       googleRated: await googleRatedStats(qq, { flow: flowOf(await getSettingsData()), days }).catch(() => null),
+      /* KA2 (عمر ١٨/١٠): طلبات التقييم بعد طلب كيتا + رسايل «اطلب من موقعنا» + نسبة «إيقاف» محسوبة لرسايل KA2 لوحدها */
+      ka2: await ka2ReviewSummary(qq, { days }).catch(() => null),
     });
   });
 

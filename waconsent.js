@@ -229,6 +229,43 @@ export async function posReviewConsentCovers(pool, phoneNorm, orderNo) {
   } catch { return false; }
 }
 
+/* ── KA2 (عمر ١٨/١٠/٢٠٢٦، بنصّه: «كيتا هي اللي بتبعتلنا الرقم، موافقين») ─────────────────────────────────────────────────────────────
+   مصدر موافقة ضيّق زي pos_payment بالظبط: رقم عميل كيتا اللي جه مع طلبه = موافقة على **رسالة طلب التقييم** لطلب كيتا ده بس (قالب fc_review_stars،
+   المصدر "review"، الطلب pos:<رقم طلب كيتا>). صف إثبات لكل طلب (kind = review، source = keeta_order) بيتكتب لما KA2 تدخّل الطلب (keeta_pull.js).
+   الحارس بيقبله بس والمفتاح keeta.pull.enabled مفتوح. رسالة «اطلب من موقعنا» قالب تسويق — مالهاش علاقة بالموافقة دي (قاعدة «للكل إلا اللي وقّف»). */
+export const KA2_REVIEW_CONSENT = Object.freeze({
+  kind: "review", source: "keeta_order", version: "keeta-order-2026-10-18",
+  text: "قرار المالك (١٨/١٠/٢٠٢٦): رقم عميل كيتا اللي كيتا بتبعته مع الطلب — موافقين (اتفاق مع كيتا) على رسالة طلب التقييم على واتساب لطلب كيتا ده.",
+  templates: Object.freeze(["fc_review_stars"]),
+});
+export function ka2ReviewConsentOn(settings) {
+  const p = (((settings || {}).keeta) || {}).pull;
+  return Boolean(p && typeof p === "object" && p.enabled === true);
+}
+export async function recordKa2ReviewConsent(pool, { phoneNorm, orderNo, at = null }) {
+  if (!/^5\d{8}$/.test(String(phoneNorm || ""))) return { ok: false, error: "invalid_phone" };
+  if (isPlaceholderPhone(phoneNorm)) return { ok: false, error: "placeholder_phone" };
+  if (!POS_ORDER_RE.test(String(orderNo || ""))) return { ok: false, error: "not_pos_order" };
+  await ensureWaConsentSchema(pool);
+  const when = at && Number.isFinite(Date.parse(at)) ? new Date(at).toISOString() : new Date().toISOString();
+  const r = await pool.query(
+    `INSERT INTO wa_optin_log(phone_norm, kind, value, text_version, text, source, order_no, ip, ua, at)
+     SELECT $1, 'review', TRUE, $2, $3, 'keeta_order', $4, NULL, NULL, $5::timestamptz
+      WHERE NOT EXISTS (SELECT 1 FROM wa_optin_log WHERE kind='review' AND source='keeta_order' AND order_no=$4 AND phone_norm=$1)`,
+    [String(phoneNorm), KA2_REVIEW_CONSENT.version, KA2_REVIEW_CONSENT.text, String(orderNo), when]);
+  return { ok: true, recorded: Boolean(r && r.rowCount) };
+}
+export async function ka2ReviewConsentCovers(pool, phoneNorm, orderNo) {
+  if (!POS_ORDER_RE.test(String(orderNo || "")) || !/^5\d{8}$/.test(String(phoneNorm || "")) || isPlaceholderPhone(phoneNorm)) return false;
+  try {
+    await ensureWaConsentSchema(pool);
+    const r = await pool.query(
+      "SELECT 1 FROM wa_optin_log WHERE kind='review' AND source='keeta_order' AND value AND order_no=$1 AND phone_norm=$2 AND text_version=$3 LIMIT 1",
+      [String(orderNo), String(phoneNorm), KA2_REVIEW_CONSENT.version]);
+    return Boolean(r && r.rows && r.rows.length);
+  } catch { return false; }
+}
+
 /* تسجيل الإجابة. phoneNorm لازم يكون جاي من رقم متحقق (جلسة OTP) — المتصل هو المسؤول عن ده.
    بيحدّث updates بس؛ عمود marketing مابيتلمسش. */
 export async function recordWaUpdates(pool, { phoneNorm, answer, orderNo = null, ip = null, ua = null }) {
