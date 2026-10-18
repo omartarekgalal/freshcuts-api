@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   register, gameCfg, GAME_DEFAULTS, GAME_LABELS, signToken, verifyToken, cleanFirstName, isProfane, flagReasons,
-  leaderboardOf, weekStartOf, maskPhone, excludedPhones, LIMITS,
+  leaderboardOf, weekStartOf, maskPhone, excludedPhones, LIMITS, percentileOf,
 } from "./game.js";
 import * as J from "./journey.js";
 import { sectionOf } from "./cms.js";
@@ -16,7 +16,7 @@ const SECRET = "test-secret";
 const T0 = Date.parse("2026-10-18T15:00:00Z");      // الأحد ١٨/١٠ ٦ المغرب الرياض
 
 /* ═══ قاعدة بيانات وهمية: game_scores + game_players في الذاكرة + أسماء من الطلبات/نقطة البيع ═══ */
-function fakeDb({ history = {}, pos = {} } = {}) {
+function fakeDb({ history = {}, pos = {}, orders = {} } = {}) {
   const rows = [];
   const players = new Map();
   const calls = [];
@@ -56,6 +56,17 @@ function fakeDb({ history = {}, pos = {} } = {}) {
           const x = players.get(p[0]);
           if (!x || x.name_edits !== 0) return { rowCount: 0, rows: [] };
           x.first_name = p[1]; x.name_edits += 1; return { rowCount: 1, rows: [{ ...x }] };
+        }
+        case "order": {
+          const o = orders[p[0]];
+          const paid = o && !["pending_payment", "expired", "rejected_refunded", "refund_failed", "paid_pos_failed"].includes(o.status || "paid");
+          const fresh = o && clock.now - Date.parse(o.created_at || new Date(clock.now).toISOString()) < Number(p[1]) * 3600_000;
+          return { rows: o && paid && !o.is_test && fresh ? [{ phone_norm: o.phone_norm, name: o.name }] : [] };
+        }
+        case "dist": {
+          const ex = new Set(p[0] || []), m = new Map();
+          for (const r of rows) if (!r.flagged && r.phone_norm && !ex.has(r.phone_norm)) m.set(r.phone_norm, Math.max(m.get(r.phone_norm) || 0, r.score));
+          return { rows: [...m].map(([phone_norm, best]) => ({ phone_norm, best })) };
         }
         case "hist-order": return { rows: history[p[0]] ? [{ n: history[p[0]] }] : [] };
         case "hist-pos": return { rows: pos[p[0]] ? [{ n: pos[p[0]] }] : [] };
@@ -142,7 +153,7 @@ test("token: sign/verify round-trip; forged body or mac ⇒ null; older than 24 
 test("start: no login ⇒ known false; login without a game name ⇒ known + suggested + named false; with a name ⇒ named true; config default all", async () => {
   const g = build({ accts: accts(["500000111", "محمد عبدالله"]) });
   let r = await g.start({ src: "track" });
-  assert.equal(r.ok, true); assert.equal(r.enabled, true); assert.equal(r.maxScorePerSec, 45); assert.equal(r.period, "all");
+  assert.equal(r.ok, true); assert.equal(r.enabled, true); assert.equal(r.maxScorePerSec, 60); assert.equal(r.period, "all");
   assert.deepEqual([r.known, r.firstName, r.named], [false, null, false]);
   const p = verifyToken(r.token, SECRET, T0);
   assert.equal(p.s, "track"); assert.equal(p.t, T0); assert.match(p.r, /^[a-f0-9]{24}$/); assert.equal(p.ih.length, 8);
@@ -497,7 +508,8 @@ test("cms PUT: clamps and saves under {game} (bad period ⇒ all); board cache c
   assert.deepEqual(r.body.config, { enabled: true, leaderboardPeriod: "all", maxScorePerSec: 10 });
   assert.equal((await g.call("PUT /api/cms/game", { body: {} })).status, 401);
   assert.deepEqual(gameCfg({}), GAME_DEFAULTS);
-  assert.deepEqual(gameCfg({ game: { maxScorePerSec: "abc" } }).maxScorePerSec, 45);
+  assert.deepEqual(gameCfg({ game: { maxScorePerSec: "abc" } }).maxScorePerSec, 60);
+  assert.equal(GAME_DEFAULTS.maxScorePerSec, 60, "v2.2: power-ups ⇒ legit max ≈ 48.5/s");
 });
 
 test("disabled ⇒ config enabled:false, start + score 503 disabled; the board still answers", async () => {
@@ -564,4 +576,104 @@ test("track: game true by default, false when the owner turns the game off", asy
   assert.equal(on.ok, true); assert.equal(on.game, true);
   const off = await run({ game: { enabled: false } });
   assert.equal(off.ok, true); assert.equal(off.game, false);
+});
+
+/* ═══ v2.2: هوية صامتة من رقم الطلب (صفحة التتبّع) ═══ */
+const ORD = "W1792400000501";
+const orderDb = () => fakeDb({ orders: {
+  [ORD]: { phone_norm: "500000555", name: "Faisal Al-Harbi", status: "paid", created_at: new Date(T0 - 3600_000).toISOString() },
+  W1792400000502: { phone_norm: "500000556", name: "Old Order", status: "delivered", created_at: new Date(T0 - 49 * 3600_000).toISOString() },
+  W1792400000503: { phone_norm: "500000557", name: "Unpaid", status: "pending_payment", created_at: new Date(T0).toISOString() },
+  W1792400000504: { phone_norm: "500000558", name: "Tester", status: "paid", is_test: true, created_at: new Date(T0).toISOString() },
+  W1792400000505: { phone_norm: "500000559", name: "عميل", status: "paid", created_at: new Date(T0).toISOString() },
+  W1792400000506: { phone_norm: "500000111", name: "Other Name", status: "paid", created_at: new Date(T0).toISOString() },
+} });
+
+test("order identity: paid order < 48 h ⇒ start/me/score as that phone; name auto-created from the order (edits 0); order_no stored; no phone returned", async () => {
+  const g = build({ db: orderDb() });
+  const st = await g.start({ ord: ORD });
+  assert.deepEqual([st.known, st.firstName, st.named], [true, "Faisal", true]);
+  assert.deepEqual(g.db.players.get("500000555"), { first_name: "Faisal", name_edits: 0 });
+  const me = await g.call("GET /api/game/me", { query: { ord: ORD } });
+  assert.deepEqual(me.body, { ok: true, firstName: "Faisal", suggested: "Faisal", canEdit: false, best: null });
+  assert.ok(!JSON.stringify(me.body).includes("500000555") && !JSON.stringify(st).includes("500000555"), "never the phone");
+  g.db.clock.now += 20_500;
+  const r = await g.score({ token: st.token, score: 300, durationMs: 20_000, ord: ORD, nearMiss: 3, powerups: 2 });
+  assert.deepEqual([r.status, r.body.saved, r.body.firstName, r.body.rank, r.body.best], [200, true, "Faisal", 1, 300]);
+  assert.ok(!JSON.stringify(r.body).includes("500000555"));
+  assert.deepEqual([g.db.rows[0].phone_norm, g.db.rows[0].order_no, g.db.rows[0].first_name], ["500000555", ORD, "Faisal"]);
+  assert.equal((await g.call("GET /api/game/me", { query: { ord: ORD } })).body.best, 300);
+  assert.equal((await g.call("POST /api/game/me", { body: { firstName: "Fofo", ord: ORD } })).status, 401, "editing needs a real login");
+});
+
+test("order identity: an existing game name wins over the order name; a session always wins over the order", async () => {
+  const g = build({ db: orderDb(), accts: accts(["500000111", "محمد"], "500000777") });
+  await g.setName("500000111", "Mido");
+  assert.equal((await g.start({ ord: "W1792400000506" })).firstName, "Mido", "the game name, not the order name");
+  const H = AUTH("500000777");
+  const st = await g.start({ ord: ORD }, H);
+  assert.deepEqual([st.known, st.named], [true, false]);
+  assert.equal(g.db.players.has("500000555"), false, "the order was not even used");
+  g.db.clock.now += 20_500;
+  const r = await g.score({ token: st.token, score: 100, durationMs: 20_000, ord: ORD }, H);
+  assert.deepEqual([r.status, r.body.error], [409, "name_required"], "session without a game name ⇒ 409; the order does not rescue it");
+  assert.equal((await g.call("GET /api/game/me", { headers: H, query: { ord: ORD } })).body.canEdit, true, "session ⇒ can edit");
+});
+
+test("order identity: old (> 48 h) / unpaid / test / bad-shape order ⇒ anonymous: 401 login_required, token NOT consumed; no usable name ⇒ 409", async () => {
+  const g = build({ db: orderDb() });
+  for (const ord of ["W1792400000502", "W1792400000503", "W1792400000504", "12345678", "W12", "W1792400000999"]) {
+    const st = await g.start({ ord });
+    assert.deepEqual([st.known, st.firstName, st.named], [false, null, false], ord);
+    assert.equal((await g.call("GET /api/game/me", { query: { ord } })).status, 401, ord);
+    g.db.clock.now += 10_500;
+    const r = await g.score({ token: st.token, score: 50, durationMs: 10_000, ord });
+    assert.deepEqual([r.status, r.body.error], [401, "login_required"], ord);
+    const ok = await g.score({ token: st.token, score: 50, durationMs: 10_000, ord: ORD });
+    assert.equal(ok.body.saved, true, ord + " ⇒ token not consumed");
+  }
+  const st = await g.start({ ord: "W1792400000505" });
+  assert.deepEqual([st.known, st.firstName, st.named], [true, null, false], "«عميل» is no name");
+  g.db.clock.now += 10_500;
+  const r = await g.score({ token: st.token, score: 50, durationMs: 10_000, ord: "W1792400000505" });
+  assert.deepEqual([r.status, r.body.error], [409, "name_required"]);
+  assert.equal(g.db.players.has("500000559"), false);
+  assert.deepEqual((await g.call("GET /api/game/me", { query: { ord: "W1792400000505" } })).body, { ok: true, firstName: null, suggested: null, canEdit: false, best: null });
+  g.db.clock.now = T0 + 48 * 3600_000;
+  assert.equal((await g.start({ ord: ORD })).known, false, "the valid order expires after 48 h too");
+});
+
+test("order identity: 20 scores/h per order (across IPs)", async () => {
+  const g = build({ db: orderDb() });
+  for (let i = 0; i < 20; i++) assert.notEqual((await g.score({ token: "x.y", score: 1, durationMs: 1, ord: ORD }, { "cf-connecting-ip": "7.7.7." + i })).status, 429);
+  const r = await g.score({ token: "x.y", score: 1, durationMs: 1, ord: ORD }, { "cf-connecting-ip": "7.7.6.1" });
+  assert.deepEqual([r.status, r.body.error], [429, "rate_limited"]);
+});
+
+/* ═══ v2.2: percentile ═══ */
+test("percentileOf (pure): share of players whose best is lower, floored; null under 5 players", () => {
+  assert.equal(percentileOf([10, 20, 30, 40], 50), null, "4 players");
+  assert.equal(percentileOf([10, 20, 30, 40, 50], 35), 60);
+  assert.equal(percentileOf([10, 20, 30, 40, 50], 10), 0, "equal is not lower");
+  assert.equal(percentileOf([10, 20, 30, 40, 50], 999), 100);
+  assert.equal(percentileOf([1, 2, 3, 4, 5, 6, 7], 5), 57);
+});
+
+test("score.percentile: ranked players only (distinct phones, clean, no team/test), includes this player; null under 5; flagged run still gets one", async () => {
+  const pns = Array.from({ length: 7 }, (_, i) => String(540000000 + i));
+  const g = build({ settings: { waBot: { testPhones: ["0" + pns[6]] } }, accts: accts(...pns) });
+  const H = [];
+  for (const pn of pns) H.push(await withPlayer(g, pn, "Player"));
+  let r = await play(g, { headers: H[6], score: 5000, durationMs: 100_000 });     // test phone: never counted
+  for (let i = 0; i < 3; i++) r = await play(g, { headers: H[i], score: 100 * (i + 1), durationMs: 20_000 });
+  assert.equal(r.body.percentile, null, "3 ranked players");
+  r = await play(g, { headers: H[0], score: 150, durationMs: 20_000 });
+  assert.equal(r.body.percentile, null, "same phone again: still 3 players");
+  r = await play(g, { headers: H[3], score: 400, durationMs: 20_000 });
+  assert.equal(r.body.percentile, null, "4 players");
+  r = await play(g, { headers: H[4], score: 250, durationMs: 20_000 });   // bests 150 200 300 400 250 ⇒ lower than 250: 2 of 5
+  assert.equal(r.body.percentile, 40);
+  r = await play(g, { headers: H[5], score: 5000, durationMs: 10_000 });  // flagged ⇒ not in the distribution, answer looks normal
+  assert.equal(g.db.rows.at(-1).flagged, true);
+  assert.deepEqual([r.body.saved, r.body.rank, r.body.percentile], [true, null, 100]);
 });

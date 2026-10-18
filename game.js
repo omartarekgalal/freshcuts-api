@@ -7,6 +7,11 @@
    اللوحة كل الوقت افتراضياً. مفيش رسايل خصم/مكافأة. الجولات القديمة من غير جوال بتفضل في الجدول بس مابتترتّبش.
    الخصم بعدين: GET /api/cms/game ⇒ topWeek بالجوال للمالك.
 
+   v2.2 (المالك: «تسجيل الدخول لو العميل مش مسجّل دخوله بس — في صفحة التتبع أكيد العميل مسجّل دخوله»):
+   من غير جلسة، رقم طلب W (ord) مدفوع ومش تجربة ومن آخر ٤٨ ساعة = هوية صامتة (جوال الطلب)، والاسم بيتعمل لوحده من
+   أول كلمة في اسم الطلب (name_edits = 0). الجلسة دايماً تغلب. التعديل محتاج دخول حقيقي. + percentile في رد النتيجة،
+   وmaxScorePerSec الافتراضي ٦٠.
+
    المسارات العامة:
      GET  /api/game/config                 { ok, enabled, period }
      POST /api/game/start                  توكن جولة موقّع من السيرفر (HMAC) — من غير دخول؛ لو داخل ⇒ اسمه في اللعبة
@@ -29,7 +34,7 @@ import crypto from "node:crypto";
 import { bizDay, bizStart, shiftDay, weekdayOf, DEFAULT_WEEK_START } from "./bizday.js";
 import { teamPhoneSet } from "./smsrules.js";
 
-export const GAME_DEFAULTS = Object.freeze({ enabled: true, leaderboardPeriod: "all", maxScorePerSec: 45 });
+export const GAME_DEFAULTS = Object.freeze({ enabled: true, leaderboardPeriod: "all", maxScorePerSec: 60 });      // v2.2: ٤٥ ⇒ ٦٠ (×٢ لمدة ٥ ث + بونص النجاة؛ أقصى سليم ≈ ٤٨٫٥/ث)
 export const GAME_LABELS = Object.freeze({
   enabled: "اللعبة شغّالة",
   leaderboardPeriod: "لوحة الأبطال: كل الوقت ولا الأسبوع ده",
@@ -47,7 +52,7 @@ export const LIMITS = Object.freeze({
   tokenMaxAgeMs: 24 * 3600_000, wallSlackMs: 3000, rateSlack: 50, minDurationMs: 1500,
   outlierFactor: 3, outlierMinRuns: 20, maxScore: 1_000_000, maxDurationMs: 7_200_000,
   startsPerHourIp: 60, startsPerHourSession: 60, scoresPerHourIp: 30, scoresPerHourSession: 20,
-  boardCacheMs: 30_000, topN: 10, meWritesPerHour: 20,
+  boardCacheMs: 30_000, topN: 10, meWritesPerHour: 20, scoresPerHourOrder: 20, orderMaxAgeH: 48, percentileMinPlayers: 5,
 });
 
 const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
@@ -56,7 +61,7 @@ export function gameCfg(settings) {
   return {
     enabled: typeof x.enabled === "boolean" ? x.enabled : true,
     leaderboardPeriod: PERIODS.includes(x.leaderboardPeriod) ? x.leaderboardPeriod : "all",
-    maxScorePerSec: Math.round(clampN(x.maxScorePerSec, 10, 500, 45)),
+    maxScorePerSec: Math.round(clampN(x.maxScorePerSec, 10, 500, 60)),
   };
 }
 
@@ -138,7 +143,12 @@ export function cleanFirstName(raw) {
   return { name, rejected: false };
 }
 /* الاسم من سجل العميل: أول كلمة، ولو مش نضيفة ⇒ null (مش «اترفض» — العميل ماكتبهوش) */
-export const firstNameOfRecord = (full) => cleanFirstName(String(full || "").trim().split(/\s+/)[0] || "").name;
+/* «عميل» / «ضيف» / customer / guest = خانة فاضية في السجل مش اسم (v2.2: الاسم بيتعمل لوحده من الطلب) */
+const PLACEHOLDER_NAMES = new Set(["عميل", "ضيف", "زبون", "customer", "guest", "client", "test"]);
+export const firstNameOfRecord = (full) => {
+  const w = String(full || "").trim().split(/\s+/)[0] || "";
+  return PLACEHOLDER_NAMES.has(w.toLowerCase()) ? null : cleanFirstName(w).name;
+};
 
 /* ── ضد الغش: أسباب العلامة (أولها اللي بيتسجّل) — صافي ── */
 export function flagReasons({ score, durationMs, issuedAt, now, maxScorePerSec, allTimeBest = 0, allTimeRuns = 0 }) {
@@ -172,7 +182,16 @@ export function leaderboardOf(rows, { exclude = new Set(), topN = LIMITS.topN } 
       runs: r._runs, durationMs: Number(r.duration_ms) || 0, bestAt: r.created_at ? new Date(r.created_at).toISOString() : null }));
 }
 
-export const maskPhone = (pn) => (/^5\d{8}$/.test(String(pn || "")) ? `05••••${String(pn).slice(-4)}` : null);
+/* v2.2 — «أحسن من X% من اللاعبين»: نسبة اللاعبين المترتّبين (أحسن نتيجة لكل جوال) اللي أحسن نتيجة ليهم أقل من النتيجة دي.
+   أقل من percentileMinPlayers لاعب ⇒ null — صافي */
+export function percentileOf(bests, score, minPlayers = LIMITS.percentileMinPlayers) {
+  const xs = (bests || []).map(Number).filter(Number.isFinite);
+  if (xs.length < minPlayers) return null;
+  const lower = xs.filter((b) => b < score).length;
+  return Math.max(0, Math.min(100, Math.floor((lower / xs.length) * 100)));
+}
+
+export const maskPhone =(pn) => (/^5\d{8}$/.test(String(pn || "")) ? `05••••${String(pn).slice(-4)}` : null);
 const fullPhone = (pn) => (/^5\d{8}$/.test(String(pn || "")) ? `0${pn}` : null);
 
 /* الفريق + أرقام تجربة البوت ⇒ برا اللوحة. (المستثنين من الإعلانات بس = عملاء حقيقيين ⇒ بيظهروا.) */
@@ -185,6 +204,8 @@ export function excludedPhones(settings = {}) {
   return out;
 }
 
+const W_ORDER_RE = /^W\d{6,20}$/;
+const PAID_SQL = "status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')";      // نفس openwait
 const SID_RE = /^[a-z0-9_-]{6,64}$/i;
 const cleanId = (v) => (typeof v === "string" && SID_RE.test(v) ? v : null);
 
@@ -278,6 +299,43 @@ export function register(app, ctx, deps = {}) {
   }
   const playerOf = async (pn) => (await pool.query("/*game:player*/ SELECT first_name, name_edits FROM game_players WHERE phone_norm = $1", [pn])).rows[0] || null;
 
+  /* ── v2.2: هوية صامتة من رقم الطلب (صفحة التتبّع) — بس لو مفيش جلسة صالحة ── */
+  async function orderOf(ord) {
+    if (typeof ord !== "string" || !W_ORDER_RE.test(ord)) return null;
+    const r = await pool.query(`/*game:order*/ SELECT phone_norm, customer->>'name' AS name FROM shop_orders
+        WHERE order_no = $1 AND ${PAID_SQL} AND NOT COALESCE(is_test, false)
+          AND created_at > NOW() - make_interval(hours => $2::int) LIMIT 1`, [ord, LIMITS.orderMaxAgeH]).catch(() => ({ rows: [] }));
+    const o = r.rows[0];
+    return o && /^5\d{8}$/.test(String(o.phone_norm || "")) ? { ord, phone: o.phone_norm, name: o.name || null } : null;
+  }
+  /* الجلسة دايماً تغلب، وبعدها الطلب، وإلا null (= مجهول) */
+  async function whoOf(c, ord) {
+    const acct = await custOf(c);
+    if (acct) return { via: "session", phone: acct.phone_norm, acct };
+    const o = await orderOf(ord);
+    return o ? { via: "order", phone: o.phone, order: o } : null;
+  }
+  /* اسم اللاعب؛ هوية الطلب ومالوش صف ⇒ بيتعمل لوحده من أول كلمة في اسم الطلب بعد الفلتر (name_edits = 0) — مفيش اسم ينفع ⇒ null */
+  async function playerFor(who) {
+    const p = await playerOf(who.phone);
+    if (p || who.via !== "order") return p;
+    const name = firstNameOfRecord(who.order.name);
+    if (!name) return null;
+    await pool.query(`/*game:player-insert*/ INSERT INTO game_players(phone_norm, first_name) VALUES ($1,$2)
+        ON CONFLICT (phone_norm) DO NOTHING RETURNING first_name, name_edits`, [who.phone, name]);
+    return (await playerOf(who.phone)) || { first_name: name, name_edits: 0 };
+  }
+
+  /* ── v2.2: توزيع أحسن نتيجة لكل جوال (كل الوقت، من غير المعلَّم عليهم والفريق) للـpercentile — كاش ٣٠ ث ── */
+  let distCache = null;
+  async function bestsDist(s) {
+    if (distCache && nowMs() - distCache.at < LIMITS.boardCacheMs) return distCache.value;
+    const rows = (await pool.query(`/*game:dist*/ SELECT phone_norm, max(score)::int AS best FROM game_scores
+        WHERE NOT flagged AND phone_norm IS NOT NULL AND NOT (phone_norm = ANY($1::text[])) GROUP BY phone_norm`, [[...excludedPhones(s)]])).rows;
+    distCache = { at: nowMs(), value: rows.map((r) => Number(r.best) || 0) };
+    return distCache.value;
+  }
+
   /* ── اللوحة: كاش ٣٠ ث لكل فترة ── */
   const boardCache = new Map();
   async function topRows(period, s, now = new Date(nowMs())) {
@@ -310,11 +368,11 @@ export function register(app, ctx, deps = {}) {
     const sid = cleanId(b.sid) || cleanId(b.dev);
     if (limited("st:ip:" + ih, LIMITS.startsPerHourIp) || limited(sid ? "st:s:" + sid : null, LIMITS.startsPerHourSession)) return bad(c, "rate_limited", 429);
     let known = false, firstName = null, named = false;
-    const acct = await custOf(c);
-    if (acct) {
+    const who = await whoOf(c, b.ord);
+    if (who) {
       known = true;
-      const p = await playerOf(acct.phone_norm).catch(() => null);
-      if (p) { firstName = p.first_name; named = true; } else firstName = await suggestedOf(acct);
+      const p = await playerFor(who).catch(() => null);
+      if (p) { firstName = p.first_name; named = true; } else if (who.via === "session") firstName = await suggestedOf(who.acct);
     }
     const token = signToken({ r: crypto.randomBytes(12).toString("hex"), t: nowMs(), ih: ih.slice(0, 8), s: b.src === "track" ? "track" : "play" }, sec);
     return c.json({ ok: true, enabled: true, token, maxScorePerSec: cfg.maxScorePerSec, period: cfg.leaderboardPeriod, known, firstName: firstName || null, named });
@@ -322,13 +380,15 @@ export function register(app, ctx, deps = {}) {
 
   /* ── اسم اللاعب (دخول إجباري) ── */
   app.get("/api/game/me", async (c) => {
-    const acct = await custOf(c);
-    if (!acct) return bad(c, "login_required", 401);
-    const p = await playerOf(acct.phone_norm);
-    const b = (await pool.query("/*game:mybest*/ SELECT max(score)::int AS best FROM game_scores WHERE NOT flagged AND phone_norm = $1", [acct.phone_norm])).rows[0];
+    const who = await whoOf(c, c.req.query("ord"));
+    if (!who) return bad(c, "login_required", 401);
+    const p = await playerFor(who);
+    const b = (await pool.query("/*game:mybest*/ SELECT max(score)::int AS best FROM game_scores WHERE NOT flagged AND phone_norm = $1", [who.phone])).rows[0];
+    const session = who.via === "session";
     return c.json({
-      ok: true, firstName: p ? p.first_name : null, suggested: await suggestedOf(acct),
-      canEdit: !p || Number(p.name_edits) === 0, best: b && b.best != null ? Number(b.best) : null,
+      ok: true, firstName: p ? p.first_name : null, suggested: session ? await suggestedOf(who.acct) : firstNameOfRecord(who.order.name),
+      canEdit: session ? (!p || Number(p.name_edits) === 0) : false,      // التعديل محتاج دخول حقيقي (v2.2)
+      best: b && b.best != null ? Number(b.best) : null,
     });
   });
 
@@ -366,11 +426,12 @@ export function register(app, ctx, deps = {}) {
     const sid = cleanId(b.sid) || cleanId(b.dev);
     if (limited("sc:ip:" + ih, LIMITS.scoresPerHourIp) || limited(sid ? "sc:s:" + sid : null, LIMITS.scoresPerHourSession)) return bad(c, "rate_limited", 429);
     /* الدخول والاسم قبل التوكن: مرفوض هنا ⇒ التوكن لسه صالح (العميل يدخل/يكتب اسمه ويبعت نفس الجولة تاني) */
-    const acct = await custOf(c);
-    if (!acct) return bad(c, "login_required", 401);
-    const pn = acct.phone_norm;
-    if (limited("sc:p:" + pn, LIMITS.scoresPerHourSession)) return bad(c, "rate_limited", 429);
-    const player = await playerOf(pn);
+    const who = await whoOf(c, b.ord);      // v2.2: الجلسة، وإلا طلب W مدفوع من آخر ٤٨ ساعة
+    if (!who) return bad(c, "login_required", 401);
+    const pn = who.phone;
+    const orderNo = who.via === "order" ? who.order.ord : null;
+    if ((orderNo && limited("sc:o:" + orderNo, LIMITS.scoresPerHourOrder)) || limited("sc:p:" + pn, LIMITS.scoresPerHourSession)) return bad(c, "rate_limited", 429);
+    const player = await playerFor(who);
     if (!player) return bad(c, "name_required", 409);
     const tk = verifyToken(b.token, sec, now);
     if (!tk) return bad(c, "bad_token");
@@ -391,10 +452,11 @@ export function register(app, ctx, deps = {}) {
     const ins = await pool.query(
       `/*game:insert*/ INSERT INTO game_scores(run_id, phone_norm, first_name, score, duration_ms, session_id, device_id, ip_hash, source, order_no, flagged, flag_reason, queued)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (run_id) DO NOTHING RETURNING id, created_at`,
-      [tk.r, pn, firstName, score, durationMs, sess, dev, ih, src, null, flagged, flagged ? reasons.join(",") : null, b.queued === true ? true : null]);
+      [tk.r, pn, firstName, score, durationMs, sess, dev, ih, src, orderNo, flagged, flagged ? reasons.join(",") : null, b.queued === true ? true : null]);
     if (!ins.rowCount) return bad(c, "bad_token");      // التوكن اتستخدم قبل كده
 
-    let rank = null, best = score;
+    distCache = null;      // الجولة دي تدخل التوزيع
+    let rank = null, best = score, percentile = null;
     try {
       const v = await board(cfg.leaderboardPeriod, s, { fresh: true });
       const me = v.top.find((r) => r.runId === tk.r);
@@ -402,8 +464,9 @@ export function register(app, ctx, deps = {}) {
       const q = (await pool.query(`/*game:best*/ SELECT COALESCE(max(score),0)::int AS best FROM game_scores
           WHERE NOT flagged AND phone_norm = $1 AND ($2::timestamptz IS NULL OR created_at >= $2::timestamptz)`, [pn, v.from ? v.from.toISOString() : null])).rows[0];
       best = Math.max(Number(q && q.best) || 0, score);      // المعلَّم عليه بيشوف رقمه هو برضه — مابيتعلّمش حاجة
+      percentile = percentileOf(await bestsDist(s), score);  // نفس الحساب للمعلَّم عليه (شكل الرد عادي)
     } catch (e) { console.error("[game] rank failed:", e.message); }
-    return c.json({ ok: true, saved: true, firstName, rank, best });
+    return c.json({ ok: true, saved: true, firstName, rank, best, percentile });
   });
 
   app.get("/api/game/leaderboard", async (c) => {
