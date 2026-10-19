@@ -726,7 +726,8 @@ export function checkReply(text, { facts = [], customerText = "", know = {}, dis
   if (lastCampaign) { const m = NO_OFFER_RE.exec(rest); if (m) filtered.push({ type: "denied_received_offer", value: m[0].trim().slice(0, 40) }); }
   /* BF1 F: شكوى/تقييم واطي مفتوح ⇒ مفيش بيع · A: عميل طلب خلاص ⇒ مفيش بيع ولا «إزاي تطلب» */
   if (complaintOpen && !ORDER_RE.test(normalize(String(turnText || "")))) { const m = SELL_RE.exec(rest); if (m) filtered.push({ type: "sold_during_complaint", value: m[0].slice(0, 40) }); }      // العميل نفسه طلب يطلب ⇒ مساعدة عادي
-  if (existingOrder && !complaintOpen) { const m = /نفس (?:ال)?طلب(?:ك|كم)? (?:السابق|الأخير|الاخير)|لكم شخص|كم شخص أنتم|تبي تطلب|وش تحب تطلب/u.exec(rest) || HOWTO_ORDER_RE.exec(rest); if (m) filtered.push({ type: "sold_after_order", value: m[0].slice(0, 40) }); }
+  if (existingOrder && !complaintOpen && !ORDER_RE.test(normalize(String(turnText || "")))) {      // طلب جديد بنفسه ⇒ مساعدة عادي
+    const m = /نفس (?:ال)?طلب(?:ك|كم)? (?:السابق|الأخير|الاخير)|لكم شخص|كم شخص أنتم|تبي تطلب|وش تحب تطلب/u.exec(rest) || HOWTO_ORDER_RE.exec(rest); if (m) filtered.push({ type: "sold_after_order", value: m[0].slice(0, 40) }); }
   const leak = promptLeak(text);
   if (leak) filtered.push({ type: "internal_leak", value: leak });
   return { ok: filtered.length === 0, problems: filtered };
