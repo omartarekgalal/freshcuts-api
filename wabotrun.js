@@ -3391,7 +3391,29 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
      (wa_stars)، وإلا القالب المعتمد القديم لطلبات الموقع بس؛ طلب الكاشير من غير قالب نجوم ⇒ { skipped: "no_visit_template" } (reviews.js يقرر SMS ولا لأ). */
   /* KA2 (عمر ١٨/١٠): ka2 = دعوة طلب كيتا اللي KA2 دخّلته (أول رسالة بعد الطلب بـ٥٠ د) ⇒ بره النافذة قالب النجوم fc_review_stars المعتمد حتى لو مفتاح
      starsTemplate لسه مقفول (المالك ١٨/١٠: «قالب fc_review_stars المعتمد بره النافذة»)، والموافقة = صف keeta_order (waconsent.js). */
-  async function reviewAsk({ phone: raw, orderNo, code, kind = null, ref = null, ka2 = false }) {
+  /* UT2 (عمر ١٩/١٠): بيانات البديل الخدمي fc_review_order_v3 — {{1}} رقم يعرفه العميل (W… / رقم فاتورة الكاشير / فاتورة طلب كيتا من ts_orders)
+     و{{2}} تاريخ الطلب بتوقيت الرياض. أي واحد ناقص ⇒ null ⇒ القالب القديم زي ما هو (مانبعتش رقم مخترع ولا تاريخ النهارده). */
+  async function reviewV3Params({ shown = null, ref = null, orderNo = null, orderAt = null }) {
+    const SAFE = /^[A-Za-z0-9-]{1,20}$/;
+    let num = shown && /^W\d{6,20}$/.test(String(shown)) ? String(shown) : null;
+    if (!num && ref) { const r = String(ref).replace(/^فاتورة\s*/, "").trim(); if (SAFE.test(r)) num = r; }
+    let at = orderAt && Number.isFinite(Date.parse(orderAt)) ? new Date(orderAt) : null;
+    const pos = /^pos:([A-Za-z0-9_-]{1,64})$/.exec(String(orderNo || ""));
+    if (pos && (!num || !at)) {
+      const r = await q("SELECT receipt, order_date FROM ts_orders WHERE order_id=$1 LIMIT 1", [pos[1]]);
+      const row = r && r[0];
+      if (row && !num && SAFE.test(String(row.receipt || "").trim())) num = String(row.receipt).trim();
+      if (row && !at && row.order_date && Number.isFinite(Date.parse(row.order_date))) at = new Date(row.order_date);
+    }
+    if (!pos && num && !at && /^W\d{6,20}$/.test(String(orderNo || ""))) {
+      const r = await q("SELECT created_at FROM shop_orders WHERE order_no=$1 LIMIT 1", [String(orderNo)]);
+      if (r && r[0] && r[0].created_at && Number.isFinite(Date.parse(r[0].created_at))) at = new Date(r[0].created_at);
+    }
+    if (!num || !at) return null;
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Riyadh", day: "numeric", month: "numeric", year: "numeric" }).formatToParts(at).map((x) => [x.type, x.value]));
+    return { ref: num, dateText: `${p.day}/${p.month}/${p.year}` };
+  }
+  async function reviewAsk({ phone: raw, orderNo, code, kind = null, ref = null, ka2 = false, orderAt = null }) {
     try {
       const phone = normPh(raw); if (!/^5\d{8}$/.test(phone)) return { ok: false, skipped: "bad_phone" };
       if (!/^[a-z0-9]{4,16}$/i.test(String(code || "")) || !orderNo) return { ok: false, skipped: "bad_invite" };
@@ -3437,9 +3459,18 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
          RV1: طلبات الموقع بس (طلب الكاشير مالوش رسايل طلب على واتساب). */
       /* RV1: قالب النجوم (بعد اعتماد ميتا والمالك يفتحه): كل الأنواع. فشل حقيقي (مش منع) ⇒ القالب القديم لطلب الموقع. */
       const starsTpl = async () => {
-        let subj = null; try { subj = starsSubject({ T, F, kind: k, orderNo: shown }); } catch { subj = null; }
-        if (!subj) return null;
-        const r = await wa.sendTemplate({ phoneNorm: phone, template: "fc_review_stars", params: { body: [subj] }, orderNo: String(orderNo), stage: "review", source: "review", allowList: cfg.mode === "test" ? cfg.testPhones : null });
+        /* UT2: البديل الخدمي fc_review_order_v3 (رقم الطلب + تاريخه، نفس الأزرار) — بس لما ميتا تعتمده خدمي والمفتاح مفتوح (wa.resolveRewrite)،
+           ولازم رقم معروف وتاريخ حقيقي للطلب. غير كده fc_review_stars زي ما هو. */
+        let rw = null; try { rw = typeof wa.resolveRewrite === "function" ? await wa.resolveRewrite("fc_review_stars", "ar") : null; } catch { rw = null; }
+        let r = null;
+        if (rw && rw.name && rw.name !== "fc_review_stars") {
+          let v3 = null; try { v3 = await reviewV3Params({ shown, ref, orderNo, orderAt }); } catch { v3 = null; }
+          if (v3) r = await wa.sendTemplate({ phoneNorm: phone, template: rw.name, params: { body: [v3.ref, v3.dateText] }, orderNo: String(orderNo), stage: "review", source: "review", allowList: cfg.mode === "test" ? cfg.testPhones : null });
+        }
+        let subj = null;
+        if (!r) { try { subj = starsSubject({ T, F, kind: k, orderNo: shown }); } catch { subj = null; } }
+        if (!r && !subj) return null;
+        if (!r) r = await wa.sendTemplate({ phoneNorm: phone, template: "fc_review_stars", params: { body: [subj] }, orderNo: String(orderNo), stage: "review", source: "review", allowList: cfg.mode === "test" ? cfg.testPhones : null });
         if (r && r.ok) { await mark(true); return { ok: true, channel: "wa_stars", wamid: r.wamid || null }; }
         if (r && r.skipped === "opted_out") return { ok: false, skipped: "opted_out", final: true };
         if (r && r.skipped === "burst_hold") return { ok: false, skipped: "burst_hold", defer: true, until: r.until || new Date(now.getTime() + 5 * 60_000).toISOString() };      // CJ1a

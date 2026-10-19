@@ -1,6 +1,7 @@
 /* كتالوج قوالب واتساب — كل قالب لازم يعدّي قواعد ميتا قبل ما نقدّمه (٢٨/٩). */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { UTILITY_REWRITES } from "./warewrite.js";      // UT2
 import {
   TEMPLATES, RECOMMENDED_FIRST, OPTOUT_FOOTER, OPTOUT_BUTTON, validateTemplate, bindTemplate, previewText,
   submissionBody, summary, cleanParam, bodyOf, buttonsOf, footerOf, findTemplate, templateKey,
@@ -48,7 +49,10 @@ test("التشغيلي ما فيه ترويج — وإلا ميتا تصنّفه
 
 test("قوالب الفريق بلغتين (en افتراضي + ar)", () => {
   const staff = TEMPLATES.filter((t) => t.meta.group === "staff");
-  const names = [...new Set(staff.map((t) => t.name))];
+  /* UT2: البدايل الخدمية لغة واحدة بالقصد (ميتا صنّفت لغة واحدة بس من الأصل تسويق) — اللغة دي بس، ومُعرَّفة في warewrite.js */
+  const ut2 = new Map(UTILITY_REWRITES.map((m) => [m.new, m.lang]));
+  for (const [n, l] of ut2) if (staff.some((t) => t.name === n)) { assert.deepEqual(staff.filter((t) => t.name === n).map((t) => t.language), [l], n); assert.equal(findTemplate(n, l).category, "UTILITY"); }
+  const names = [...new Set(staff.map((t) => t.name))].filter((n) => !ut2.has(n));
   assert.ok(names.length >= 8);
   for (const n of names) {
     assert.ok(findTemplate(n, "en") && findTemplate(n, "ar"), n);

@@ -32,6 +32,7 @@ const CASH = "561000001", MGR = "506000003", OWN = "544000004", SOC = "544000006
 const MEMBERS = [{ phone: `0${CASH}`, name: "منى", role: "cashier" }, { phone: `0${MGR}`, name: "خالد", role: "manager" }, { phone: `0${OWN}`, name: "عمر", role: "owner" },
   { phone: `0${SOC}`, name: "مسؤول السوشيال", role: "social" }];
 const NOON = "2026-10-19T12:00:00Z";      // ١٥:٠٠ الرياض
+const UT2_SW = { rewriteReviewStars: true, rewriteInboxSummary: true, rewriteTaskNotice: true, rewriteCheckoutWatchdog: true, rewriteWaitlistOpen: true };      // UT2: مفتاح لكل بديل خدمي
 const UT1 = ["fc_staff_portal_offline", "fc_staff_chat_review", "fc_staff_inbox_summary", "fc_staff_task_notice", "fc_staff_alerts_paused"];
 /* قايمة ميتا زي قراءة ١٩/١٠ (بس القوالب اللي بتهمنا) */
 const META_19 = [
@@ -108,9 +109,10 @@ test("catalog: five utility replacements, Arabic + English, valid for Meta, an e
     }
     assert.ok(C.SUBMIT_BATCHES.some((b) => b.includes(n)), `${n} in SUBMIT_BATCHES`);
     assert.ok(!(n in C.HOLD), `${n} is not held`);
-    assert.ok(!Object.keys(C.META_CATEGORY).some((k) => k.startsWith(`${n}:`)));
+    /* UT2 (قراءة ١٩/١٠ ٠٩:٠٢): ميتا اعتمدت fc_staff_inbox_summary:ar و fc_staff_task_notice:en MARKETING — الجدول الاحتياطي بيعرفهم، والبديل في warewrite.js */
+    assert.ok(Object.keys(C.META_CATEGORY).filter((k) => k.startsWith(`${n}:`)).every((k) => ["fc_staff_inbox_summary:ar", "fc_staff_task_notice:en"].includes(k)), n);
   }
-  assert.deepEqual(C.SUBMIT_BATCHES.at(-1), UT1, "one batch, portal offline first");
+  assert.deepEqual(C.SUBMIT_BATCHES.find((b) => b.includes(UT1[0])), UT1, "one batch, portal offline first");
   // the old marketing-billed pair is kept (an approved template is never deleted) and still marked as marketing in the fallback table
   for (const k of ["fc_staff_team_notice:ar", "fc_staff_team_notice:en", "fc_staff_alerts_renew:ar", "fc_staff_alerts_renew:en"]) assert.equal(C.META_CATEGORY[k], "MARKETING", k);
 });
@@ -248,11 +250,11 @@ test("source check: waflow (escalation ladder + «حوّل لك محادثة») 
 /* ══ ٥) اللوحة ═════════════════════════════════════════════════════════════ */
 test("dashboard: «كل إعدادات البوت» shows the «الخدمي أولاً» group (three switches, Arabic labels, defaults on); saving is validated", () => {
   const def = BOT.botConfig({});
-  assert.deepEqual(def.utilityFirst, { staff: true, customers: true, reviewStarsAsMarketing: true });
+  assert.deepEqual(def.utilityFirst, { staff: true, customers: true, reviewStarsAsMarketing: true, ...UT2_SW });
   const rows = BOT.schemaFor(def).filter((x) => x.group === "utilityFirst");
-  assert.deepEqual(rows.map((x) => [x.key, x.type, x.default]), [["utilityFirst.staff", "boolean", true], ["utilityFirst.customers", "boolean", true], ["utilityFirst.reviewStarsAsMarketing", "boolean", true]]);
+  assert.deepEqual(rows.slice(0, 3).map((x) => [x.key, x.type, x.default]), [["utilityFirst.staff", "boolean", true], ["utilityFirst.customers", "boolean", true], ["utilityFirst.reviewStarsAsMarketing", "boolean", true]]);
   assert.ok(rows.every((x) => /[؀-ۿ]/.test(x.ar) && /[؀-ۿ]/.test(x.help) && /[؀-ۿ]/.test(x.groupAr)));
-  assert.deepEqual(BOT.botConfig({ waBot: { utilityFirst: { staff: false, junk: 1 } } }).utilityFirst, { staff: false, customers: true, reviewStarsAsMarketing: true });
+  assert.deepEqual(BOT.botConfig({ waBot: { utilityFirst: { staff: false, junk: 1 } } }).utilityFirst, { staff: false, customers: true, reviewStarsAsMarketing: true, ...UT2_SW });
   assert.deepEqual(U.utilityFirstFromBody({ reviewStarsAsMarketing: false }, { staff: true }), { ok: true, value: { staff: true, reviewStarsAsMarketing: false } });
   assert.equal(U.utilityFirstFromBody({ staff: "no" }).ok, false);
   assert.equal(U.utilityFirstFromBody({ nonsense: true }).ok, false);
@@ -265,7 +267,7 @@ test("GET /api/cms/wa-cloud/utility-audit: lists every template whose Meta categ
   const w = world({ metaList: META_19, used });
   const r = (await w.call("GET", "/api/cms/wa-cloud/utility-audit")).body;
   assert.equal(r.ok, true); assert.equal(r.liveRead, true);
-  assert.deepEqual(r.config, { staff: true, customers: true, reviewStarsAsMarketing: true });
+  assert.deepEqual(r.config, { staff: true, customers: true, reviewStarsAsMarketing: true, ...UT2_SW });
   assert.deepEqual(r.rows.map((x) => `${x.name}:${x.language}:${x.meta}`).sort(),
     ["fc_review_stars:ar:MARKETING", "fc_staff_alerts_renew:ar:MARKETING", "fc_staff_alerts_renew:en:MARKETING", "fc_staff_checkout_watchdog:ar:MARKETING", "fc_staff_team_notice:ar:MARKETING", "fc_staff_team_notice:en:MARKETING"]);
   const stars = r.rows.find((x) => x.name === "fc_review_stars");

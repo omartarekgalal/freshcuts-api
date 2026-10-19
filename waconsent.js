@@ -189,7 +189,7 @@ export async function termsCoverOrder(pool, phoneNorm, orderNo) {
 export const POS_REVIEW_CONSENT = Object.freeze({
   kind: "review", source: "pos_payment", version: "pos-payment-2026-10-15",
   text: "قرار المالك (١٥/١٠/٢٠٢٦): عملاء المحل (صالة وسفري) اللي جوالهم على الفاتورة موافقين مسبقاً وقت الدفع عند الكاشير على رسالة طلب التقييم على واتساب.",
-  templates: Object.freeze(["fc_review_stars"]),       // رسالة التقييم بس — أي قالب تاني مايعدّيش بالموافقة دي
+  templates: Object.freeze(["fc_review_stars", "fc_review_order_v3"]),       // رسالة التقييم بس (UT2: + بديلها الخدمي بنفس الأزرار) — أي قالب تاني مايعدّيش بالموافقة دي
   kinds: Object.freeze(["dinein", "takeaway"]),       // فواتير الكاشير بس (مش التطبيقات ولا طلبات الموقع)
   /* مراجعة RV1: رقم على العدد ده من الفواتير أو أكتر في ٢٤ ساعة = رقم الكاشير الافتراضي (حشو)، مش عميل واحد ⇒ مفيش موافقة ولا رسالة.
      والرقم «الحشو» الصريح (555555555 / 500000000 / نفس الرقم ٨ مرات / 512345678 — phonecheck.js) مالوش موافقة أبداً. */
@@ -236,7 +236,7 @@ export async function posReviewConsentCovers(pool, phoneNorm, orderNo) {
 export const KA2_REVIEW_CONSENT = Object.freeze({
   kind: "review", source: "keeta_order", version: "keeta-order-2026-10-18",
   text: "قرار المالك (١٨/١٠/٢٠٢٦): رقم عميل كيتا اللي كيتا بتبعته مع الطلب — موافقين (اتفاق مع كيتا) على رسالة طلب التقييم على واتساب لطلب كيتا ده.",
-  templates: Object.freeze(["fc_review_stars"]),
+  templates: Object.freeze(["fc_review_stars", "fc_review_order_v3"]),      // UT2: + البديل الخدمي لنفس رسالة التقييم
 });
 export function ka2ReviewConsentOn(settings) {
   const p = (((settings || {}).keeta) || {}).pull;

@@ -780,6 +780,60 @@ TEMPLATES.push(
     { purpose: "تنبيهات الموظف وقفت (النافذة قفلت) — حالة حسابه في نظام التنبيهات", trigger: "wateam.js keeperFor — مرة واحدة لكل قفلة", send: "auto",
       replaces: "fc_staff_alerts_renew", fallbackSms: "Fresh Cuts: your WhatsApp alerts are paused. Send the word ALERTS to the restaurant WhatsApp number" }),
 );
+/* ══ UT2 (١٩/١٠ — عمر: «كل الى نقدر نحوله خدمي خلينا نحاول ناخد عليه موافقة انه خدمي … ونتابع ميتا ونغيره») ═══════════════════════════════
+   بدايل خدمية بأسماء جديدة لقوالب خدمة ميتا صنّفتها تسويق. القديم مابيتعدّلش (معتمد وشغّال) — المُرسل بيفضل عليه لحد ما الجديد يبقى APPROVED
+   **وفئته الحيّة عند ميتا UTILITY** (warewrite.js + whatsapp.js resolveRewrite)، ولو ميتا صنّفت الجديد تسويق أو رفضته بيفضل القديم وبيتسجّل.
+   القواعد اللي اتكتبت بيها (docs/designs-2026-10/whatsapp/meta-approval-rules.md — من تاريخ قوالبنا عند ميتا):
+     • الجملة الأولى = المعاملة نفسها بمرجع ثابت في النص قبل المتغيّر («طلبك رقم {{1}}»، «طلب التنبيه رقم {{1}}»، «الساعة {{1}}») — مفيش متغيّر حر يحتمل أي كلام.
+     • من غير شكر/ترحيب/اسم المطعم في الأول، من غير «جرّب/تفضّل/اطلب»، من غير إيموجي في سؤال التقييم.
+     • الأزرار: ردود سريعة بس لو هي إجابة على المعاملة (تقييم)، أو زر رابط للبورتال للفريق — مفيش زر «جدّد/اشترك».
+     • لغة واحدة بس للي محتاجينه (المصنِّف بتاع ميتا بيدّي نفس المعنى فئتين مختلفتين بين العربي والإنجليزي). */
+TEMPLATES.push(
+  /* بديل fc_review_stars (ميتا صنّفته MARKETING ١٦/١٠، previous_category=UTILITY): {{1}} = رقم يعرفه العميل (W… / رقم فاتورة الكاشير / رقم فاتورة طلب كيتا)
+     بدل «زيارتك للمطعم» الحرة، و{{2}} = تاريخ الطلب. نفس الأزرار بالحرف (wareviews.starOfQr بيقرا نص الزر). شكل fc_review_request_v2 المعتمد خدمي. */
+  T({ name: "fc_review_order_v3", category: "UTILITY", group: "order",
+    body: "تقييم طلبك رقم {{1}} من فريش كاتس بتاريخ {{2}}: كيف كانت تجربتك مع هذا الطلب؟ اختر تقييمك من الأزرار.",
+    vars: [{ path: "review.ref", label: "رقم الطلب اللي العميل يعرفه (W… / رقم الفاتورة)", ex: "W1790012345678" },
+      { path: "review.dateText", label: "تاريخ الطلب بتوقيت الرياض d/m/yyyy", ex: "18/10/2026" }],
+    buttons: STAR_BUTTONS.map((b) => qr(b.text)),
+    meta: { purpose: "طلب التقييم بالنجوم بره النافذة — مرتبط بطلب محدد برقمه وتاريخه", trigger: "wabotrun.reviewAsk مكان fc_review_stars لما الجديد APPROVED + UTILITY (UT2)",
+      send: "auto-candidate", replaces: "fc_review_stars", fallbackSms: "review.invite",
+      notes: "مفيش رقم معروف للطلب ⇒ مايتبعتش (القديم/الـSMS زي ما هو). ميتا: الاستبيان خدمي «لو مرتبط بطلب أو تعامل محدد»." } }),
+  /* بديل fc_waitlist_open (تسويق بطبيعته: سلة + رابط) — نسخة خدمية تانية من fc_open_notice (مااتقدّمش أبداً): تحديث حالة طلب التنبيه نفسه
+     («وبهذا اكتمل طلب التنبيه»)، من غير «يستقبل الطلبات»، من غير إيموجي ولا زر. مش مربوط: التنبيه النهارده SMS + إشعار (openwait.js). */
+  T({ name: "fc_open_request_update", category: "UTILITY", group: "order",
+    body: "تحديث طلب التنبيه رقم {{1}} المسجَّل {{2}}: فريش كاتس مفتوح الآن حتى الساعة {{3}}، وبهذا اكتمل طلب التنبيه.",
+    vars: [{ path: "waitlist.ref", label: "مرجع طلب التنبيه (open_waitlist.id ⇒ N-<id>)", ex: "N-1042" },
+      { path: "waitlist.requestedText", label: "وقت تسجيل طلب التنبيه بتوقيت الرياض", ex: "يوم 12/10 الساعة 4:35 ص" },
+      { path: "hours.closeText", label: "وقت الإقفال اليوم (settings.hours)", ex: "2:00 ص" }],
+    meta: { purpose: "«نبّهني لما تفتحوا» — تحديث حالة طلب التنبيه اللي العميل سجّله (رقمه ووقته)", trigger: "openwait.js عند الفتح — غير مربوط (القناة النهارده SMS + إشعار)",
+      send: "auto-candidate", replaces: "fc_waitlist_open", fallbackSms: "waitlist.open", pairedWith: "fc_waitlist_open",
+      notes: "UT2: يتربط لما المالك يقرر واتساب لتنبيه الفتح (openNoticeData جاهزة بنفس المتغيّرات)." } }),
+  /* بديل fc_staff_inbox_summary:ar (ميتا: ar = MARKETING و en = UTILITY لنفس المعنى). «تنبيه» بعدد حاجات مستنية متابعة بدل «ملخص». نفس مسارات البيانات (inboxData). */
+  T({ name: "fc_staff_inbox_alert", category: "UTILITY", group: "staff", language: "ar",
+    body: "تنبيه صندوق محادثات واتساب في فريش كاتس الساعة {{1}}: {{2}} محادثة محوّلة لموظف و{{3}} تنبيه آخر بانتظار المتابعة. افتح صندوق المحادثات في البورتال.",
+    vars: [{ path: "inbox.at", label: "الساعة (بتوقيت الرياض HH:MM)", ex: "23:40" },
+      { path: "inbox.handovers", label: "عدد التحويلات لموظف", ex: "4" }, { path: "inbox.alerts", label: "عدد التنبيهات التانية", ex: "2" }],
+    buttons: [link("فتح البورتال", PORTAL_URL)],
+    meta: { purpose: "تنبيه الصندوق بعدد المحادثات المحوّلة والتنبيهات المستنية", trigger: "wateam.js — مكان fc_staff_inbox_summary:ar لما الجديد APPROVED + UTILITY (UT2)", send: "auto",
+      replaces: "fc_staff_inbox_summary", audience: "staff", fallbackSms: null } }),
+  /* بديل fc_staff_task_notice:en (ميتا: en = MARKETING و ar = UTILITY). wateam بيبعت عربي دلوقتي ⇒ ده للموظف اللي لغته إنجليزي لو اتربط. */
+  T({ name: "fc_staff_task_alert", category: "UTILITY", group: "staff", language: "en",
+    body: "Fresh Cuts staff account ({{1}}): a work message from the restaurant management has been waiting for you since {{2}}. Send the word ALERTS in this chat to receive it here.",
+    vars: [{ path: "task.role", label: "Staff role", ex: "social media" }, { path: "task.at", label: "Message time (Riyadh HH:MM)", ex: "14:20" }],
+    buttons: [link("Open portal", PORTAL_URL)],
+    meta: { purpose: "Owner's work message waiting for one staff member (window closed) — notice only, not the text", trigger: "wateam.js — instead of fc_staff_task_notice:en when APPROVED + UTILITY (UT2)", send: "auto",
+      replaces: "fc_staff_task_notice", audience: "staff", fallbackSms: null } }),
+  /* بديل fc_staff_checkout_watchdog:ar (ميتا: «جرّب الموقع الحين» ⇒ MARKETING؛ الإنجليزي رجع UTILITY بعد المراجعة). حدث دفع + آخر طلب مدفوع، من غير «جرّب».
+     مش مربوط: حارس الشيك أوت بيبعت SMS (staffalerts.js) مش واتساب. */
+  T({ name: "fc_staff_payment_notice", category: "UTILITY", group: "staff", language: "ar",
+    body: "تنبيه الدفع في موقع فريش كاتس: {{1}}، وآخر طلب مدفوع على النظام كان {{2}}. افتح البورتال لمتابعة عمليات الدفع.",
+    vars: [{ path: "watch.problem", label: "المشكلة (checkoutwatch)", ex: "٣ محاولات دفع فشلت خلال ٢٠ دقيقة" },
+      { path: "watch.lastOrderAgo", label: "آخر طلب ناجح", ex: "قبل ٩٥ دقيقة" }],
+    buttons: [link("فتح البورتال", PORTAL_URL)],
+    meta: { purpose: "حارس الشيك أوت — تنبيه دفع للفريق", trigger: "غير مربوط (checkoutwatch.js بيبعت SMS عن طريق staffalerts.js)", send: "auto-candidate",
+      replaces: "fc_staff_checkout_watchdog", audience: "staff", fallbackSms: "checkoutwatch SMS" } }),
+);
 /* UT1: أسماء الأدوار في متغيّرات القوالب (من غير أقواس ولا شرح — ROLE_AR في wateam فيه «(مهام يدوية)») */
 export const STAFF_ROLE_TPL = Object.freeze({
   ar: Object.freeze({ cashier: "الكاشير", manager: "المدير", owner: "المالك", social: "السوشيال ميديا" }),
@@ -827,6 +881,8 @@ export const SUBMIT_BATCHES = Object.freeze([
   ["fc_order_delivered_v2", "fc_review_request_v2", "fc_order_on_the_way_v2", "fc_order_preparing_v2", "fc_order_received_v2", "fc_order_refunded_v2", "fc_refund_in_progress_v2"],
   // UT1 (١٩/١٠): بدايل خدمية لقوالب الفريق اللي ميتا حوّلتها تسويق — البوابة الأول (أكتر واحد اتبعت)، والتجديد آخر واحد (أكتر واحد ممكن يتصنّف تسويق تاني)
   ["fc_staff_portal_offline", "fc_staff_chat_review", "fc_staff_inbox_summary", "fc_staff_task_notice", "fc_staff_alerts_paused"],
+  // UT2 (١٩/١٠): بدايل خدمية بأسماء جديدة لقوالب خدمة ميتا صنّفتها تسويق — الأكبر فلوس الأول (النجوم)، والأخطر آخر واحد (تنبيه الفتح). لغة واحدة لكل اسم.
+  ["fc_review_order_v3", "fc_staff_inbox_alert", "fc_staff_task_alert", "fc_staff_payment_notice", "fc_open_request_update"],
 ]);
 export const RECOMMENDED_FIRST = SUBMIT_BATCHES[0];
 export const FRAME_BATCH = SUBMIT_BATCHES.find((b) => b.includes("fc_frame_news_text"));      // FR1: دفعة الإطارات (بالرابط)
@@ -843,6 +899,9 @@ export const META_CATEGORY = Object.freeze({
   "fc_staff_team_notice:en": "MARKETING",
   "fc_staff_alerts_renew:ar": "MARKETING",
   "fc_staff_alerts_renew:en": "MARKETING",
+  /* UT2 (قراءة ١٩/١٠ ٠٩:٠٢ الرياض): اتنين من بدايل UT1 ميتا اعتمدتهم MARKETING بلغة واحدة — البديل في warewrite.js */
+  "fc_staff_inbox_summary:ar": "MARKETING",
+  "fc_staff_task_notice:en": "MARKETING",
 });
 export const billedCategory = (t) => META_CATEGORY[`${t.name}:${t.language}`] || t.category;
 

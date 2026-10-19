@@ -413,7 +413,7 @@ test("each utility version keeps its marketing twin: the promotional wording is 
 test("templates Meta filed as MARKETING are billed as marketing and are wired to no sender", () => {
   /* UT1 (قراءة ميتا ١٩/١٠): + fc_staff_team_notice و fc_staff_alerts_renew (الاتنين باللغتين)؛ checkout_watchdog:en و daily_summary:ar رجعوا UTILITY.
      fc_review_stars:ar (MARKETING عند ميتا) مش في الجدول بالقصد — posReviewBasis بيقراه (قرار المالك، README شريحة UT1) */
-  assert.deepEqual(Object.keys(C.META_CATEGORY).sort(), ["fc_staff_alerts_renew:ar", "fc_staff_alerts_renew:en", "fc_staff_checkout_watchdog:ar", "fc_staff_team_notice:ar", "fc_staff_team_notice:en"]);
+  assert.deepEqual(Object.keys(C.META_CATEGORY).sort(), ["fc_staff_alerts_renew:ar", "fc_staff_alerts_renew:en", "fc_staff_checkout_watchdog:ar", "fc_staff_inbox_summary:ar", "fc_staff_task_notice:en", "fc_staff_team_notice:ar", "fc_staff_team_notice:en"]);      // UT2: + inbox_summary:ar و task_notice:en (ميتا ١٩/١٠)
   assert.ok(!("fc_review_stars:ar" in C.META_CATEGORY));
   for (const key of Object.keys(C.META_CATEGORY)) {
     const [name, lang] = key.split(":");

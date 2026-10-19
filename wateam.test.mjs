@@ -719,7 +719,7 @@ test("WT2 config: «social» is a team role with its Arabic label, routed to not
   assert.deepEqual(r.schema.roles.find((x) => x.id === "social"), { id: "social", label: "سوشيال ميديا (مهام يدوية)" });
   assert.deepEqual(r.members.at(-1).topics, []); assert.equal(r.members.at(-1).roleAr, "سوشيال ميديا (مهام يدوية)");
   assert.equal(r.members.at(-1).reach, "template", "no portal for social ⇒ outside the window = the paid template path");
-  assert.equal((await w.wa.guardSend({ phoneNorm: SOC, kind: "template", template: "fc_staff_task_notice", staff: true })).ok, true);      // UT1: قالب فريق خدمي
+  assert.equal((await w.wa.guardSend({ phoneNorm: SOC, kind: "template", template: "fc_staff_task_notice", staff: true, lang: "ar" })).ok, true);      // UT1: قالب فريق خدمي (UT2: العربي — اللي wateam بيبعته؛ الإنجليزي ميتا صنّفته تسويق)
 }));
 
 test("WT2 routing: handovers, urgent handovers and odd things never reach the social member; his status says «ولا موضوع»; «ملخص» is refused for him", withEnv(OPEN, async () => {

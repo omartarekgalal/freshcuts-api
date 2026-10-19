@@ -29,6 +29,7 @@ import * as CAT from "./watemplates.js";
 import { qualityCfg, QUALITY_KEYS, QUALITY_DEFAULTS, WARMUP_DEFAULTS, migrateQuality, META_CAPPED_CODE } from "./waquality.js";
 import { waRatesOf } from "./waaicost.js";      // UT1: بطاقة أسعار القوالب (waBot.waRates)
 import { utilityFirstConfig, MARKETING_EXCEPTIONS } from "./wautility-cfg.js";      // UT1
+import { REWRITE_STATE_AR } from "./warewrite.js";      // UT2
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const APP_ID = "1073414588466040";
@@ -1002,6 +1003,18 @@ export function register(app, ctx, deps = {}) {
     }
     return c.json({ ok: true, config: cfg, rates: R, liveRead: Boolean(live), checkedAt: info && info.checkedAt || null, rows,
       extraSar30: r2(rows.reduce((a, r) => a + r.extraSar30, 0)) });
+  });
+  /* 💸 UT2 (عمر ١٩/١٠: «ناخد موافقة ع القالب ونتابع ميتا ونغيره»): حالة كل خريطة «القديم ← البديل الخدمي» — قراية بس.
+     state: pending (ميتا بتراجع) · in_use (اتبدّل: APPROVED + UTILITY + المفتاح مفتوح) · reclassified / rejected (القديم فاضل والحالة اتسجّلت) · switch_off · ready_not_wired …
+     ?fresh=1 بيقرا قايمة ميتا من جديد (بدل كاش الـ١٠ دقايق). GET بس — مفيش كتابة غير صف السجل لما الحالة تتغيّر، ومفيش إرسال. */
+  app.get("/api/cms/wa-cloud/utility-rewrites", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    let info = null; try { info = await templateInfo({ fresh: c.req.query("fresh") === "1" }); } catch { info = null; }
+    if (!wa || typeof wa.rewriteReport !== "function") return c.json({ ok: false, error: "unavailable" }, 503);
+    let rows = []; try { rows = await wa.rewriteReport(); } catch (e) { return c.json({ ok: false, error: String(e.message || e).slice(0, 120) }, 500); }
+    return c.json({ ok: true, liveRead: Boolean(info && info.ok === true), checkedAt: (info && info.checkedAt) || null,
+      inUse: rows.filter((r) => r.state === "in_use").map((r) => r.key), rows: rows.map((r) => ({ ...r, stateAr: REWRITE_STATE_AR[r.state] || r.state })) });
   });
 
   app.get("/api/cms/wa-cloud/status", async (c) => {

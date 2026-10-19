@@ -46,7 +46,8 @@ import { custCapOf, custCapReason } from "./waquality.js";
 import { waStageOn, FREE_STAGES, freeStageText } from "./waswitches.js";      // RT2 مراجعة: سجل المراحل الحرة الواحد
 import { staffRoleOf } from "./wateam.js";
 import { journeyCfg, holdUntil, orderCapDecision, ORDER_SENT_SQL, CAP_EXEMPT_SOURCES } from "./wajourney.js";
-import { utilityFirstVerdict } from "./wautility-cfg.js";      // UT1 (١٩/١٠): مفيش سعر تسويق على رسالة خدمية      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض + سقف رسايل الطلب
+import { utilityFirstVerdict, utilityFirstConfig } from "./wautility-cfg.js";
+import { UTILITY_REWRITES, pickRewrite, rewriteByOld, rewriteSwitchOf } from "./warewrite.js";      // UT2 (١٩/١٠): القديم ← البديل الخدمي لما ميتا تعتمده خدمي      // UT1 (١٩/١٠): مفيش سعر تسويق على رسالة خدمية      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض + سقف رسايل الطلب
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const GRAPH_VERSION = "v23.0";
@@ -583,6 +584,54 @@ export function register(app, ctx, deps = {}) {
     if (!t || t.category === "MARKETING" || t.category === "AUTHENTICATION") return false;
     return (await metaCategoryOf(name, lang || t.language || "ar")) === "MARKETING";
   }
+  /* 💸 UT2 (عمر ١٩/١٠: «ادخل قدم صيغة خدمية وناخد موافقة ع القالب ونتابع ميتا ونغيره»): القالب القديم ← بديله الخدمي (warewrite.js).
+     الجديد بيتستخدم بس لما ميتا تقول APPROVED **و**فئته الحيّة لنفس اللغة UTILITY **و**مفتاح الخريطة مفتوح (waBot.utilityFirst.rewrite…).
+     غير كده القديم زي ما هو — مفيش أي تغيير في السلوك لحد الاعتماد. كل تغيير حالة يستاهل (اتبدّل / اترفض / اتصنّف تسويق / اتوقف) بيتسجّل
+     مرة واحدة في wa_rewrite_log (المقارنة بآخر صف للخريطة). عمرها ما بترمي: أي خطأ ⇒ القديم. */
+  const rewriteLast = new Map();      // key ⇒ آخر حالة اتسجّلت (عشان مانكتبش في القاعدة مع كل رسالة)
+  async function noteRewrite(map, d, status, category) {
+    if (rewriteLast.get(map.key) === d.state) return;
+    try {
+      await ready;
+      await pool.query(`INSERT INTO wa_rewrite_log(key, old_name, new_name, lang, state, status, category)
+        SELECT $1,$2,$3,$4,$5,$6,$7 WHERE NOT EXISTS (SELECT 1 FROM (SELECT state FROM wa_rewrite_log WHERE key=$1 ORDER BY id DESC LIMIT 1) l WHERE l.state=$5)`,
+        [map.key, map.old, map.new, map.lang, d.state, status || null, category || null]);
+      rewriteLast.set(map.key, d.state);
+    } catch (e) { console.error("[wa] rewrite log:", e.message); }
+  }
+  async function rewriteDecision(map, s) {
+    try {
+      const cfg = utilityFirstConfig(s && s.waBot && s.waBot.utilityFirst);
+      const switchOn = cfg[rewriteSwitchOf(map.key)] !== false;
+      const status = await templateStatusOf(map.new, map.lang);
+      const category = await metaCategoryOf(map.new, map.lang);
+      const d = pickRewrite({ map, switchOn, status, category });
+      if (d.record) await noteRewrite(map, d, status, category);
+      return { ...d, status, category, switchOn };
+    } catch { return { use: "old", name: map.old, state: "unknown", record: false, status: null, category: null, switchOn: null }; }
+  }
+  /* المُرسل بيسأل: «أبعت القالب ده باسم إيه؟» ⇒ { name, rewrite: {key, state} | null }. القالب مالوش خريطة ⇒ نفس الاسم. */
+  async function resolveRewrite(name, lang = "ar") {
+    const map = rewriteByOld(name, lang);
+    if (!map) return { name, rewrite: null };
+    const d = await rewriteDecision(map, await settingsSnap());
+    return { name: d.use === "new" && TEMPLATES[map.new] ? map.new : name, rewrite: { key: map.key, state: d.state } };
+  }
+  /* تقرير قراية بس (GET /api/cms/wa-cloud/utility-rewrites): كل خريطة وحالتها دلوقتي + حالة/فئة القديم والجديد + آخر صفوف السجل */
+  async function rewriteReport() {
+    const s = await settingsSnap();
+    const out = [];
+    for (const map of UTILITY_REWRITES) {
+      const d = await rewriteDecision(map, s);
+      let log = [];
+      try { await ready; log = ((await pool.query("SELECT state, status, category, at FROM wa_rewrite_log WHERE key=$1 ORDER BY id DESC LIMIT 10", [map.key])).rows || []); } catch { log = []; }
+      out.push({ key: map.key, old: map.old, new: map.new, lang: map.lang, audience: map.audience, wired: map.wired, sender: map.sender, why: map.why,
+        switch: `waBot.utilityFirst.${rewriteSwitchOf(map.key)}`, switchOn: d.switchOn, state: d.state, using: d.use === "new" ? map.new : map.old,
+        newStatus: d.status, newCategory: d.category, oldStatus: await templateStatusOf(map.old, map.lang), oldCategory: await metaCategoryOf(map.old, map.lang),
+        inCatalog: Boolean(TEMPLATES[map.new]), log });
+    }
+    return out;
+  }
   async function holdBlocks(ctx) {
     if (!payHold) return false;
     try { return Boolean(await payHold(ctx)); } catch { return false; }
@@ -720,6 +769,13 @@ export function register(app, ctx, deps = {}) {
         name TEXT, language TEXT, template_id TEXT, event TEXT, reason TEXT,
         at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      -- UT2: كل تغيير في حالة بديل خدمي (اتبدّل / اترفض / اتصنّف تسويق / اتوقف) — صف لكل تغيير بس، مش لكل رسالة
+      CREATE TABLE IF NOT EXISTS wa_rewrite_log (
+        id BIGSERIAL PRIMARY KEY,
+        key TEXT NOT NULL, old_name TEXT, new_name TEXT, lang TEXT, state TEXT NOT NULL, status TEXT, category TEXT,
+        at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS wa_rewrite_log_key_idx ON wa_rewrite_log(key, id DESC);
       CREATE TABLE IF NOT EXISTS wa_history_state (
         id INT PRIMARY KEY DEFAULT 1,
         imported INT NOT NULL DEFAULT 0,
@@ -1107,10 +1163,16 @@ export function register(app, ctx, deps = {}) {
 
   /* ST1: قالب فريق لموظف من دليل الفريق (wateam.js). المتغيّرات بتتبني من بيانات الكتالوج، والحارس بيتأكد إن الرقم موظف والقالب قالب فريق. */
   async function sendStaffTemplate({ phoneNorm, template, data = {}, lang = "ar" }) {
-    const t = TEMPLATES[template];
+    const t0 = TEMPLATES[template];
+    if (!t0 || typeof t0.bind !== "function") return { ok: false, error: "unknown_template" };
+    const language0 = t0.variants && t0.variants[lang] ? lang : (t0.language || "ar");
+    /* UT2: البديل الخدمي بنفس مسارات البيانات (fc_staff_inbox_summary:ar ⇒ fc_staff_inbox_alert …) — بس بعد اعتماد ميتا له خدمي */
+    const rw = await resolveRewrite(template, language0);
+    const name = rw.name, t = TEMPLATES[name];
     if (!t || typeof t.bind !== "function") return { ok: false, error: "unknown_template" };
-    const language = t.variants && t.variants[lang] ? lang : (t.language || "ar");
-    return sendTemplate({ phoneNorm, template, params: t.bind(data || {}), lang: language, source: "team", staff: true });
+    const language = name === template ? language0 : (t.language || language0);
+    const r = await sendTemplate({ phoneNorm, template: name, params: t.bind(data || {}), lang: language, source: "team", staff: true });
+    return name === template ? r : { ...r, template: name, rewriteOf: template };
   }
 
   /* رسالة حرة بجسم Cloud API جاهز (نص / interactive) — للبوت. جوّه نافذة الـ٢٤ ساعة بس (المنادي مسؤول عنها).
@@ -1681,7 +1743,8 @@ export function register(app, ctx, deps = {}) {
   });
 
   return { fetchMedia, uploadMedia, sendTemplate, sendStaffTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox, setPayHold, setTemplateStatus, templateStatusOf,      // CR3: carts.js بيقرا حالة قالب السلة قبل الإرسال
-    setTemplateCategory, metaCategoryOf, billedAsMarketing,      // UT1: فئة ميتا الحيّة (wacloud بيحقنها) — للحارس وشاشة «الخدمي أولاً»
+    setTemplateCategory, metaCategoryOf, billedAsMarketing,      // UT1
+    resolveRewrite, rewriteReport,      // UT2: البديل الخدمي بعد اعتماد ميتا + تقرير الحالة: فئة ميتا الحيّة (wacloud بيحقنها) — للحارس وشاشة «الخدمي أولاً»
     guardSend, deliver, envState, dashMasterOn: async () => dashMasterOf(await settingsSnap()), testPhones: async () => testPhonesOf(await settingsSnap()),
     on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive,
     setActiveIds, idsInUse, setWebhookAccept };

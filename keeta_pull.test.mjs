@@ -211,7 +211,7 @@ test("الملكية والصلاحيات: keeta ملك السيرفر، /api/ke
   assert.equal(sectionOf("/api/keeta/pull"), "customers");
   assert.equal(sectionOf("/api/keeta/pull/settings"), "customers");
   assert.equal(sectionOf("/api/keeta/control/settings"), "settings");
-  assert.deepEqual(WC.KA2_REVIEW_CONSENT.templates, ["fc_review_stars"]);
+  assert.deepEqual(WC.KA2_REVIEW_CONSENT.templates, ["fc_review_stars", "fc_review_order_v3"]);      // UT2: + البديل الخدمي لنفس رسالة التقييم
   assert.equal(WC.ka2ReviewConsentOn({ keeta: { pull: { enabled: true } } }), true);
   assert.equal(WC.ka2ReviewConsentOn({}), false);
 });

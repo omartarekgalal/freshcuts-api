@@ -721,7 +721,7 @@ export function register(app, ctx, deps = {}) {
           catch (e) { console.error("[reviews] pos consent:", e.message); throw CHECK_FAILED; }
         }
         if (wr && typeof wr.reviewAsk === "function") {
-          let r = null; try { r = await wr.reviewAsk({ phone: iv.phone_norm, orderNo: iv.order_no, code: iv.code, ...(iv.kind ? { kind: iv.kind } : {}), ...(iv.ref ? { ref: iv.ref } : {}), ...(iv.ka2 === true ? { ka2: true } : {}) }); } catch { r = null; }
+          let r = null; try { r = await wr.reviewAsk({ phone: iv.phone_norm, orderNo: iv.order_no, code: iv.code, ...(iv.kind ? { kind: iv.kind } : {}), ...(iv.ref ? { ref: iv.ref } : {}), ...(iv.ka2 === true ? { ka2: true } : {}), ...(iv.order_at && Number.isFinite(new Date(iv.order_at).getTime()) ? { orderAt: new Date(iv.order_at).toISOString() } : {}) }); } catch { r = null; }      // UT2: تاريخ الطلب لـfc_review_order_v3
           if (r && r.ok) {
             await pool.query("UPDATE review_invites SET sent_at=NOW(), channel=$2 WHERE order_no=$1", [iv.order_no, String(r.channel || "wa")]);
             if (r.wamid) await mark("wa_msg_id", String(r.wamid).slice(0, 200)).catch(() => {});      // ضغطة زر القالب بترجع بالرسالة دي (context.id)

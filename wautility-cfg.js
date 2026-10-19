@@ -9,7 +9,10 @@
      • customers  — قوالب العملاء الخدمية (تحديثات الطلب، التقييم …)
      • reviewStarsAsMarketing — استثناء واحد بالاسم: fc_review_stars (ميتا صنّفته تسويق ١٦/١٠). مفتوح افتراضياً = زي ما هو شغّال النهارده
        (قرار المالك ١٨/١٠ لطلبات الكاشير وكيتا)؛ قفله ⇒ طلب الموقع ياخد fc_review_request_v2 الخدمي، وطلب الكاشير/كيتا بيرجع لقرار reviews.js (SMS). */
-export const UTILITY_FIRST_DEFAULTS = Object.freeze({ staff: true, customers: true, reviewStarsAsMarketing: true });
+/* UT2: مفتاح لكل خريطة «القديم ← الجديد» (warewrite.js) — مفتوح افتراضياً = التبديل لوحده لما ميتا تعتمد الجديد خدمي (قرار المالك ١٩/١٠) */
+import { UTILITY_REWRITES, rewriteSwitchOf } from "./warewrite.js";
+export const UTILITY_FIRST_DEFAULTS = Object.freeze({ staff: true, customers: true, reviewStarsAsMarketing: true,
+  ...Object.fromEntries(UTILITY_REWRITES.map((m) => [rewriteSwitchOf(m.key), true])) });
 const BOOLS = Object.keys(UTILITY_FIRST_DEFAULTS);
 /* الاستثناءات بالاسم: قالب خدمي ميتا صنّفته تسويق والمالك سايبه يتبعت بسعر التسويق لحد ما البديل الخدمي يتعتمد */
 export const MARKETING_EXCEPTIONS = Object.freeze({ fc_review_stars: "reviewStarsAsMarketing" });
@@ -49,4 +52,7 @@ export const UTILITY_FIRST_SCHEMA = Object.freeze({
     "نفس القاعدة لتحديثات الطلب وطلب التقييم وأي رسالة خدمية لعميل: القالب اللي ميتا حوّلته تسويق مابيتبعتش، والرسالة بتروح للبديل الخدمي أو SMS حسب كل مُرسل. الاستثناء اللي تحت بس هو اللي بيعدّي."),
   "utilityFirst.reviewStarsAsMarketing": B("استثناء: قالب النجوم fc_review_stars يفضل يتبعت بسعر التسويق",
     "ميتا صنّفت fc_review_stars تسويق (١٦/١٠). من ١٦ لـ١٨/١٠ اتبعت ٦٧ مرة (٦٣ منهم لطلبات الكاشير) بحوالي ٠٫٢٢ ر.س للرسالة ≈ ١٤٥ ر.س في الشهر بدل ≈ ٢٧ لو خدمي، و٧ اتمنعوا (131049). مفتوح = زي النهارده. مقفول = طلب الموقع ياخد fc_review_request_v2 الخدمي، وطلب الكاشير/كيتا مالوش قالب خدمي لحد ما الصياغة الجديدة تتعتمد (reviews.js بيقرر SMS)."),
+  /* UT2: مفتاح لكل بديل خدمي — الحالة الحيّة في GET /api/cms/wa-cloud/utility-rewrites */
+  ...Object.fromEntries(UTILITY_REWRITES.map((m) => [`utilityFirst.${rewriteSwitchOf(m.key)}`, B(`بدّل لوحده: ${m.old} ← ${m.new}`,
+    `${m.why} مفتوح = المُرسل بيفضل على ${m.old} لحد ما ميتا تعتمد ${m.new} وفئته عندها خدمي، وبعدها بيستخدم الجديد لوحده؛ لو ميتا رفضته أو صنّفته تسويق بيفضل القديم والحالة بتتسجّل. مقفول = القديم دايماً.${m.wired ? "" : " (المُرسل النهارده مش واتساب — الخريطة بتتابع الحالة بس لحد قرار الربط.)"}`)])),
 });
