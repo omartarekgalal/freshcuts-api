@@ -63,13 +63,14 @@ const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
 export function followHoursOk(now, cfg, settings) { const g = isRestaurantOpenAt(now, settings); return g === null ? inFollowHours(now, cfg) : g; }
 export function followNext(now, cfg, settings) { const g = isRestaurantOpenAt(now, settings); if (g === null) return nextFollowStart(now, cfg); return nextSendOpenAt(new Date(now.getTime() + 60_000), settings) || nextFollowStart(now, cfg); }
 import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
-import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, noteCampaignTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro, heardContext, planReminder } from "./waassistrun.js";
+import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, noteCampaignTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro, heardContext, planReminder, ORDER_RE } from "./waassistrun.js";
 import { declineMemory } from "./wapersonal.js";      // S1: ذاكرة الرفض بين المحادثات
 import { FU_KIND, FU_GROUP, FU_GROUP_AR, FU_DEFAULTS, FU_NUMS, FU_BOOLS, FU_SCHEMA, FU_TAP_KEYS, FU_CLOSING_KEYS, FU_PROACTIVE_KEYS, FU_OTHER_JOBS, FU_SQL, FU_DDL,
   fuConfig, inFollowHours, nextFollowStart, bizDayStart, brakeVerdict, followTrigger, convFacts, pickLooked, offerPhrase } from "./wafollow.js";      // FU1 (١٥/١٠): متابعة اللي ردّ وماطلبش
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 import { FREE_STAGES } from "./waswitches.js";      // RT2 مراجعة (١٧/١٠): نص مرحلة «اتسلّم من الفرع» من السجل الواحد
 import { JOURNEY_GROUP, JOURNEY_GROUP_AR, JOURNEY_DEFAULTS, JOURNEY_NUMS, JOURNEY_BOOLS, JOURNEY_SCHEMA, journeyCfg, holdUntil, deferDecision, PROACTIVE_KEYS, PROACTIVE_JOB_KINDS, PAID_CONFIRM_SQL } from "./wajourney.js";      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض
+import { OF_KIND, OF_GROUP, OF_GROUP_AR, OF_DEFAULTS, OF_NUMS, OF_BOOLS, OF_SCHEMA, OF_DDL, ofConfig, openingPlan, cartSnapshotOf, makeOpenFollowUp } from "./waopenfu.js";      // WO1 (١٩/١٠): «نكمّل لما نفتح»
 import { COURIER_JOB_DEFAULTS, COURIER_JOB_SCHEMA, COURIER_JOB_SCHEMA_GROUP, courierJobConfig, courierJobFromBody } from "./courierwa-cfg.js";      // CW1
 import { UTILITY_FIRST_DEFAULTS, UTILITY_FIRST_SCHEMA, UTILITY_FIRST_SCHEMA_GROUP, utilityFirstConfig, utilityFirstFromBody } from "./wautility-cfg.js";      // UT1
 import { REVIEW_FLOW_DEFAULTS, REVIEW_FLOW_SCHEMA, REVIEW_SCHEMA_GROUP, REVIEW_TEXTS, reviewFlowConfig, reviewFlowFromBody, starOfListId, starOfQr, typedStar, reasonOfListId, reviewsCfgOf,
@@ -114,6 +115,7 @@ export const DEFAULTS = Object.freeze({
   paidNoteEnabled: true,       // EX6: العميل دفع طلب بعد ما كلّم البوت/المساعد والنافذة مفتوحة ⇒ سطر تأكيد برقم الطلب
   leadFollowUpMin: 20,         // EX6: «متابعة المحادثة» — رسالة عميل ماخدتش رد مفيد (سكوت، بره النطاق، «ما فهمت») ومحدش رد ⇒ متابعة واحدة بعد الدقايق دي. صفر = مقفول. مرة في اليوم للمحادثة
   ...FU_DEFAULTS,              // FU1 (١٥/١٠): متابعة واحدة جوّه النافذة للي ردّ على حملة أو ضغط زر وماطلبش (wafollow.js)
+  ...OF_DEFAULTS,              // WO1 (١٩/١٠): «نكمّل لما نفتح» — العميل طلب والمطعم مقفول ⇒ رسالة واحدة وقت الفتح بسلته (waopenfu.js)
   ...JOURNEY_DEFAULTS,         // CJ1a (١٧/١٠): مفيش رسايل ورا بعض — هدوء بعد آخر رسالة، تأكيد مرة واحدة، SMS المندوب مش مع واتساب، سقف رسايل الطلب (wajourney.js)
   autoInboundPatterns: true,   // EX5: رسالة واردة شكلها رد آلي من نشاط تجاري («شكراً لتواصلك»، «لسنا متوفرين»، thank you for contacting…) ⇒ auto_inbound: لا رد ولا مساعد ولا تحويل
   autoInboundSec: 15,          // EX5: نص ٢٥ حرف+ وصل خلال الثواني دي من **قالب** إحنا بعتناه للرقم ⇒ auto_inbound (محدش بيقرا ويكتب بالسرعة دي). صفر = مقفول
@@ -293,6 +295,10 @@ export const TEXTS = Object.freeze({
   assist_followup: t("مساعد الطلبات: متابعة بعد رابط السلة", "سلتك ما زالت جاهزة 🛒 تقدر تكمّل طلبك من الزر 👇\nوإذا تحتاج شي ثاني اكتب لي.", "Your cart is still ready 🛒 You can complete your order from the button 👇\nIf you need anything else, just write.", [], [], 300),
   /* PS3 — التذكير اللي العميل طلبه: بيفتح الكلام تاني باسم ماجد وبالصنف اللي كان بيسأل عنه (لو معروف ولسه متاح). مش رسالة تسويق: بتتبعت بس لعميل قال «فكّرني» وحدد الوقت. */
   assist_reminder: t("مساعد الطلبات: التذكير اللي العميل طلبه", "هلا 👋 معك {name}، المساعد الرقمي لفريش كاتس، وهذا تذكيرك مثل ما اتفقنا.\n{about}\nأجهّز لك طلبك الحين؟", "Hi 👋 This is {name}, Fresh Cuts' digital assistant, with the reminder you asked for.\n{about}\nShall I get your order ready now?", ["name"], ["about"], 400),
+  /* WO1 (١٩/١٠) — «نكمّل لما نفتح»: الرسالة الواحدة وقت الفتح للي طلب والمطعم مقفول. {cart} = سطور السلة بأسمائها، {total} = المجموع بسعر الحين (من النظام) */
+  open_fu_cart: t("نكمّل لما نفتح: السلة + توصيل ولا استلام", "فتحنا الحين 👋 سلتك جاهزة: {cart} = {total} ر.س.\nتوصيل ولا استلام؟", "We are open now 👋 Your cart is ready: {cart} = SAR {total}.\nDelivery or pickup?", ["cart", "total"], [], 600),
+  open_fu_link: t("نكمّل لما نفتح: السلة + زر الرابط (لو اتعمل رابط وهو مقفول)", "فتحنا الحين 👋 سلتك جاهزة: {cart} = {total} ر.س.\nاضغط الزر وكمّل طلبك 👇", "We are open now 👋 Your cart is ready: {cart} = SAR {total}.\nTap the button to complete your order 👇", ["cart", "total"], [], 600),
+  open_fu_plain: t("نكمّل لما نفتح: من غير سلة (كلمة طلب بس، أو صنف خلص)", "فتحنا الحين 👋 وش تحب نجهّز لك؟ اكتب طلبك وأجهّز لك السلة.", "We are open now 👋 What would you like? Tell me your order and I will get your cart ready.", [], [], 400),
   assist_reminder_about: t("التذكير: سطر الصنف اللي كان بيسأل عنه", "كنت تفكّر في {dish}.", "You were looking at {dish}.", ["dish"], [], 200),
   /* PS4 — لحظة الرسوم: الحساب جاهز من النظام (كل {…} رقم محسوب: مفيش رقم مكتوب في النص). السطور بتتركّب بالترتيب: زي ما هو ← أقرب حد ← الاستلام. */
   fee_asis: t("لحظة الرسوم: طلبك + التوصيل", "طلبك {order} ر.س + توصيل {fee} = {total} ر.س.", "Your order SAR {order} + delivery {fee} = SAR {total}.", ["order", "fee", "total"], [], 200),
@@ -749,6 +755,7 @@ export function botConfig(settings) {
     windowKeeperQuietStart: num(x.windowKeeperQuietStart, 0, 23, DEFAULTS.windowKeeperQuietStart), windowKeeperQuietEnd: num(x.windowKeeperQuietEnd, 0, 23, DEFAULTS.windowKeeperQuietEnd), leadFollowUpMin: num(x.leadFollowUpMin, 0, 180, DEFAULTS.leadFollowUpMin),
     ...fuConfig(x),      // FU1
     ...journeyCfg(x),    // CJ1a
+    ...ofConfig(x),      // WO1
     autoInboundPatterns: x.autoInboundPatterns !== false, autoInboundSec: num(x.autoInboundSec, 0, 120, DEFAULTS.autoInboundSec),
     loopGuardCount: num(x.loopGuardCount, 0, 20, DEFAULTS.loopGuardCount), loopGuardFastSec: num(x.loopGuardFastSec, 1, 30, DEFAULTS.loopGuardFastSec),
     loopGuardSeconds: num(x.loopGuardSeconds, 10, 600, DEFAULTS.loopGuardSeconds), loopGuardMuteHours: num(x.loopGuardMuteHours, 1, 168, DEFAULTS.loopGuardMuteHours),
@@ -826,10 +833,10 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback", "campaignReplyHours",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "collectedSkipIfReviewWithinMin", "followBannerSkipHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "activeOrderHours", "activeOrderMergeSec", "handoverBurstSec", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS), ...Object.keys(JOURNEY_NUMS)]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "collectedSkipIfReviewWithinMin", "followBannerSkipHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "activeOrderHours", "activeOrderMergeSec", "handoverBurstSec", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS), ...Object.keys(JOURNEY_NUMS), ...Object.keys(OF_NUMS)]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "followBanner", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", "campaignReply", "activeOrderFirst", ...FU_BOOLS, ...JOURNEY_BOOLS]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "followBanner", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", "campaignReply", "activeOrderFirst", ...FU_BOOLS, ...JOURNEY_BOOLS, ...OF_BOOLS]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -1143,13 +1150,14 @@ export const SCHEMA = Object.freeze({
   replyRateSar: S("cost", "number", "سعر الرد بعد المجاني", "", { min: 0, max: 5, unit: "ر.س", step: 0.0001 }),
   waRates: S("cost", "rates", "بطاقة أسعار قوالب واتساب", "تسويقي / خدمي / رمز تحقق + تاريخ البطاقة."),
   ...FU_SCHEMA,      // FU1 (١٥/١٠): متابعة اللي ردّ وماطلبش — مجموعتها لوحدها في اللوحة
+  ...OF_SCHEMA,      // WO1 (١٩/١٠): «نكمّل لما نفتح» — مجموعتها لوحدها، بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...JOURNEY_SCHEMA, // CJ1a (١٧/١٠): «رحلة العميل في النافذة: مفيش رسايل ورا بعض» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...ASSIST_SCHEMA,
   ...COURIER_JOB_SCHEMA,      // CW1: «🛵 المندوب الخارجي: الأزرار على واتساب» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...UTILITY_FIRST_SCHEMA,      // UT1: «💸 الخدمي أولاً» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...REVIEW_FLOW_SCHEMA,      // RV1: «التقييمات على واتساب» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
 });
-export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", orderMsgs: "رسايل الطلب: توفير القوالب وزر «تابع طلبك»", [FU_GROUP]: FU_GROUP_AR, [JOURNEY_GROUP]: JOURNEY_GROUP_AR, greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
+export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", orderMsgs: "رسايل الطلب: توفير القوالب وزر «تابع طلبك»", [FU_GROUP]: FU_GROUP_AR, [OF_GROUP]: OF_GROUP_AR, [JOURNEY_GROUP]: JOURNEY_GROUP_AR, greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
   faq: "الأسئلة الشائعة", texts: "النصوص", optin: "موافقة التحديثات", ai: "الذكاء الاصطناعي", cost: "التكلفة", assist: "مساعد الطلبات", ...REVIEW_SCHEMA_GROUP, ...COURIER_JOB_SCHEMA_GROUP, ...UTILITY_FIRST_SCHEMA_GROUP });
 const getPath = (o, p) => p.split(".").reduce((a, k) => (a && typeof a === "object" ? a[k] : undefined), o);
 /* للّوحة: كل إعداد بقيمته الحالية والافتراضية وحدوده وشرحه. */
@@ -2337,6 +2345,7 @@ export function register(app, ctx, deps = {}) {
     `);
     /* FU1 (١٥/١٠): دفتر «متابعة اللي ردّ» + الفرامل + «لا شكراً» على المحادثة (wafollow.js). فشل هنا مايوقّفش البوت: المتابعة بس هي اللي مابتشتغلش. */
     await pool.query(FU_DDL).catch((e) => console.error("[wabot] followup schema:", e.message));
+    await pool.query(OF_DDL).catch((e) => console.error("[wabot] open-followup schema:", e.message));      // WO1: دفتر «نكمّل لما نفتح»
     for (const l of SEED_LINKS) {
       await pool.query(
         `INSERT INTO cms_links(slug, label, target_type, target_id, coupon, utm_source, utm_medium, utm_campaign, created_by)
@@ -3535,7 +3544,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     /* SB5: window_sell_at جاية من pg كـDate، و Date.parse(Date) بيعدّي على toString فبيقطّع للثانية (سطر بيع في نفس ثانية رسالته كان بيتشاف «قبلها» ⇒ رسالة تانية في نفس النافذة).
        getTime() بالمللي، و >= : نفس المللي يتحسب «اتبعت» — يغلط ناحية «مانبعتش» زي done_at تحت. */
     if (chat.window_sell_at && new Date(chat.window_sell_at).getTime() >= lastInMs) return no("window_used");
-    const used = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_followup','assist_nudge','lead_followup','window_keep','assist_reminder','${FU_KIND}') AND status='done' AND done_at > $2 LIMIT 1`, [phone, ev.lastIn]);      // FU1: + متابعة اللي ردّ
+    const used = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_followup','assist_nudge','lead_followup','window_keep','assist_reminder','${FU_KIND}','${OF_KIND}') AND status='done' AND done_at > $2 LIMIT 1`, [phone, ev.lastIn]);      // FU1: + متابعة اللي ردّ
     if (used === null) return no("used_check_failed"); if (used.length) return no("window_used");
     const caps = await q(`SELECT count(*) FILTER (WHERE done_at >= (date_trunc('day', NOW() AT TIME ZONE 'Asia/Riyadh') AT TIME ZONE 'Asia/Riyadh'))::int AS today,
                                  count(*) FILTER (WHERE phone_norm=$1 AND done_at > NOW() - INTERVAL '7 days')::int AS week
@@ -3832,6 +3841,10 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const alert = await handoffNow(settings, cfg, phone, ["staff_silent", "normal"], null, note.slice(0, 200), "ar");
     return end("done", `handover:${alert || "?"}`.slice(0, 80));
   }
+  /* WO1 — «نكمّل لما نفتح» (waopenfu.js): التسجيل من assistTurn، والإرسال من runDueJobs. كل الأقفال من نفس دوال البوت. */
+  const openFu = makeOpenFollowUp({ q, jb, STORE, get store() { return assistStore; }, get assist() { return assist; }, sendOwnX, ownGate, brakeState, audience: assistAudience, complaintSql: COMPLAINT_24H_SQL,
+    text: (cfg, key, lang, vars) => fill(key, textOf(cfg, key, lang), vars), modeButtons: (cfg, lang) => assistExtras(cfg, lang, { buttons: { kind: "mode" } }),
+    disclosure: (cfg, lang, settings) => disclosureLine(cfg, lang, settings), newSession });
   async function runDueJobs() {
     await ready;
     try { await sweeps(); } catch (e) { console.error("[wabot] sweeps:", e.message); }
@@ -3868,6 +3881,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         if (j.kind === FU_KIND) { await runReplyFollowUp(j, settings, cfg, now, end); ran++; continue; }      // FU1
         if (j.kind === "assist_nudge") { await runNudge(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "assist_reminder") { await runReminder(j, settings, cfg, now, end); ran++; continue; }
+        if (j.kind === OF_KIND) { await openFu.run(j, settings, cfg, now, end); ran++; continue; }      // WO1
         if (j.kind === "media_burst") { await runMediaBurst(j, ev, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "handover_check") { await runHandoverCheck(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "staff_silent") { await runStaffSilent(j, settings, cfg, now, end); ran++; continue; }      // SX1
@@ -4132,6 +4146,8 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
   /* ST2: الموظف قفل المحادثة ⇒ أول دور للمساعد بعدها بياخد ملخص اللي الموظف قاله + النتيجة والملاحظة (waflow.handbackFor). مرة واحدة: بيتشال بعد ما رد المساعد يتبعت. */
   const flowApi = () => { try { return (typeof deps.flow === "function" ? deps.flow() : deps.flow) || null; } catch { return null; } };
   /* PS3: «اطلب لوقت لاحق» متاح في المتجر؟ (settings.preorder) — المساعد يعرضه على اللي أجّل بس لو متاح فعلاً. */
+  /* WO1: المساعد يقول «أول ما نفتح أرسل لك سلتك» بس لو الرسالة دي هتتبعت فعلاً (المفتاح شغّال والفتح + التأخير قبل ما النافذة تقفل) */
+  const openFollowOk = (cfg, settings, now) => { try { return Boolean(cfg.openFollowUp) && openingPlan({ now, settings, lastInMs: now.getTime(), delayMin: cfg.openFollowUpDelayMin }).ok; } catch { return false; } };
   const laterOk = (settings) => { try { const p = preorderCfg(settings || {}); return p.enabled === true && Array.isArray(p.slots) && p.slots.length > 0; } catch { return false; } };
   async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending = null, ev = null, settings = null }) {
     const hours = await assist.get_hours();
@@ -4160,7 +4176,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     let activeOrder = null;
     if (cfg.activeOrderFirst) { try { const ao = await activeOrderOf(phone, cfg); if (ao) { activeOrder = { order_no: String(ao.order_no), status: String(ao.status) }; reorder = null; } } catch (e) { console.error("[assist] active order:", e.message); } }
     let branch = null; try { branch = fresh ? textOf(cfg, "location", lang) : null; } catch { branch = null; }
-    return { profile, personal, mem, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel, handback, later: laterOk(settings), activeOrder }), handback: Boolean(handback) };
+    return { profile, personal, mem, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel, handback, later: laterOk(settings), activeOrder, openFollow: openFollowOk(cfg, settings, now) }), handback: Boolean(handback) };
   }
   const assistDeps = (cfg, settings, logId) => ({ tools: assist, callModel: assistCall, now: clock,
     knowOf: async () => ({ menu: await menuIndex(settings, clock()), boxes: (await bundles()) || [] }),
@@ -4193,7 +4209,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     let session = await assistStore.loadSession(phone, now, acfg.sessionMin);
     /* PS2: «جلسة بذرة» = بوت القواعد رد على سؤال سعر صنف في أول المحادثة (rulesFirstPrice) وسجّل السؤال، والمساعد لسه مادخلش. مش محادثة مساعد شغّالة (المواعيد والموقع والشكر
        يفضلوا مع القواعد ببلاش)، وأول دور للمساعد بعدها بياخد سياق أول دور كامل (ملف العميل، العروض، البوكسات) وهو شايف سؤال العميل اللي فات. */
-    const seeded = Boolean(session && session.state && (session.state.seed === true || session.state.seed === "reminder" || session.state.seed === "campaign")), cardSeed = Boolean(session && session.state && session.state.seed === true);
+    const seeded = Boolean(session && session.state && (session.state.seed === true || session.state.seed === "reminder" || session.state.seed === "campaign" || session.state.seed === "opening")), cardSeed = Boolean(session && session.state && session.state.seed === true);
     /* «بدون بصل» وهو بيجهّز سلة = ملاحظة للمساعد؛ بس لو له طلب حديث من الموقع تبقى «تعديل طلب» للموظف زي النهارده (ومانعرفش ⇒ نفترض إن له طلب). */
     let recentOrder = false;
     if (cls.key === "change" || cls.key === "complaint") { const ro = await q(`SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]); recentOrder = ro === null || ro.length > 0; }
@@ -4288,6 +4304,11 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       if (!okSent) { await turnRow({ handledBy: "assistant", outcome: `send_failed${error ? `:${String(error).slice(0, 60)}` : ""}`, masked: tr.sent, text: r.text, trace: tr, handover: r.handover ? r.handover.reason : null }); return; }
       session = r.session;
       await assistStore.saveSession(phone, session, now);
+      /* WO1 — «نكمّل لما نفتح»: الرد اتبعت والمطعم مقفول بمواعيده وفيه سلة (أو كلمة طلب) ⇒ شغلة واحدة وقت الفتح بصورة السلة (الجلسة بتموت بعد sessionMin، الصورة لأ) */
+      /* بس لو الدور ده لمس الطلب (سلة اتسعّرت / اتعملت، أو كلمة طلب): «لا خلاص» بعد سلة قديمة في الجلسة مابتجدّدش الوعد — والشغلة المستنية بتتلغي وقتها «العميل كتب» */
+      if (!r.handover) { try { const intent = ORDER_RE.test(normalize(String(ev.text || ""))), touched = Boolean(r.cart) || (tr.tools || []).some((x) => (x.name === "preview_cart" || x.name === "build_cart") && x.result && x.result.ok === true);
+        if (intent || touched) await openFu.record({ phone, settings, cfg, now: clock(), msgAt: ev.at || null, lang: L, snapshot: cartSnapshotOf({ cart: r.cart, state: session.state, trace: tr }), intent });
+      } catch (e) { console.error("[assist] open followup:", e.message); } }
       if (cx.handback) { const fl = flowApi(); if (fl && typeof fl.handbackUsed === "function") { try { await fl.handbackUsed(phone); } catch (e) { console.error("[assist] handback used:", e.message); } } }
       const turnId = await turnRow({ handledBy: "assistant", outcome, masked: tr.sent, text: r.handover ? reply.body : r.text, trace: tr, cartCode: r.cart ? r.cart.code : null, handover: r.handover ? r.handover.reason : null, lang: L });      // MJ1 #٣: لغة الدور زي ما اتردّ بيها فعلاً
       await assistStore.recordSuggestions(phone, session.id, turnId, tr.suggestions, r.cart ? r.cart.code : null);      // S1: المحسوب اللي ماتعرضش بيتسجّل كمان (بسببه)
@@ -4351,7 +4372,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (cart === null) return no("cart_check_failed"); if (cart.length) return no("has_cart");
     const ord = await q("SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND created_at > $2 AND status <> 'expired' LIMIT 1", [phone, since]);
     if (ord === null) return no("order_check_failed"); if (ord.length) return no("ordered");
-    const prior = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_nudge','lead_followup','assist_followup','${FU_KIND}') AND status='done' AND done_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]);      // FU1: + متابعة اللي ردّ
+    const prior = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_nudge','lead_followup','assist_followup','${FU_KIND}','${OF_KIND}') AND status='done' AND done_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]);      // FU1: + متابعة اللي ردّ
     if (prior === null) return no("prior_check_failed"); if (prior.length) return no("already_followed_up");
     let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
     if (!open || open.open !== true) return no("closed");
@@ -5026,7 +5047,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const followups = (await q(`SELECT status, COALESCE(reason,'sent') AS reason, count(*)::int AS n FROM wa_bot_jobs WHERE kind='assist_followup' AND created_at > NOW() - make_interval(days => $1::int) GROUP BY 1,2 ORDER BY 3 DESC`, [Math.min(90, Math.max(1, Number(c.req.query("days")) || 7))])) || [];
     return c.json({ ok: true, mode: cfg.assist.mode, botMode: cfg.mode, testPhones: cfg.testPhones.length, promptVersion: PROMPT_HASH, provider: providerInfo(), models: { strong: cfg.assist.model, simple: cfg.assist.modelSimple, routing: cfg.assist.routing },
       storeReady: (await q("SELECT 1 FROM wa_assist_turns LIMIT 1", [])) !== null && (await q("SELECT 1 FROM wa_assist_suggestions LIMIT 1", [])) !== null && (await q("SELECT 1 FROM wa_assist_chats LIMIT 1", [])) !== null,
-      ...(await assistStore.stats(Number(c.req.query("days")) || 7)), followups, media: await mediaStats(cfg) });
+      ...(await assistStore.stats(Number(c.req.query("days")) || 7)), followups, openFollowups: await openFu.stats(Number(c.req.query("days")) || 7), media: await mediaStats(cfg) });
   });
   /* تقرير الإعلانات (قراءة بس): لكل إعلان — كام محادثة فتحها، كام واحد منهم اتجهّزت له سلة (واتفتحت)، وكام طلب مدفوع من الموقع ومبلغه.
      «طلب من الإعلان» = طلب مدفوع من نفس الرقم خلال adWindowHours من أول رسالته من الإعلان (نفس مدة «المحادثة محسوبة على الإعلان»). أرقام التجربة برّه العدّ. */

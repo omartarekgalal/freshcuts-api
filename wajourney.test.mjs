@@ -86,7 +86,7 @@ test("holdUntil: واتساب + SMS استعلامين، الأحدث فيهم �
 test("مين مبادِر: رسايل البوت المبادِرة بس (مش سطر التحويل ولا سطر السيل)، وشغلات التأجيل، ومصادر سقف الطلب المستثناة", () => {
   for (const k of ["paid_note", "window_keep", "lead_followup", "reply_followup", "lead_nudge", "review_ask", "review_stars_ask"]) assert.ok(J.PROACTIVE_KEYS.has(k), k);
   for (const k of ["transfer_note", "media_flood_line", "L5", "main", "status"]) assert.ok(!J.PROACTIVE_KEYS.has(k), k);
-  assert.deepEqual([...J.PROACTIVE_JOB_KINDS].sort(), ["assist_nudge", "lead_followup", "paid_note", "reply_followup", "window_keep"]);
+  assert.deepEqual([...J.PROACTIVE_JOB_KINDS].sort(), ["assist_nudge", "lead_followup", "open_followup", "paid_note", "reply_followup", "window_keep"]);      // WO1: «نكمّل لما نفتح» بتستنى الهدوء زيهم
   assert.ok(!J.PROACTIVE_JOB_KINDS.includes("assist_reminder"), "التذكير اللي العميل طلبه بنفسه مش دفعة");
   assert.ok(!J.PROACTIVE_JOB_KINDS.includes("handover_check") && !J.PROACTIVE_JOB_KINDS.includes("staff_wait"));
   for (const s of ["reply", "team", "test"]) assert.ok(J.CAP_EXEMPT_SOURCES.has(s), s);

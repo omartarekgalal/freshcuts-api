@@ -28,9 +28,9 @@ export const FU_TAP_KEYS = Object.freeze(["main", "menu", "cats", "cat", "item",
 /* آخر رسالة للعميل بتقفل الكلام ⇒ مفيش متابعة (شكر، «لا»، إيقاف، شكوى، مشكلة، تعديل/إلغاء، موظف، ملاحظة تقييم، سؤال وصفة) */
 export const FU_CLOSING_KEYS = Object.freeze(["thanks", "nack", "rf_no", "stop", "stop_updates", "complaint", "problem", "change", "cancel_what", "human", "staff", "review_note", "optin_no", "secret", "custom_offer"]);
 /* رسايلنا المبادِرة اللي بتتحسب «متابعة» في قاعدة «متابعتين ماحدش رد عليهم في ٧ أيام» (wa_bot_log.reply_key، msg_type = followup) */
-export const FU_PROACTIVE_KEYS = Object.freeze(["assist_followup", "assist_reminder", "lead_followup", "lead_nudge", "window_keep", FU_KIND]);
+export const FU_PROACTIVE_KEYS = Object.freeze(["assist_followup", "assist_reminder", "lead_followup", "lead_nudge", "window_keep", FU_KIND, "open_followup"]);      // WO1: + «نكمّل لما نفتح»
 /* متابعات تانية في نفس النافذة (wa_bot_jobs.kind) ⇒ مفيش متابعة تانية فوقها */
-export const FU_OTHER_JOBS = Object.freeze(["assist_followup", "assist_nudge", "assist_reminder", "lead_followup", "window_keep"]);
+export const FU_OTHER_JOBS = Object.freeze(["assist_followup", "assist_nudge", "assist_reminder", "lead_followup", "window_keep", "open_followup"]);      // WO1
 
 /* ── الإعدادات (كلها في اللوحة: settings.waBot.<المفتاح>) ─────────────────────── */
 export const FU_DEFAULTS = Object.freeze({
