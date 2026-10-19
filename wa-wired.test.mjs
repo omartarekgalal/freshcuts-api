@@ -411,7 +411,10 @@ test("each utility version keeps its marketing twin: the promotional wording is 
 });
 
 test("templates Meta filed as MARKETING are billed as marketing and are wired to no sender", () => {
-  assert.deepEqual(Object.keys(C.META_CATEGORY).sort(), ["fc_staff_checkout_watchdog:ar", "fc_staff_checkout_watchdog:en", "fc_staff_daily_summary:ar"]);
+  /* UT1 (قراءة ميتا ١٩/١٠): + fc_staff_team_notice و fc_staff_alerts_renew (الاتنين باللغتين)؛ checkout_watchdog:en و daily_summary:ar رجعوا UTILITY.
+     fc_review_stars:ar (MARKETING عند ميتا) مش في الجدول بالقصد — posReviewBasis بيقراه (قرار المالك، README شريحة UT1) */
+  assert.deepEqual(Object.keys(C.META_CATEGORY).sort(), ["fc_staff_alerts_renew:ar", "fc_staff_alerts_renew:en", "fc_staff_checkout_watchdog:ar", "fc_staff_team_notice:ar", "fc_staff_team_notice:en"]);
+  assert.ok(!("fc_review_stars:ar" in C.META_CATEGORY));
   for (const key of Object.keys(C.META_CATEGORY)) {
     const [name, lang] = key.split(":");
     const t = C.findTemplate(name, lang);
@@ -420,6 +423,8 @@ test("templates Meta filed as MARKETING are billed as marketing and are wired to
     assert.ok(!Object.values(W.STAGE_TEMPLATES).includes(name), `${name} must not be sent by an order stage`);
   }
   assert.equal(C.billedCategory(C.findTemplate("fc_staff_daily_summary", "en")), "UTILITY");
+  assert.equal(C.billedCategory(C.findTemplate("fc_staff_daily_summary", "ar")), "UTILITY");
+  assert.equal(C.billedCategory(C.findTemplate("fc_staff_checkout_watchdog", "en")), "UTILITY");
   assert.equal(C.billedCategory(C.findTemplate("fc_order_received")), "UTILITY");
   assert.equal(C.billedCategory(C.findTemplate("fc_cart_1h")), "MARKETING");
   // the reworded replacements exist in both languages and are not the old names

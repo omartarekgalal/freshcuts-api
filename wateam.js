@@ -58,6 +58,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { bizDay, bizStart } from "./bizday.js";
+import { STAFF_ROLE_TPL } from "./watemplates.js";      // UT1: اسم الدور في متغيّرات القوالب الخدمية الجديدة
 import { maskText } from "./wabotllm.js";
 import { openState } from "./wabot.js";
 import { isReviewHandover } from "./reviewaudience.js";
@@ -76,6 +77,18 @@ export const TPL_RENEW = "fc_staff_alerts_renew";
 export const TPL_NOTICE = "fc_staff_team_notice";
 export const TPL_SLA = "fc_staff_sla_alert";             // CR4 (١٩/١٠): قالب خدمي (UTILITY) برقم الطلب — تصعيد «طلب جديد ما اتقبلش» (ackescalate.js)
 export const TPL_HANDOFF = "fc_staff_wa_handoff";          // قالب قديم في الكتالوج (سبب + ملخص) — بديل للتحويلات لو الجديد لسه مااتعتمدش
+/* UT1 (١٩/١٠): ميتا حوّلت fc_staff_team_notice و fc_staff_alerts_renew لـ«تسويق» (٠٫٢٢ ر.س بدل ٠٫٠٤، و٥٧ من ٧٦ اتمنعوا بـ131049).
+   كل استخدام راح لقالب خدمي فيه مرجع للحدث — اللي بيوصل أول واحد معتمد من القايمة (approved) والحارس مابيرفضوش. التحويلات ⇒ fc_staff_wa_handoff (معتمد خدمي)،
+   والباقي ⇒ قوالب UT1 الجديدة. fc_staff_team_notice / fc_staff_alerts_renew فضلوا **آخر** القايمة: الحارس بيرفضهم (meta_marketing) طول ما مفتاح المالك
+   waBot.utilityFirst.staff مفتوح (الافتراضي) ⇒ SMS/البورتال/مفيش — ولو المالك قفله، بيرجعوا يتبعتوا بسعر التسويق زي الأول. */
+export const TPL_PORTAL = "fc_staff_portal_offline";       // البوابة مقفولة: بوابة {{1}} مقفولة من الساعة {{2}}
+export const TPL_CHAT = "fc_staff_chat_review";            // حاجة غريبة في محادثة عميل: آخر ٤ أرقام + النوع
+export const TPL_INBOX = "fc_staff_inbox_summary";         // ملخص الصندوق: الساعة + تحويلات + تنبيهات (الملخص اليومي / ملخص الغريب / تنبيه من غير عميل / التجربة)
+export const TPL_TASK = "fc_staff_task_notice";            // رسالة المالك لموظف: دوره + الساعة (من غير النص)
+export const TPL_PAUSED = "fc_staff_alerts_paused";        // تنبيهاته وقفت: دوره + الساعة اللي النافذة قفلت فيها
+export const UT1_TEMPLATES = Object.freeze([TPL_PORTAL, TPL_CHAT, TPL_INBOX, TPL_TASK, TPL_PAUSED]);
+const roleTpl = (role) => STAFF_ROLE_TPL.ar[role] || STAFF_ROLE_TPL.ar.cashier;
+export const inboxData = ({ at, handovers = 0, alerts = 0 }) => ({ inbox: { at: riyadhHHMM(at), handovers: String(Math.max(0, Number(handovers) || 0)), alerts: String(Math.max(0, Number(alerts) || 0)) } });
 
 /* أنواع «الحاجات الغريبة» — كل نوع مفتاح لوحده (settings.waTeam.odd.kinds) */
 export const ODD_KINDS = Object.freeze({
@@ -596,6 +609,8 @@ function managerLines({ offMin = null, fromStart = false, hidden = false, alerts
 export const portalOfflineManagerText = (x) => `⚠️ ${managerLines(x).full}. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.
 البورتال ↗ ${PORTAL_URL}`;
 export const portalOfflineManagerNotice = (x) => fitLine(managerLines(x).short, 120);
+/* UT1: متغيّرات fc_staff_portal_offline — بوابة الكاشير مقفولة من الساعة (بداية القفلة، وإلا بداية الحلقة، وإلا دلوقتي) بتوقيت الرياض */
+export const portalTplData = (clo, ep, now) => ({ portal: { name: STAFF_ROLE_TPL.ar.cashier, since: riyadhHHMM((clo && clo.startAt) || (ep && ep.since) || now) } });
 /* «رجع»: stable ⇒ at = بداية الفتحة اللي فضلت ظاهرة · kept (المراجعة التانية) ⇒ at = من إمتى مااتقفلش، بنص مايدّعيش إنه ثابت على الشاشة */
 export const portalBackText = ({ at = null, kept = false, afterMin = null } = {}) => (kept
   ? `✅ بورتال الكاشير رجع يتفتح${at ? ` من ${riyadhHHMM(at)}` : ""} — كل كام دقيقة، ومافضلش مقفول${afterMin ? ` ${durAr(afterMin)}` : ""} ورا بعض (بس مش فاضل مفتوح على طول).`
@@ -775,6 +790,7 @@ export function register(app, ctx, deps = {}) {
           const r = await wa.sendStaffTemplate({ phoneNorm: m.phone, template: t.name, data: t.data || {}, lang: t.lang === "en" ? "en" : "ar" });
           if (r.ok) return done("wa_template", true);
           why = `template:${r.skipped || r.error || "send_failed"}`;
+          if (r.skipped === "meta_marketing") continue;      // UT1: ميتا بتحاسبه تسويق ⇒ القالب الخدمي اللي بعده (ثم SMS)
           break;
         }
       }
@@ -808,9 +824,9 @@ export function register(app, ctx, deps = {}) {
     const to = recipientsFor(cfg, urgent ? ["handover", "urgent"] : ["handover"]).filter((m) => !isReviewHandover(reason) || m.role !== "cashier");
     if (!to.length) return null;
     const body = handoverText({ phone, reasonAr: reasonAr || reason, urgent, orderNo, stage, waitedMin, lastText: await lastCustomerText(phone) });
-    const summary = clip(`عميل ${last4(phone)} محتاج موظف (${reasonAr || reason})${stage === "reminder" ? " — تذكير" : ""}`, 120);
+    /* UT1: التحويل بقالب fc_staff_wa_handoff الخدمي المعتمد بس (كان fc_staff_team_notice الأول — ميتا بتحاسبه تسويق) */
     return fanOut(cfg, to, () => ({ topic: urgent ? "urgent" : "handover", kind: reason, body, ref4: String(phone || "").slice(-4), urgent,
-      templates: [{ name: TPL_NOTICE, data: { notice: { text: summary } } }, { name: TPL_HANDOFF, data: { handoff: { reasonText: reasonAr || reason, summary: `عميل ${last4(phone)}${orderNo ? ` طلب ${orderNo}` : ""}` } } }],
+      templates: [{ name: TPL_HANDOFF, data: { handoff: { reasonText: `${reasonAr || reason}${stage === "reminder" ? " — تذكير" : ""}`, summary: `عميل ${last4(phone)}${orderNo ? ` طلب ${orderNo}` : ""}` } } }],
       sms: cfg.smsFallback ? sms : null, smsRef: `wabot ${reason}` }));
   }
 
@@ -840,7 +856,9 @@ export function register(app, ctx, deps = {}) {
       if (!to.length) { await q("UPDATE wa_team_odd SET status='no_recipients' WHERE id=$1", [id]); return "no_recipients"; }
       const row = { kind, phone: p, detail: detail ? clip(maskText(detail), 200) : null, tried: tried ? clip(tried, 300) : null };
       const body = oddText({ ...row, excerpt: await excerptOf(p, cfg.odd.excerpt) });
-      const r = await fanOut(cfg, to, () => ({ topic: "odd", kind, body, ref4: p ? p.slice(-4) : null, templates: [{ name: TPL_NOTICE, data: { notice: { text: oddSummary(row) } } }],
+      /* UT1: محادثة عميل ⇒ fc_staff_chat_review (آخر ٤ أرقام + النوع) · من غير عميل (سقف المصروف / فشل إرسال) ⇒ fc_staff_inbox_summary بتنبيه واحد */
+      const oddTpl = p ? { name: TPL_CHAT, data: { chat: { ref4: p.slice(-4), reason: ODD_KINDS[kind] || kind } } } : { name: TPL_INBOX, data: inboxData({ at: now, handovers: 0, alerts: 1 }) };
+      const r = await fanOut(cfg, to, () => ({ topic: "odd", kind, body, ref4: p ? p.slice(-4) : null, templates: [oddTpl, { name: TPL_NOTICE, data: { notice: { text: oddSummary(row) } } }],
         sms: cfg.odd.smsFallback ? `Fresh Cuts WhatsApp: ${kind.replace(/_/g, " ")}${p ? ` (customer ${last4(p).slice(1)})` : ""}. Open the dashboard inbox.` : null, smsRef: `wabot odd_${kind}` }));
       await q("UPDATE wa_team_odd SET status=$2, sent_at=$3 WHERE id=$1", [id, r.sent ? "sent" : "failed", now.toISOString()]);
       return r.sent ? "sent" : "failed";
@@ -861,7 +879,7 @@ export function register(app, ctx, deps = {}) {
     digestAt = now.getTime();
     const to = recipientsFor(cfg, "odd");
     const body = oddDigestText(rows, { held: !cfg.odd.digest });
-    const r = to.length ? await fanOut(cfg, to, () => ({ topic: "odd", kind: "digest", body, templates: [{ name: TPL_NOTICE, data: { notice: { text: `${rows.length} حاجة غريبة في محادثات واتساب` } } }], sms: null })) : { sent: 0 };
+    const r = to.length ? await fanOut(cfg, to, () => ({ topic: "odd", kind: "digest", body, templates: [{ name: TPL_INBOX, data: inboxData({ at: now, handovers: 0, alerts: rows.length }) }, { name: TPL_NOTICE, data: { notice: { text: `${rows.length} حاجة غريبة في محادثات واتساب` } } }], sms: null })) : { sent: 0 };
     /* صف واحد بس بيتحسب «sent» في سقف الساعة؛ الباقي digest */
     await q("UPDATE wa_team_odd SET status = CASE WHEN id=$2 THEN $3 ELSE 'digest' END, sent_at=$4 WHERE id = ANY($1::bigint[])", [ids, ids[0], r.sent ? "sent" : "failed", now.toISOString()]);
     return rows.length;
@@ -882,7 +900,10 @@ export function register(app, ctx, deps = {}) {
       const r = await sendToStaff(cfg, m, { topic: "keeper", kind: "renew_free", body: keeperFreeText({ minutesLeft: win.minutesLeft }), templates: [], sms: null });
       return { ...plan, sent: r };
     }
-    const r = await sendToStaff(cfg, m, { topic: "keeper", kind: "renew_closed", body: "", templates: [{ name: TPL_RENEW, data: {} }], sms: cfg.keeper.smsNudge ? keeperSms(sc.lang) : null, smsRef: "wabot team_renew" });
+    const closedAt = windowState(lastIn, now).closedSince || now.toISOString();      // UT1: الساعة اللي التنبيهات وقفت فيها (مرجع القالب)
+    const r = await sendToStaff(cfg, m, { topic: "keeper", kind: "renew_closed", body: "",
+      templates: [{ name: TPL_PAUSED, data: { member: { role: roleTpl(m.role) }, paused: { at: riyadhHHMM(closedAt) } } }, { name: TPL_RENEW, data: {} }],
+      sms: cfg.keeper.smsNudge ? keeperSms(sc.lang) : null, smsRef: "wabot team_renew" });
     await q("UPDATE wa_team_state SET closed_nudge_via=$2 WHERE phone_norm=$1", [m.phone, r.via]);
     return { ...plan, sent: r };
   }
@@ -902,7 +923,7 @@ export function register(app, ctx, deps = {}) {
     if (!to.length) return { sent: 0, to: 0 };
     const d = await dailyData(cfg, now), body = dailyText(d);
     const total = d.odd.reduce((a, r) => a + Number(r.n || 0), 0);
-    return fanOut(cfg, to, () => ({ topic: "digest", kind: "daily", body, templates: [{ name: TPL_NOTICE, data: { notice: { text: `ملخص آخر ٢٤ ساعة: ${d.handovers} تحويل لموظف و${total} حاجة غريبة` } } }], sms: null }));
+    return fanOut(cfg, to, () => ({ topic: "digest", kind: "daily", body, templates: [{ name: TPL_INBOX, data: inboxData({ at: now, handovers: d.handovers, alerts: total }) }, { name: TPL_NOTICE, data: { notice: { text: `ملخص آخر ٢٤ ساعة: ${d.handovers} تحويل لموظف و${total} حاجة غريبة` } } }], sms: null }));
   }
   /* ── RG1 + PO1: البورتال مقفول وقت الشغل ⇒ واتساب للكاشير، وبعدها المدير ──────────────────────────────
      الحلقة (صف wa_team_portal id='cashier'): بتبدأ أول دورة البورتال فيها «مقفول» وقت الشغل (opened_at = وقت الدورة دي)، وبتخلص لما:
@@ -1068,7 +1089,7 @@ export function register(app, ctx, deps = {}) {
         const c = await claimTo(m.phone, now, po, "cashier");
         if (!c.ok) { held.push(heldOf(m, c)); continue; }
         const r = await sendToStaff(cfg, m, { topic: "portal_offline", kind: "cashier", body: portalOfflineText(clo()), button: true,
-          templates: [{ name: TPL_NOTICE, data: { notice: { text: portalOfflineNotice(clo()) } } }], sms: null });
+          templates: [{ name: TPL_PORTAL, data: portalTplData(clo(), e, now) }, { name: TPL_NOTICE, data: { notice: { text: portalOfflineNotice(clo()) } } }], sms: null });
         sent.push({ to: last4(m.phone), via: r.via, ok: r.ok });
       }
       /* الجولة بتتعدّ في السلّم حتى لو فشلت (الحجز اتاخد ⇒ المحاولة الجاية بعد repeatMin)، بس مابتاخدش من السقف (portalLog بيعدّ ok بس) */
@@ -1097,7 +1118,7 @@ export function register(app, ctx, deps = {}) {
         const x = { ...clo(), alerts, delivered, reason: hold ? "hold" : reason, cap: Math.max(po.dailyCap, ...cashiers.map((k) => of(k).day)), reminder,
           reopened: reminder && tms(sig.lastSeen) > of(m).lastMgr, held: heldInfo };      // cap = اللي الكاشير خده فعلاً النهارده
         const r = await sendToStaff(cfg, m, { topic: "portal_offline", kind: "manager", body: portalOfflineManagerText(x), button: true,
-          templates: [{ name: TPL_NOTICE, data: { notice: { text: portalOfflineManagerNotice(x) } } }], sms: null });
+          templates: [{ name: TPL_PORTAL, data: portalTplData(x, e, now) }, { name: TPL_NOTICE, data: { notice: { text: portalOfflineManagerNotice(x) } } }], sms: null });
         out.push({ to: last4(m.phone), via: r.via, ok: r.ok, reminder, ...(hold ? { hold: true } : {}), ...(retry ? { retry: true } : {}) });
       }
       /* «المدير اتبلّغ» = رسالة وصلت بس (لو فشلت، رسالة المدير الجاية مش «تذكير» و«رجع» مش مستحقة) */
@@ -1265,7 +1286,7 @@ export function register(app, ctx, deps = {}) {
     const teamPayload = async ({ owner, settings = null }) => {
       const st = await status({ full: owner, settings }), cfg = st.cfg, now = clock();
       const templates = {};
-      for (const n of [TPL_RENEW, TPL_NOTICE, TPL_HANDOFF, TPL_SLA]) templates[n] = { approved: Boolean(await approved(cfg, n)), source: await approved(cfg, n) };
+      for (const n of [TPL_RENEW, TPL_NOTICE, TPL_HANDOFF, TPL_SLA, ...UT1_TEMPLATES]) templates[n] = { approved: Boolean(await approved(cfg, n)), source: await approved(cfg, n) };
       const hour = new Date(now.getTime() - H).toISOString(), day = new Date(now.getTime() - 24 * H).toISOString();
       const oc = await q(`SELECT count(*) FILTER (WHERE status='sent' AND sent_at > $1)::int AS sent_hour, count(*) FILTER (WHERE status='pending')::int AS pending, count(*) FILTER (WHERE status='held')::int AS held FROM wa_team_odd WHERE at > $2`, [hour, day]);
       const byKind = await q("SELECT kind, count(*)::int AS n FROM wa_team_odd WHERE at > $1 GROUP BY 1 ORDER BY 2 DESC", [day]);
@@ -1308,7 +1329,10 @@ export function register(app, ctx, deps = {}) {
       const cfg = teamConfig((await settingsNow()) || {}), phone = normPh(b && b.phone);
       const m = cfg.members.find((x) => x.phone === phone && x.active);
       if (!m) return c.json({ ok: false, error: "not_staff", message: "الرقم مش في دليل الفريق" }, 400);
-      const r = await sendToStaff(cfg, m, { topic: "test", kind: "test", body: "🧪 رسالة تجربة من نظام تنبيهات فريش كاتس — لو وصلتك، التنبيهات شغّالة على واتساب.", templates: [{ name: TPL_NOTICE, data: { notice: { text: "رسالة تجربة لتنبيهات الفريق" } } }], sms: null });
+      /* UT1: برّه النافذة ⇒ ملخص الصندوق الحقيقي لآخر ٢٤ ساعة (fc_staff_inbox_summary) — رسالة صادقة بتختبر وصول قوالب الفريق */
+      const now = clock(), d = await dailyData(cfg, now), total = d.odd.reduce((a, x) => a + Number(x.n || 0), 0);
+      const r = await sendToStaff(cfg, m, { topic: "test", kind: "test", body: "🧪 رسالة تجربة من نظام تنبيهات فريش كاتس — لو وصلتك، التنبيهات شغّالة على واتساب.",
+        templates: [{ name: TPL_INBOX, data: inboxData({ at: now, handovers: d.handovers, alerts: total }) }, { name: TPL_NOTICE, data: { notice: { text: "رسالة تجربة لتنبيهات الفريق" } } }], sms: null });
       return c.json({ ok: r.ok, via: r.via, error: r.error || null });
     });
     /* WT2: رسالة حرة من المالك لعضو واحد في الدليل (مهام السوشيال اليدوية وغيرها). العقد في slices/WT2-api-team-social/README.md.
@@ -1336,13 +1360,13 @@ export function register(app, ctx, deps = {}) {
         const rate = directRateVerdict(rr[0], now);
         if (rate) return c.json({ ok: false, ...rate, limits: DIRECT_LIMITS, message: rate.why === "too_fast" ? "استنى ثواني قبل الرسالة الجاية لنفس الرقم" : "وصلت لأقصى عدد رسايل في الساعة" }, 429);
         const r = await sendToStaff(cfg, m, { topic: "direct", kind: "owner_text", body: tx.text, button: tx.text.length <= DIRECT_BUTTON_MAX, noPortal: true,
-          templates: [{ name: TPL_NOTICE, data: { notice: { text: directNoticeLine(tx.text) } } }], sms: null });
+          templates: [{ name: TPL_TASK, data: { task: { role: roleTpl(m.role), at: riyadhHHMM(now) } } }, { name: TPL_NOTICE, data: { notice: { text: directNoticeLine(tx.text) } } }], sms: null });
         const note = `واتساب الفريق: رسالة لـ${last4(phone)} (${ROLE_AR[m.role]}) — ${r.via}${r.ok ? "" : ` ⛔ ${r.error || ""}`} · ${tx.text.length} حرف: ${fitLine(tx.text, 80)}`;
         if (typeof ctx.auditNote === "function") { try { await ctx.auditNote(c, note); } catch { /* السجل مايوقعش الإرسال */ } }
         const who = { to: last4(phone), name: m.name || null, role: m.role, roleAr: ROLE_AR[m.role], chars: tx.text.length };
         if (r.ok && r.via === "wa_free") return c.json({ ok: true, via: "wa_free", full: true, ...who });
         if (r.ok && r.via === "wa_template") return c.json({ ok: true, via: "wa_template", full: false, ...who,
-          message: "نافذة الـ٢٤ ساعة مقفولة — وصله سطر تنبيه بقالب الفريق بس. ابعت الرسالة تاني بعد ما يضغط «جدّد التنبيهات»." }, 200);
+          message: "نافذة الـ٢٤ ساعة مقفولة — وصله تنبيه بقالب الفريق إن فيه رسالة منك (من غير النص). ابعت الرسالة تاني بعد ما يرد أو يكتب «تنبيهات»." }, 200);
         const why = String(r.error || "");
         if (why === "window_closed" || why === "WA_131047") return c.json({ ok: false, error: "window_closed", ...who,
           message: "نافذة الـ٢٤ ساعة بتاعته مقفولة وقالب الفريق مش معتمد — خليه يبعت أي رسالة (أو يضغط «جدّد التنبيهات») وابعت تاني." }, 409);

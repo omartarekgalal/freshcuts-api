@@ -45,7 +45,8 @@ import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS, POS_REVIEW_CONSENT, pos
 import { custCapOf, custCapReason } from "./waquality.js";
 import { waStageOn, FREE_STAGES, freeStageText } from "./waswitches.js";      // RT2 مراجعة: سجل المراحل الحرة الواحد
 import { staffRoleOf } from "./wateam.js";
-import { journeyCfg, holdUntil, orderCapDecision, ORDER_SENT_SQL, CAP_EXEMPT_SOURCES } from "./wajourney.js";      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض + سقف رسايل الطلب
+import { journeyCfg, holdUntil, orderCapDecision, ORDER_SENT_SQL, CAP_EXEMPT_SOURCES } from "./wajourney.js";
+import { utilityFirstVerdict } from "./wautility-cfg.js";      // UT1 (١٩/١٠): مفيش سعر تسويق على رسالة خدمية      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض + سقف رسايل الطلب
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const GRAPH_VERSION = "v23.0";
@@ -564,6 +565,24 @@ export function register(app, ctx, deps = {}) {
     if (!templateStatus) return null;
     try { const st = await templateStatus(name, lang); return st ? String(st).toUpperCase() : null; } catch { return null; }
   }
+  /* UT1 (١٩/١٠): فئة القالب الحقيقية عند ميتا — wacloud.js بيحقن دالة بتقرا من نفس كاش قايمة message_templates (١٠ دقايق، ٥ ثواني أقصى انتظار).
+     ميتا ساعات بتحوّل قالب خدمي لتسويق بعد اعتماده ⇒ بيتحاسب بسعر التسويق وبيتمنع بـ131049. مانعرفش (مفيش دالة / ميتا مش مقروءة / اللغة مش في القايمة)
+     ⇒ الاحتياطي CAT.META_CATEGORY (name:lang). */
+  let templateCategory = null;
+  const setTemplateCategory = (fn) => { templateCategory = typeof fn === "function" ? fn : null; };
+  async function metaCategoryOf(name, lang = "ar") {
+    const l = String(lang || "ar").slice(0, 2);
+    if (templateCategory) {
+      try { const c = await templateCategory(name, l); if (c) return String(c).toUpperCase(); } catch { /* الاحتياطي */ }
+    }
+    return (CAT.META_CATEGORY && CAT.META_CATEGORY[`${name}:${l}`]) || null;
+  }
+  /* قالب فئته عندنا مش تسويق وميتا بتحاسبه تسويق؟ (القالب التسويقي أصلاً مش «خدمي اتحوّل») */
+  async function billedAsMarketing(name, lang) {
+    const t = TEMPLATES[name];
+    if (!t || t.category === "MARKETING" || t.category === "AUTHENTICATION") return false;
+    return (await metaCategoryOf(name, lang || t.language || "ar")) === "MARKETING";
+  }
   async function holdBlocks(ctx) {
     if (!payHold) return false;
     try { return Boolean(await payHold(ctx)); } catch { return false; }
@@ -816,7 +835,7 @@ export function register(app, ctx, deps = {}) {
   }
   const TICKETS = new WeakSet();
   const TICKET_TTL_MS = 60_000;
-  async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null, orderNo = null, staff = false, courier = false, proactive = false, stage = null } = {}) {
+  async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null, orderNo = null, staff = false, courier = false, proactive = false, stage = null, lang = null } = {}) {
     const no = (reason) => ({ ok: false, reason });
     await ready;
     const pn = String(phoneNorm || "");
@@ -887,7 +906,7 @@ export function register(app, ctx, deps = {}) {
          • القالب من مجموعة «المندوب» في الكتالوج، فئته UTILITY، وميتا ماحوّلتوش تسويق، ومش حملة — وإلا not_courier_template
        موافقة العميل مابتتطلبش: ده مندوب شغّال على طلب عندنا والمدير كتب رقمه بإيده، مش عميل. */
     if (courier === true) {
-      const reclassed = Object.keys(CAT.META_CATEGORY || {}).some((k) => k.startsWith(`${template}:`));
+      const reclassed = await billedAsMarketing(template, lang);      // UT1: الفئة الحيّة عند ميتا (وإلا الجدول) — مش أي لغة في الجدول
       if (t.group !== "courier" || t.category !== "UTILITY" || reclassed || purpose === "marketing" || source === "campaign") return no("not_courier_template");
       let live = false;
       try {
@@ -902,13 +921,18 @@ export function register(app, ctx, deps = {}) {
     }
     if (staff === true) {
       if (!staffRoleOf(s, pn)) return no("not_staff");
-      const reclassed = Object.keys(CAT.META_CATEGORY || {}).some((k) => k.startsWith(`${template}:`));
-      if (t.group !== "staff" || t.category !== "UTILITY" || reclassed || purpose === "marketing" || source === "campaign") return no("not_staff_template");
+      if (t.group !== "staff" || t.category !== "UTILITY" || purpose === "marketing" || source === "campaign") return no("not_staff_template");
+      /* UT1: قالب فريق ميتا بتحاسبه تسويق ⇒ meta_marketing (المنادي — wateam.sendToStaff — بيكمّل للقالب الخدمي اللي بعده ثم SMS/البورتال).
+         مفتاح المالك waBot.utilityFirst.staff (مفتوح افتراضياً) — مقفول ⇒ بيعدّي وبيتحاسب تسويق زي الأول. */
+      { const v = utilityFirstVerdict({ cfg: s && s.waBot && s.waBot.utilityFirst, audience: "staff", template, billedMarketing: await billedAsMarketing(template, lang) }); if (v) return no(v); }
       if (await holdBlocks(holdCtx(false))) return no("pay_hold");
       return grant();
     }
     const marketing = t.category === "MARKETING" || purpose === "marketing" || source === "campaign";
     if (t.category === "AUTHENTICATION" && !marketing) return (await holdBlocks(holdCtx(false))) ? no("pay_hold") : grant();   // كود تحقق العميل طلبه بنفسه
+    /* UT1: رسالة خدمية لعميل بقالب ميتا بتحاسبه تسويق ⇒ meta_marketing (المُرسل بيروح للبديل الخدمي أو SMS) — إلا الاستثناء اللي المالك سايبه
+       (waBot.utilityFirst.reviewStarsAsMarketing لـfc_review_stars). مفتاح waBot.utilityFirst.customers مقفول ⇒ زي الأول. */
+    if (!marketing) { const v = utilityFirstVerdict({ cfg: s && s.waBot && s.waBot.utilityFirst, audience: "customer", template, billedMarketing: await billedAsMarketing(template, lang) }); if (v) return no(v); }
     const o = await optInOf(pn);
     if (marketing) {
       /* TC2 (١٣/١٠، قرار المالك بنصّه: «العروض التسويقية تكون للكل على مسئوليتي الا لو العميل طلب ايقاف»):
@@ -1056,10 +1080,10 @@ export function register(app, ctx, deps = {}) {
     /* SEC: الحارس المركزي — أقفال القناة + موافقة العميل حسب فئة القالب. requireOptIn اتلغى مفعوله (الموافقة دايماً
        مطلوبة)؛ الاستثناء الوحيد = أرقام التجربة اللي في اللوحة (test / allowList). */
     void requireOptIn;
-    const g = await guardSend({ phoneNorm, kind: "template", template, source, purpose: source === "campaign" ? "marketing" : null,
-      test, allowList, orderNo, staff, courier, proactive: proactive === true || source === "campaign" || source === "review" || source === "ka2", stage });      // CJ1a: الحملة وطلب التقييم ورسالة KA2 مبادِرين دايماً
-    if (!g.ok) return { ok: false, skipped: g.reason, ...(g.until ? { until: g.until } : {}), ...(g.policy ? { policy: true } : {}) };
     const language = lang || t.language || "ar";
+    const g = await guardSend({ phoneNorm, kind: "template", template, source, purpose: source === "campaign" ? "marketing" : null,
+      test, allowList, orderNo, staff, courier, proactive: proactive === true || source === "campaign" || source === "review" || source === "ka2", stage, lang: language });      // CJ1a: الحملة وطلب التقييم ورسالة KA2 مبادِرين دايماً · UT1: اللغة للفئة الحيّة
+    if (!g.ok) return { ok: false, skipped: g.reason, ...(g.until ? { until: g.until } : {}), ...(g.policy ? { policy: true } : {}) };
     const bad = paramProblem(template, params, language);
     if (bad) {
       await logOut({ phone_norm: phoneNorm, template, category: t.category, order_no: orderNo, stage, status: "skipped",
@@ -1657,6 +1681,7 @@ export function register(app, ctx, deps = {}) {
   });
 
   return { fetchMedia, uploadMedia, sendTemplate, sendStaffTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox, setPayHold, setTemplateStatus, templateStatusOf,      // CR3: carts.js بيقرا حالة قالب السلة قبل الإرسال
+    setTemplateCategory, metaCategoryOf, billedAsMarketing,      // UT1: فئة ميتا الحيّة (wacloud بيحقنها) — للحارس وشاشة «الخدمي أولاً»
     guardSend, deliver, envState, dashMasterOn: async () => dashMasterOf(await settingsSnap()), testPhones: async () => testPhonesOf(await settingsSnap()),
     on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive,
     setActiveIds, idsInUse, setWebhookAccept };

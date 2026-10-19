@@ -208,11 +208,11 @@ export function register(app, ctx, deps = {}) {
     const pn = row.phone_norm, name = await nameOf(pn), lastText = await t.lastCustomerText(pn), manager = managerOf(cfg);
     const waited = waitedMin != null ? waitedMin : Math.max(0, Math.floor((clock().getTime() - ms(row.ho_at)) / MIN));
     const alerted = Array.isArray(row.alerted) ? row.alerted : [];
-    const summary = clip(`${name ? `${name} ` : "عميل "}${last4(pn)} محتاج موظف (${row.reason_ar || row.reason})${step !== "cashier" && !row.urgent ? " — تصعيد" : ""}`, 120);
     return t.fanOut(cfg, to, (m) => ({ topic: row.urgent ? "urgent" : "handover", kind: row.reason, urgent: row.urgent === true, ref4: pn.slice(-4),
       body: ladderText({ step, to: m.role, kindAr: row.reason_ar || row.reason, urgent: row.urgent === true, name, phone: pn, orderNo: row.order_no, lastText, waitedMin: waited, alerted: alerted.filter((a) => a.role !== step), stage, manager }),
       buttons: [{ id: `flow:take:${row.fid}`, title: ACTIONS.take }],
-      templates: [{ name: "fc_staff_team_notice", data: { notice: { text: summary } } }, { name: "fc_staff_wa_handoff", data: { handoff: { reasonText: row.reason_ar || row.reason, summary: `عميل ${last4(pn)}${row.order_no ? ` طلب ${row.order_no}` : ""}` } } }],
+      /* UT1 (١٩/١٠): قالب fc_staff_wa_handoff الخدمي المعتمد بس — fc_staff_team_notice اتشال (ميتا بتحاسبه تسويق، و٥٧ من ٧٦ اتمنعوا بـ131049) */
+      templates: [{ name: "fc_staff_wa_handoff", data: { handoff: { reasonText: `${row.reason_ar || row.reason}${step !== "cashier" && !row.urgent ? " — تصعيد" : ""}`, summary: `عميل ${last4(pn)}${row.order_no ? ` طلب ${row.order_no}` : ""}` } } }],
       sms: cfg.smsFallback ? sms : null, smsRef: `wabot ${row.reason}` }));
   }
   /* RG1: تصعيد للمدير على البوابة (حدث wa_handover_escalated + إشعار لأجهزة المدير لو ladder.managerPush). من غير wahandover ⇒ الحدث بس. */
@@ -392,7 +392,8 @@ export function register(app, ctx, deps = {}) {
     if (t && row) {
       const body = transferText({ by, note: clip(maskText(nt), NOTE_MAX), name: await nameOf(pn), phone: pn, lastText: await t.lastCustomerText(pn) });
       alert = await t.fanOut(cfg, [manager], () => ({ topic: "transfer", kind: "transfer", body, ref4: pn.slice(-4), buttons: [{ id: `flow:take:${row.fid}`, title: ACTIONS.take }],
-        templates: [{ name: "fc_staff_team_notice", data: { notice: { text: clip(`${by} حوّل لك محادثة عميل ${last4(pn)}`, 120) } } }],
+        /* UT1: «فلان حوّل لك محادثة» ⇒ fc_staff_wa_handoff (السبب = تحويل من فلان، الملخص = آخر ٤ أرقام) — مش fc_staff_team_notice المحسوب تسويق */
+        templates: [{ name: "fc_staff_wa_handoff", data: { handoff: { reasonText: clip(`تحويل من ${by}`, 60), summary: `عميل ${last4(pn)}` } } }],
         sms: cfg.smsFallback ? `Fresh Cuts WhatsApp: a cashier transferred a customer chat (${last4(pn).slice(1)}) to you. Open the portal.` : null, smsRef: "wabot transfer" }));
     }
     say("wa_chat_transfer", { key: keyOf(pn), by, note: nt, at: now });

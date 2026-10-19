@@ -737,6 +737,55 @@ TEMPLATES.push(
     [qr(STAFF_RENEW_BUTTON_EN), link("Open portal", PORTAL_URL)], [qr(STAFF_RENEW_BUTTON), link("فتح البورتال", PORTAL_URL)]),
 );
 
+/* ══ UT1 (١٩/١٠ — عمر: «نستفيد من الرسايل الخدمية … بدل التسويقية») — بدايل خدمية لـfc_staff_team_notice و fc_staff_alerts_renew ═══════════
+   ميتا حوّلت الاتنين لـMARKETING بعد اعتمادهم (previous_category=UTILITY): بيتحاسبوا ٠٫٢٢ ر.س بدل ٠٫٠٤، ومن ١٣ لـ١٦/١٠ اتمنعت ٥٧ رسالة من ٧٦
+   بخطأ 131049 (حد ميتا لرسايل التسويق لكل رقم) — يعني تنبيهات فريق ماوصلتش أصلاً. السبب الأرجح: سطر حر {{1}} يحتمل أي كلام + زر رد سريع
+   «جدّد التنبيهات» (شكل إعادة اشتراك). كل القوالب الخدمية المعتمدة للفريق: حدث محدد بمرجع (رقم طلب/عميل/وقت) + زر رابط بس.
+   فالبدايل هنا بنفس الشكل: كل قالب لحدث واحد الموظف شغّال عليه، بمرجع (آخر ٤ أرقام / اسم البوابة / الساعة)، من غير كلام ترويجي، من غير زر رد سريع،
+   والتجديد بكلمة «تنبيهات» المكتوبة (staffCommand بيفهمها من زمان). فصحى مبسّطة + إنجليزي (staffPair). */
+TEMPLATES.push(
+  ...staffPair("fc_staff_portal_offline",
+    { body: "Fresh Cuts shift alert: the {{1}} portal has been closed since {{2}}. Open it so new orders and customer chats ring at the restaurant.",
+      ar: "تنبيه وردية فريش كاتس: بوابة {{1}} مغلقة منذ الساعة {{2}}. افتحها حتى تصل الطلبات الجديدة ومحادثات العملاء إلى المطعم." },
+    [{ path: "portal.name", ex: "cashier", exAr: "الكاشير", label: "البوابة (الكاشير)" },
+      { path: "portal.since", ex: "21:05", label: "من الساعة كام (بتوقيت الرياض HH:MM)" }],
+    { purpose: "بوابة الكاشير مقفولة وقت الشغل (للكاشير ثم المدير)", trigger: "wateam.js portalWatch — النافذة مقفولة والإشعار مش على البورتال", send: "auto",
+      replaces: "fc_staff_team_notice", fallbackSms: null }),
+  ...staffPair("fc_staff_chat_review",
+    { body: "Fresh Cuts WhatsApp inbox: the chat with the customer ending {{1}} needs a staff review ({{2}}). Open the inbox in the portal to follow it up.",
+      ar: "صندوق محادثات واتساب لفريش كاتس: محادثة العميل المنتهي رقمه بـ {{1}} تحتاج مراجعة من الفريق ({{2}}). افتح صندوق المحادثات في البورتال لمتابعتها." },
+    [{ path: "chat.ref4", ex: "5678", label: "آخر ٤ أرقام من جوال العميل" },
+      { path: "chat.reason", ex: "complaint", exAr: "شكوى", label: "النوع (ODD_KINDS)" }],
+    { purpose: "حاجة غريبة في محادثة عميل (شكوى / مشكلة دفع / سؤال وصفة …)", trigger: "wateam.js odd — محادثة عميل محددة", send: "auto",
+      replaces: "fc_staff_team_notice", fallbackSms: null }),
+  ...staffPair("fc_staff_inbox_summary",
+    { body: "Fresh Cuts WhatsApp inbox summary up to {{1}}: {{2}} chats handed to staff and {{3}} other alerts. The details are in the inbox on the portal.",
+      ar: "ملخص صندوق محادثات واتساب لفريش كاتس حتى الساعة {{1}}: عدد التحويلات لموظف {{2}}، وعدد التنبيهات الأخرى {{3}}. التفاصيل في صندوق المحادثات على البورتال." },
+    [{ path: "inbox.at", ex: "23:40", label: "الساعة (بتوقيت الرياض HH:MM)" },
+      { path: "inbox.handovers", ex: "4", label: "عدد التحويلات لموظف" }, { path: "inbox.alerts", ex: "2", label: "عدد التنبيهات التانية" }],
+    { purpose: "ملخص الصندوق (الملخص اليومي / ملخص الحاجات الغريبة / تنبيه نظام من غير عميل / زر التجربة)", trigger: "wateam.js dailyDigest + flushOdd + odd من غير جوال + /team/test", send: "auto",
+      replaces: "fc_staff_team_notice", fallbackSms: null }),
+  ...staffPair("fc_staff_task_notice",
+    { body: "Fresh Cuts management sent you a work message for your role ({{1}}) at {{2}}. Send the word ALERTS in this chat to receive the full text here.",
+      ar: "أرسلت لك إدارة فريش كاتس رسالة عمل تخص دورك ({{1}}) الساعة {{2}}. أرسل كلمة «تنبيهات» في هذه المحادثة لتصلك الرسالة كاملة هنا." },
+    [{ path: "task.role", ex: "social media", exAr: "السوشيال ميديا", label: "دور الموظف" },
+      { path: "task.at", ex: "14:20", label: "وقت الرسالة (بتوقيت الرياض HH:MM)" }],
+    { purpose: "رسالة المالك لموظف واحد ونافذته مقفولة — إشعار بوجود الرسالة من غير نصها", trigger: "wateam.js POST /api/cms/wabot/team/send", send: "auto",
+      replaces: "fc_staff_team_notice", fallbackSms: null }),
+  ...staffPair("fc_staff_alerts_paused",
+    { body: "Your Fresh Cuts team WhatsApp alerts ({{1}}) have been paused since {{2}} because the chat window closed. Send the word ALERTS in this chat to resume them.",
+      ar: "تنبيهات واتساب الخاصة بك في فريق فريش كاتس ({{1}}) متوقفة منذ الساعة {{2}} بسبب إغلاق نافذة المحادثة. أرسل كلمة «تنبيهات» في هذه المحادثة لاستئنافها." },
+    [{ path: "member.role", ex: "cashier", exAr: "الكاشير", label: "دور الموظف" },
+      { path: "paused.at", ex: "20:15", label: "النافذة قفلت الساعة (بتوقيت الرياض HH:MM)" }],
+    { purpose: "تنبيهات الموظف وقفت (النافذة قفلت) — حالة حسابه في نظام التنبيهات", trigger: "wateam.js keeperFor — مرة واحدة لكل قفلة", send: "auto",
+      replaces: "fc_staff_alerts_renew", fallbackSms: "Fresh Cuts: your WhatsApp alerts are paused. Send the word ALERTS to the restaurant WhatsApp number" }),
+);
+/* UT1: أسماء الأدوار في متغيّرات القوالب (من غير أقواس ولا شرح — ROLE_AR في wateam فيه «(مهام يدوية)») */
+export const STAFF_ROLE_TPL = Object.freeze({
+  ar: Object.freeze({ cashier: "الكاشير", manager: "المدير", owner: "المالك", social: "السوشيال ميديا" }),
+  en: Object.freeze({ cashier: "cashier", manager: "manager", owner: "owner", social: "social media" }),
+});
+
 /* ── مراجعة ١٢/١٠/٢٠٢٦ (كل القوالب، قبل التقديم) ─────────────────────────────
    HOLD = قوالب **لا تُقدَّم** لميتا الآن، وكل واحد بسببه. مسار التقديم (whatsapp.js) يرفضها بـ«held»
    إلا بـ force:true من المالك. الباقي يتقدّم على دفعات SUBMIT_BATCHES بالترتيب، واحد في الطلب. */
@@ -776,18 +825,24 @@ export const SUBMIT_BATCHES = Object.freeze([
   ["fc_order_on_the_way_courier"],      // SB5
   ["fc_courier_job_v1"],      // CW1 (١٦/١٠): أزرار المندوب الخارجي بره النافذة — بعد الاعتماد يتفتح «courierJob.useTemplate» من اللوحة
   ["fc_order_delivered_v2", "fc_review_request_v2", "fc_order_on_the_way_v2", "fc_order_preparing_v2", "fc_order_received_v2", "fc_order_refunded_v2", "fc_refund_in_progress_v2"],
+  // UT1 (١٩/١٠): بدايل خدمية لقوالب الفريق اللي ميتا حوّلتها تسويق — البوابة الأول (أكتر واحد اتبعت)، والتجديد آخر واحد (أكتر واحد ممكن يتصنّف تسويق تاني)
+  ["fc_staff_portal_offline", "fc_staff_chat_review", "fc_staff_inbox_summary", "fc_staff_task_notice", "fc_staff_alerts_paused"],
 ]);
 export const RECOMMENDED_FIRST = SUBMIT_BATCHES[0];
 export const FRAME_BATCH = SUBMIT_BATCHES.find((b) => b.includes("fc_frame_news_text"));      // FR1: دفعة الإطارات (بالرابط)
 export const ASK_FRAME_BATCH = SUBMIT_BATCHES.find((b) => b.includes("fc_frame_ask_text"));   // RF1: دفعة «الرد أولاً»
 
-/* الفئة الفعلية عند ميتا لما تختلف عن فئتنا (ميتا غيّرتها وقت الاعتماد — previous_category=UTILITY، قراءة ١٢/١٠ 03:46).
-   المفتاح name:language. القوالب دي تتحاسب بسعر التسويق وتترفض للي وقّف «العروض» ⇒ **لا تتربط بمُرسل** لحد ما مراجعة ميتا
-   («Request Review» في WhatsApp Manager، خلال ٦٠ يوم من التغيير) ترجّعها خدمي؛ البديل fc_staff_payment_alert / fc_staff_day_report. */
+/* الفئة الفعلية عند ميتا لما تختلف عن فئتنا (ميتا غيّرتها وقت الاعتماد — previous_category=UTILITY). المفتاح name:language.
+   UT1 (قراءة ١٩/١٠ من GET message_templates): الحارس (whatsapp.js) بيقرا الفئة **الحيّة** من قايمة ميتا (كاش ١٠ دقايق، wacloud.js) — الجدول ده
+   هو الاحتياطي لما القايمة ماتتقريش، وبيتحدّث يدوي مع كل قراءة. اتشال منه: fc_staff_checkout_watchdog:en و fc_staff_daily_summary:ar (ميتا رجّعتهم UTILITY).
+   **fc_review_stars:ar مش هنا بالقصد** (ميتا صنّفته MARKETING ١٦/١٠): posReviewBasis بيقرا الجدول ده — إضافته بتوقف طلب التقييم لعملاء الكاشير/كيتا
+   فوراً، ودي قرار المالك (README شريحة UT1) مش تعديل جانبي. الحارس الحي بيعرفه من غير الجدول (والاستثناء في utilityFirst.reviewStarsAsMarketing). */
 export const META_CATEGORY = Object.freeze({
   "fc_staff_checkout_watchdog:ar": "MARKETING",
-  "fc_staff_checkout_watchdog:en": "MARKETING",
-  "fc_staff_daily_summary:ar": "MARKETING",
+  "fc_staff_team_notice:ar": "MARKETING",
+  "fc_staff_team_notice:en": "MARKETING",
+  "fc_staff_alerts_renew:ar": "MARKETING",
+  "fc_staff_alerts_renew:en": "MARKETING",
 });
 export const billedCategory = (t) => META_CATEGORY[`${t.name}:${t.language}`] || t.category;
 

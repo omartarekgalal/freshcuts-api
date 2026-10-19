@@ -27,6 +27,8 @@ import { GRAPH_VERSION, TEMPLATES, STAGE_TEMPLATES, renderTemplateText, register
 import { waStagesOf, waReplacesSms, stageRows, stagesProblem, checklistView, MANDATORY_SMS_STAGES } from "./waswitches.js";
 import * as CAT from "./watemplates.js";
 import { qualityCfg, QUALITY_KEYS, QUALITY_DEFAULTS, WARMUP_DEFAULTS, migrateQuality, META_CAPPED_CODE } from "./waquality.js";
+import { waRatesOf } from "./waaicost.js";      // UT1: بطاقة أسعار القوالب (waBot.waRates)
+import { utilityFirstConfig, MARKETING_EXCEPTIONS } from "./wautility-cfg.js";      // UT1
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const APP_ID = "1073414588466040";
@@ -952,6 +954,55 @@ export function register(app, ctx, deps = {}) {
       return info.list.length < 200 ? "NOT_SUBMITTED" : null;
     });
   }
+
+  /* UT1 (١٩/١٠): نفس الكاش لفئة القالب الحقيقية عند ميتا (الحارس في whatsapp.js بيرفض القالب الخدمي اللي ميتا بتحاسبه تسويق).
+     اللغة لازم تطابق (fc_staff_checkout_watchdog: ar تسويق و en خدمي). مانعرفش ⇒ null (whatsapp.js بيرجع لـMETA_CATEGORY). */
+  if (wa && typeof wa.setTemplateCategory === "function") {
+    wa.setTemplateCategory(async (name, lang = "ar") => {
+      let info = null;
+      try {
+        info = await Promise.race([templateInfo().catch(() => null),
+          new Promise((res) => { const tm = setTimeout(() => res(null), TEMPLATE_STATUS_WAIT_MS); if (tm && typeof tm.unref === "function") tm.unref(); })]);
+      } catch { info = null; }
+      if (!info || info.ok !== true || !Array.isArray(info.list)) return null;
+      const l2 = String(lang || "ar").slice(0, 2);
+      const row = info.list.find((t) => t.name === name && String(t.language || "").slice(0, 2) === l2);
+      return row && row.category ? String(row.category).toUpperCase() : null;
+    });
+  }
+  /* UT1: «الخدمي أولاً» — قراية بس: كل قالب فئته عندنا غير فئة ميتا + إرساله آخر ٣٠ يوم (المحاسَب فعلاً من pricing.category) + الفرق بالريال.
+     GET بس، من غير كتابة ولا إرسال. الإعدادات نفسها في «كل إعدادات البوت» (waBot.utilityFirst). */
+  app.get("/api/cms/wa-cloud/utility-audit", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    const s = (await getSettingsData()) || {};
+    const R = waRatesOf(((s.waBot) || {}).waRates), cfg = utilityFirstConfig(((s.waBot) || {}).utilityFirst);
+    let info = null; try { info = await templateInfo({ fresh: c.req.query("fresh") === "1" }); } catch { info = null; }
+    const live = info && info.ok === true && Array.isArray(info.list) ? info.list : null;
+    let used = []; try {
+      used = (await pool.query(`SELECT template, count(*) FILTER (WHERE COALESCE(status,'') NOT IN ('failed','skipped'))::int AS sent,
+          count(*) FILTER (WHERE pricing->>'category' = 'marketing')::int AS billed_mk, count(*) FILTER (WHERE pricing->>'category' = 'utility')::int AS billed_ut,
+          count(*) FILTER (WHERE status = 'failed' AND error LIKE '131049%')::int AS blocked_131049
+        FROM wa_messages WHERE direction='out' AND template IS NOT NULL AND template <> '' AND created_at > NOW() - INTERVAL '30 days' GROUP BY 1`)).rows || [];
+    } catch { used = []; }
+    const u = new Map(used.map((r) => [r.template, r]));
+    const r2 = (n) => Math.round(Number(n) * 100) / 100;
+    const rows = [], seen = new Set();      // العدّ بالاسم (wa_messages مافيهوش اللغة) ⇒ أول لغة بس بتاخد الأرقام، عشان مايتحسبش مرتين
+    for (const t of CAT.TEMPLATES) {
+      const m = live ? live.find((x) => x.name === t.name && String(x.language || "").slice(0, 2) === t.language) : null;
+      const meta = m && m.category ? String(m.category).toUpperCase() : (CAT.META_CATEGORY[`${t.name}:${t.language}`] || null);
+      if (!meta || meta === t.category) continue;
+      const x = seen.has(t.name) ? {} : (u.get(t.name) || {});
+      seen.add(t.name);
+      const billedMk = Number(x.billed_mk) || 0;
+      rows.push({ name: t.name, language: t.language, ours: t.category, meta, status: m ? m.status : null, group: t.meta.group || null, source: m ? "live" : "table",
+        exception: MARKETING_EXCEPTIONS[t.name] && cfg[MARKETING_EXCEPTIONS[t.name]] === true ? MARKETING_EXCEPTIONS[t.name] : null,
+        sent30: Number(x.sent) || 0, billedMarketing30: billedMk, blocked131049_30: Number(x.blocked_131049) || 0,
+        extraSar30: meta === "MARKETING" ? r2(billedMk * (R.marketing - R.utility)) : 0 });
+    }
+    return c.json({ ok: true, config: cfg, rates: R, liveRead: Boolean(live), checkedAt: info && info.checkedAt || null, rows,
+      extraSar30: r2(rows.reduce((a, r) => a + r.extraSar30, 0)) });
+  });
 
   app.get("/api/cms/wa-cloud/status", async (c) => {
     const err = await requireAdmin(c); if (err) return err;

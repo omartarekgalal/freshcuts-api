@@ -71,6 +71,7 @@ import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarke
 import { FREE_STAGES } from "./waswitches.js";      // RT2 مراجعة (١٧/١٠): نص مرحلة «اتسلّم من الفرع» من السجل الواحد
 import { JOURNEY_GROUP, JOURNEY_GROUP_AR, JOURNEY_DEFAULTS, JOURNEY_NUMS, JOURNEY_BOOLS, JOURNEY_SCHEMA, journeyCfg, holdUntil, deferDecision, PROACTIVE_KEYS, PROACTIVE_JOB_KINDS, PAID_CONFIRM_SQL } from "./wajourney.js";      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض
 import { COURIER_JOB_DEFAULTS, COURIER_JOB_SCHEMA, COURIER_JOB_SCHEMA_GROUP, courierJobConfig, courierJobFromBody } from "./courierwa-cfg.js";      // CW1
+import { UTILITY_FIRST_DEFAULTS, UTILITY_FIRST_SCHEMA, UTILITY_FIRST_SCHEMA_GROUP, utilityFirstConfig, utilityFirstFromBody } from "./wautility-cfg.js";      // UT1
 import { REVIEW_FLOW_DEFAULTS, REVIEW_FLOW_SCHEMA, REVIEW_SCHEMA_GROUP, REVIEW_TEXTS, reviewFlowConfig, reviewFlowFromBody, starOfListId, starOfQr, typedStar, reasonOfListId, reviewsCfgOf,
   starsAskReply, starsSubject, starReply, applyStar, applyReason, captureLowComment, pendingStars, markGoogleSent, reviewCtaOk, reviewsDaily, WEB_KINDS, VISIT_KINDS,
   googleRatedState, shouldAskGoogleRated, markGoogleAsked, markGoogleRated, pendingGoogleAsk, gqOfButtonId, typedGoogleAnswer, gqAskReply, gqAnswerReply } from "./wareviews.js";      // RV1: النجوم جوّه واتساب · RV6 (عمر ١٧/١٠): «قيّم على جوجل ✅»
@@ -108,6 +109,7 @@ export const DEFAULTS = Object.freeze({
   windowKeeperQuietStart: 2, windowKeeperQuietEnd: 11,      // …ومفيش في الساعات دي (الرياض)
   reviewReplyHours: 24,        // SB2: «تمام» / «عندي ملاحظة» مكتوبة (مش ضغطة) بتتحسب رد على رسالة التقييم لحد المدة دي
   courierJob: { ...COURIER_JOB_DEFAULTS },      // CW1 (عمر ١٦/١٠): أزرار المندوب الخارجي على واتساب (courierwa.js)
+  utilityFirst: { ...UTILITY_FIRST_DEFAULTS },      // UT1 (عمر ١٩/١٠): مفيش سعر تسويق على رسالة خدمية (الحارس في whatsapp.js)
   reviewFlow: { ...REVIEW_FLOW_DEFAULTS },      // RV1 (عمر ١٥/١٠): النجوم جوّه واتساب + مواعيد كل نوع طلب + الحدود (wareviews.js)
   paidNoteEnabled: true,       // EX6: العميل دفع طلب بعد ما كلّم البوت/المساعد والنافذة مفتوحة ⇒ سطر تأكيد برقم الطلب
   leadFollowUpMin: 20,         // EX6: «متابعة المحادثة» — رسالة عميل ماخدتش رد مفيد (سكوت، بره النطاق، «ما فهمت») ومحدش رد ⇒ متابعة واحدة بعد الدقايق دي. صفر = مقفول. مرة في اليوم للمحادثة
@@ -738,6 +740,7 @@ export function botConfig(settings) {
     openerHours: num(x.openerHours, 1, 72, DEFAULTS.openerHours), paidNoteEnabled: x.paidNoteEnabled !== false, reviewWhatsApp: x.reviewWhatsApp !== false, reviewReplyHours: num(x.reviewReplyHours, 1, 72, DEFAULTS.reviewReplyHours),
     reviewFlow: reviewFlowConfig(x.reviewFlow),      // RV1
     courierJob: courierJobConfig(x.courierJob),      // CW1
+    utilityFirst: utilityFirstConfig(x.utilityFirst),      // UT1
     courierContact: x.courierContact !== false, courierTemplate: x.courierTemplate === true,
     windowFreeUpdates: x.windowFreeUpdates !== false, windowSell: x.windowSell !== false, windowKeeper: x.windowKeeper !== false,
     ...(({ followLink, followNumber, closedPolicy, closedSkipPreparing, mergeDeliveredReview, reviewPaidGapMin, collectedSkipIfReviewWithinMin, followBanner, followBannerSkipHours }) => ({ followLink, followNumber, closedPolicy, closedSkipPreparing, mergeDeliveredReview, reviewPaidGapMin, collectedSkipIfReviewWithinMin, followBanner, followBannerSkipHours }))(waPolicyCfg({ waBot: x })),
@@ -848,6 +851,7 @@ export function configFromBody(b, prev = {}) {
   if ("assist" in src) { const av = assistFromBody(src.assist, prev.assist); if (av.ok) out.assist = av.value; else errors.push(...av.errors); }
   if ("reviewFlow" in src) { const rv = reviewFlowFromBody(src.reviewFlow, prev.reviewFlow); if (rv.ok) out.reviewFlow = rv.value; else errors.push(...rv.errors); }      // RV1
   if ("courierJob" in src) { const cj = courierJobFromBody(src.courierJob, prev.courierJob); if (cj.ok) out.courierJob = cj.value; else errors.push(...cj.errors); }      // CW1
+  if ("utilityFirst" in src) { const uf = utilityFirstFromBody(src.utilityFirst, prev.utilityFirst); if (uf.ok) out.utilityFirst = uf.value; else errors.push(...uf.errors); }      // UT1
   if ("faq" in src) {
     const cur = { ...(prev.faq || {}) };
     for (const [key, v] of Object.entries(src.faq || {})) {
@@ -1142,10 +1146,11 @@ export const SCHEMA = Object.freeze({
   ...JOURNEY_SCHEMA, // CJ1a (١٧/١٠): «رحلة العميل في النافذة: مفيش رسايل ورا بعض» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...ASSIST_SCHEMA,
   ...COURIER_JOB_SCHEMA,      // CW1: «🛵 المندوب الخارجي: الأزرار على واتساب» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
+  ...UTILITY_FIRST_SCHEMA,      // UT1: «💸 الخدمي أولاً» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...REVIEW_FLOW_SCHEMA,      // RV1: «التقييمات على واتساب» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
 });
 export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", orderMsgs: "رسايل الطلب: توفير القوالب وزر «تابع طلبك»", [FU_GROUP]: FU_GROUP_AR, [JOURNEY_GROUP]: JOURNEY_GROUP_AR, greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
-  faq: "الأسئلة الشائعة", texts: "النصوص", optin: "موافقة التحديثات", ai: "الذكاء الاصطناعي", cost: "التكلفة", assist: "مساعد الطلبات", ...REVIEW_SCHEMA_GROUP, ...COURIER_JOB_SCHEMA_GROUP });
+  faq: "الأسئلة الشائعة", texts: "النصوص", optin: "موافقة التحديثات", ai: "الذكاء الاصطناعي", cost: "التكلفة", assist: "مساعد الطلبات", ...REVIEW_SCHEMA_GROUP, ...COURIER_JOB_SCHEMA_GROUP, ...UTILITY_FIRST_SCHEMA_GROUP });
 const getPath = (o, p) => p.split(".").reduce((a, k) => (a && typeof a === "object" ? a[k] : undefined), o);
 /* للّوحة: كل إعداد بقيمته الحالية والافتراضية وحدوده وشرحه. */
 export function schemaFor(cfg) {
@@ -3438,6 +3443,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         if (r && r.ok) { await mark(true); return { ok: true, channel: "wa_stars", wamid: r.wamid || null }; }
         if (r && r.skipped === "opted_out") return { ok: false, skipped: "opted_out", final: true };
         if (r && r.skipped === "burst_hold") return { ok: false, skipped: "burst_hold", defer: true, until: r.until || new Date(now.getTime() + 5 * 60_000).toISOString() };      // CJ1a
+        if (r && r.skipped === "meta_marketing") return null;      // UT1: ميتا بتحاسبه تسويق والمالك قفل الاستثناء ⇒ البديل الخدمي (طلب الموقع) / no_visit_template
         if (r && r.skipped) return { ok: false, skipped: String(r.skipped).slice(0, 60) };
         return null;
       };

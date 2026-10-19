@@ -207,15 +207,16 @@ test("RV1 (review 15/10): a WhatsApp low rating (review_low, urgent) reaches the
 }));
 
 test("window closed: an APPROVED staff template (Arabic, one line, last 4 digits) goes out with no customer opt-in; not approved ⇒ no Graph call, SMS fallback recorded as SMS", withEnv(OPEN, async () => {
-  const w = world({ approved: ["fc_staff_team_notice"] });
+  /* UT1: التحويل بقالب fc_staff_wa_handoff الخدمي (fc_staff_team_notice اتشال — ميتا بتحاسبه تسويق) */
+  const w = world({ approved: ["fc_staff_team_notice", "fc_staff_wa_handoff"] });
   w.wrote(CASH1, 1); w.wrote(CASH2, 30);                     // منى مفتوحة · سارة مقفولة · خالد عمره ما كتب
   const r = await w.team.handover({ phone: CUST, reason: "asked_human", reasonAr: "طلب موظف", sms: "Fresh Cuts WhatsApp: customer needs staff" });
   assert.deepEqual(r, { sent: 3, wa: 3, sms: 0, failed: 0, to: 3 });
   assert.equal(w.calls[0].body.type, "interactive");
   for (const c of w.calls.slice(1)) {
     assert.equal(c.body.type, "template");
-    assert.deepEqual([c.body.template.name, c.body.template.language.code], ["fc_staff_team_notice", "ar"]);
-    assert.deepEqual(c.body.template.components, [{ type: "body", parameters: [{ type: "text", text: "عميل …5678 محتاج موظف (طلب موظف)" }] }]);
+    assert.deepEqual([c.body.template.name, c.body.template.language.code], ["fc_staff_wa_handoff", "ar"]);
+    assert.deepEqual(c.body.template.components[0], { type: "body", parameters: [{ type: "text", text: "طلب موظف" }, { type: "text", text: "عميل …5678" }] });
   }
   assert.deepEqual(w.db.log.map((l) => l.via), ["wa_free", "wa_template", "wa_template"]);
   assert.equal(w.sms.length, 0);
@@ -252,9 +253,12 @@ test("the guard itself: a staff template is refused for a phone that is not in t
   assert.deepEqual(await w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: "fc_staff_team_notice", staff: true }), { ok: false, reason: "not_staff" });
   assert.deepEqual(await w.wa.guardSend({ phoneNorm: OWN1, kind: "template", template: "fc_cart_1h", staff: true }), { ok: false, reason: "not_staff_template" });
   assert.deepEqual(await w.wa.guardSend({ phoneNorm: OWN1, kind: "template", template: "fc_order_preparing", staff: true }), { ok: false, reason: "not_staff_template" });
-  assert.deepEqual(await w.wa.guardSend({ phoneNorm: OWN1, kind: "template", template: "fc_staff_checkout_watchdog", staff: true }), { ok: false, reason: "not_staff_template" }, "Meta re-classed it as marketing");
+  /* UT1: قالب فريق ميتا بتحاسبه تسويق ⇒ meta_marketing (المنادي بيكمّل للقالب الخدمي اللي بعده) — الجدول الاحتياطي هنا (مفيش قراءة حيّة في الاختبار) */
+  assert.deepEqual(await w.wa.guardSend({ phoneNorm: OWN1, kind: "template", template: "fc_staff_checkout_watchdog", staff: true, lang: "ar" }), { ok: false, reason: "meta_marketing" }, "Meta re-classed the Arabic one as marketing");
+  assert.equal((await w.wa.guardSend({ phoneNorm: OWN1, kind: "template", template: "fc_staff_checkout_watchdog", staff: true, lang: "en" })).ok, true, "…and gave the English one back to UTILITY (19/10)");
+  assert.deepEqual(await w.wa.guardSend({ phoneNorm: OWN1, kind: "template", template: "fc_staff_team_notice", staff: true }), { ok: false, reason: "meta_marketing" });
   assert.deepEqual(await w.wa.guardSend({ phoneNorm: OWN1, kind: "template", template: "fc_staff_team_notice", staff: true, source: "campaign" }), { ok: false, reason: "not_staff_template" });
-  assert.equal((await w.wa.guardSend({ phoneNorm: OWN1, kind: "template", template: "fc_staff_team_notice", staff: true })).ok, true);
+  assert.equal((await w.wa.guardSend({ phoneNorm: OWN1, kind: "template", template: "fc_staff_wa_handoff", staff: true })).ok, true);
   // without the staff flag the same phone is an ordinary recipient: no opt-in ⇒ refused, as before
   assert.deepEqual(await w.wa.guardSend({ phoneNorm: OWN1, kind: "template", template: "fc_staff_team_notice" }), { ok: false, reason: "settings_off" });
   assert.deepEqual(await w.wa.sendStaffTemplate({ phoneNorm: CUST, template: "fc_staff_team_notice", data: { notice: { text: "x" } } }), { ok: false, skipped: "not_staff" });
@@ -309,7 +313,7 @@ test("keeper + quiet hours (02:00–10:00 Riyadh): hour 20 inside the quiet hour
 });
 
 test("keeper tick: the renewal goes free-form with the button once per window; a tap renews; a closed window gets the renew template once and then nothing", withEnv(OPEN, async () => {
-  const w = world({ waTeam: { members: [MEMBERS[0]], daily: { enabled: false } }, approved: ["fc_staff_alerts_renew"] });
+  const w = world({ waTeam: { members: [MEMBERS[0]], daily: { enabled: false } }, approved: ["fc_staff_alerts_renew", "fc_staff_alerts_paused"] });      // UT1: البديل الخدمي
   w.wrote(CASH1, 19.5);
   assert.deepEqual((await w.team.tick()).keeper, [], "not yet hour 20");
   w.clock.advance(31);
@@ -330,7 +334,9 @@ test("keeper tick: the renewal goes free-form with the button once per window; a
   w.clock.advance(4 * 60 + 5);
   const t = await w.team.tick();
   assert.deepEqual(t.keeper, [{ to: "…0001", action: "closed", via: "wa_template", ok: true }]);
-  assert.deepEqual([w.calls[3].body.type, w.calls[3].body.template.name, w.calls[3].body.template.language.code, w.calls[3].body.template.components], ["template", "fc_staff_alerts_renew", "ar", []]);
+  /* UT1: fc_staff_alerts_paused (دوره + الساعة اللي النافذة قفلت فيها: ضغط ١٣:٣١Z ⇒ قفلت ١٣:٣١Z بكرة = ١٦:٣١ الرياض) — مش fc_staff_alerts_renew المحسوب تسويق */
+  assert.deepEqual([w.calls[3].body.type, w.calls[3].body.template.name, w.calls[3].body.template.language.code, w.calls[3].body.template.components],
+    ["template", "fc_staff_alerts_paused", "ar", [{ type: "body", parameters: [{ type: "text", text: "الكاشير" }, { type: "text", text: "16:31" }] }]]);
   for (let i = 0; i < 5; i++) { w.clock.advance(24 * 60); await w.team.tick(); }
   assert.equal(w.calls.length, 4, "no repeats until he taps");
   assert.equal(w.sms.length, 0);
@@ -436,9 +442,10 @@ test("odd things, digest mode: nothing goes one by one; one batch every digestEv
 }));
 
 test("odd things with the window closed: the approved staff template (one line, no customer text); never by SMS unless the owner switches that on", withEnv(OPEN, async () => {
-  const w = world({ approved: ["fc_staff_team_notice"], chat: CHAT });
+  const w = world({ approved: ["fc_staff_team_notice", "fc_staff_chat_review"], chat: CHAT });      // UT1: fc_staff_chat_review (آخر ٤ أرقام + النوع)
   assert.equal(await w.team.odd({ kind: "secret", phone: CUST }), "sent");
-  assert.ok(w.calls.every((c) => c.body.type === "template" && c.body.template.components[0].parameters[0].text === "سؤال عن وصفة / مقادير / مورّد — عميل …5678"));
+  assert.ok(w.calls.length === 3 && w.calls.every((c) => c.body.type === "template" && c.body.template.name === "fc_staff_chat_review"
+    && JSON.stringify(c.body.template.components[0].parameters.map((q) => q.text)) === JSON.stringify(["5678", "سؤال عن وصفة / مقادير / مورّد"])));
   const none = world();
   assert.equal(await none.team.odd({ kind: "secret", phone: CUST }), "failed");
   assert.equal(none.sms.length + none.calls.length, 0);
@@ -513,7 +520,8 @@ test("routes: the status shows each member's window (open until … / closed sin
   assert.deepEqual([m1.phone, m1.last4, m1.role, m1.window.open, m1.window.until, m1.window.minutesLeft, m1.keeper.next, m1.keeper.why], [`0${CASH1}`, "0001", "cashier", true, "2026-10-14T10:00:00.000Z", 22 * 60, "none", "not_due"]);
   assert.deepEqual([m3.window.open, m3.window.closedSince, m3.keeper.next], [false, "2026-10-13T06:00:00.000Z", "closed"]);
   assert.deepEqual([m4.window.open, m4.window.lastInAt, m4.window.closedSince, m4.keeper.why], [false, null, null, "never_wrote"]);
-  assert.deepEqual(r.templates, { fc_staff_alerts_renew: { approved: true, source: "meta" }, fc_staff_team_notice: { approved: false, source: null }, fc_staff_wa_handoff: { approved: false, source: null }, fc_staff_sla_alert: { approved: false, source: null } });
+  assert.deepEqual(r.templates, { fc_staff_alerts_renew: { approved: true, source: "meta" }, fc_staff_team_notice: { approved: false, source: null }, fc_staff_wa_handoff: { approved: false, source: null }, fc_staff_sla_alert: { approved: false, source: null },
+    ...Object.fromEntries(T.UT1_TEMPLATES.map((n) => [n, { approved: false, source: null }])) });      // UT1: البدايل الخدمية في شاشة الفريق
   assert.deepEqual([r.odd.cap, r.odd.sentLastHour], [12, 0]); assert.equal(r.schema.oddKinds.length, 14); assert.equal(r.config.members, undefined);      // FU1: + followup_brake
   w.setOwner(false);
   const r2 = (await w.call("GET", "/api/cms/wabot/team")).body;
@@ -578,7 +586,7 @@ test("ST2 free-form payload: extra buttons come before the renew button (3 at mo
 }));
 
 /* ═══ TW1 (١٦/١٠ — عمر: «الموظف اللي مش داخل النافذة ماتبعتلوش حاجة — إشعار على البورتال بس: الكاشير على بورتال الكاشير والمدير على بورتال المدير») ═══ */
-const NOTICE_TPL = [{ name: "fc_staff_team_notice", data: { notice: { text: "سطر القالب" } } }];
+const NOTICE_TPL = [{ name: "fc_staff_chat_review", data: { chat: { ref4: "5678", reason: "سطر القالب" } } }];      // UT1: قالب خدمي (fc_staff_team_notice ميتا بتحاسبه تسويق)
 test("TW1 config: outsideWindow defaults to portal; only portal/template are accepted; reachOf says what an outside member gets", () => {
   assert.equal(T.teamConfig({}).outsideWindow, "portal");
   assert.equal(T.teamConfig({ waTeam: { members: [], outsideWindow: "template" } }).outsideWindow, "template");
@@ -596,7 +604,7 @@ test("TW1 text: the portal notice keeps the WhatsApp text (first line = title), 
   assert.ok(!n.title.includes("http") && !n.body.includes(T.PORTAL_URL));
   const k = T.portalNoticeText({ topic: "keeper", kind: "renew_closed", body: "", templates: [{ name: "fc_staff_alerts_renew", data: {} }] }, { name: "منى" });
   assert.match(k.title, /منى/); assert.match(k.body, /«تنبيهات»/);
-  assert.equal(T.portalNoticeText({ topic: "odd", body: "", templates: NOTICE_TPL }).title, "سطر القالب");
+  assert.equal(T.portalNoticeText({ topic: "odd", body: "", templates: [{ name: "fc_staff_team_notice", data: { notice: { text: "سطر القالب" } } }] }).title, "سطر القالب");
   const o = T.portalNoticeText({ topic: "odd", body: T.oddText({ kind: "complaint", phone: "512345678", detail: "الطلب وصل بارد" }) });
   assert.match(o.title, /حاجة غريبة — شكوى/); assert.match(o.body, /…5678/); assert.ok(!o.body.includes(T.INBOX_URL), "the dashboard inbox link is dropped — the chat is in the portal's WhatsApp tab");
 });
@@ -622,7 +630,7 @@ test("TW1 outside the window (default): cashier ⇒ cashier-portal notice + push
   assert.deepEqual(w.db.log.map((l) => [l.role, l.via, l.ok]), [["cashier", "portal", true], ["manager", "portal", true]]);
 }));
 test("TW1 outside the window: a handover already rings on the portal card ⇒ no extra notice, no template, no SMS; the owner (no portal) keeps the template", withEnv(OPEN, async () => {
-  const w = world({ portal: true, approved: ["fc_staff_team_notice"] });
+  const w = world({ portal: true, approved: ["fc_staff_chat_review"] });
   const cfg = T.teamConfig(w.db.settings), cash = cfg.members.find((x) => x.phone === CASH1), own = cfg.members.find((x) => x.phone === OWN1);
   const r = await w.team.sendToStaff(cfg, cash, { topic: "handover", kind: "asked_human", body: "💬 تحويل لموظف", templates: NOTICE_TPL, sms: "sms" });
   assert.deepEqual([r.ok, r.via], [true, "portal"]);
@@ -644,7 +652,7 @@ test("TW1 two cashiers outside the window in one fan-out ⇒ one notice on the c
   assert.equal(w.db.notices.length, 2, "after the dedup window it may ring again");
 }));
 test("TW1 setting «قالب واتساب»: outside the window goes back to template ⇒ SMS exactly like before", withEnv(OPEN, async () => {
-  const w = world({ portal: true, waTeam: { members: MEMBERS, outsideWindow: "template" }, approved: ["fc_staff_team_notice"] });
+  const w = world({ portal: true, waTeam: { members: MEMBERS, outsideWindow: "template" }, approved: ["fc_staff_chat_review"] });
   const cfg = T.teamConfig(w.db.settings), cash = cfg.members.find((x) => x.phone === CASH1);
   const r = await w.team.sendToStaff(cfg, cash, { topic: "odd", kind: "secret", body: "👀", templates: NOTICE_TPL, sms: null });
   assert.deepEqual([r.ok, r.via], [true, "wa_template"]); assert.equal(w.db.notices.length, 0);
@@ -711,7 +719,7 @@ test("WT2 config: «social» is a team role with its Arabic label, routed to not
   assert.deepEqual(r.schema.roles.find((x) => x.id === "social"), { id: "social", label: "سوشيال ميديا (مهام يدوية)" });
   assert.deepEqual(r.members.at(-1).topics, []); assert.equal(r.members.at(-1).roleAr, "سوشيال ميديا (مهام يدوية)");
   assert.equal(r.members.at(-1).reach, "template", "no portal for social ⇒ outside the window = the paid template path");
-  assert.equal((await w.wa.guardSend({ phoneNorm: SOC, kind: "template", template: "fc_staff_team_notice", staff: true })).ok, true);
+  assert.equal((await w.wa.guardSend({ phoneNorm: SOC, kind: "template", template: "fc_staff_task_notice", staff: true })).ok, true);      // UT1: قالب فريق خدمي
 }));
 
 test("WT2 routing: handovers, urgent handovers and odd things never reach the social member; his status says «ولا موضوع»; «ملخص» is refused for him", withEnv(OPEN, async () => {
@@ -728,12 +736,13 @@ test("WT2 routing: handovers, urgent handovers and odd things never reach the so
 }));
 
 test("WT2 keeper: the social member's window is renewed like any team member — free-form with the button at hour 20; closed ⇒ the renew template once", withEnv(OPEN, async () => {
-  const w = world({ waTeam: { members: [SOCIAL], daily: { enabled: false } }, approved: ["fc_staff_alerts_renew"] });
+  const w = world({ waTeam: { members: [SOCIAL], daily: { enabled: false } }, approved: ["fc_staff_alerts_renew", "fc_staff_alerts_paused"] });
   w.wrote(SOC, 20.1);
   assert.deepEqual((await w.team.tick()).keeper, [{ to: "…0006", action: "free", via: "wa_free", ok: true }]);
   assert.equal(w.calls[0].body.to, wa966(SOC)); assert.equal(w.calls[0].body.interactive.action.buttons[0].reply.id, "team:renew");
   w.clock.advance(5 * 60); await w.team.tick();
-  assert.equal(w.calls.length, 2); assert.equal(w.calls[1].body.template.name, "fc_staff_alerts_renew");
+  assert.equal(w.calls.length, 2); assert.equal(w.calls[1].body.template.name, "fc_staff_alerts_paused");
+  assert.equal(w.calls[1].body.template.components[0].parameters[0].text, "السوشيال ميديا", "role label without the «(مهام يدوية)» note");
 }));
 
 const send = (w, json) => w.call("POST", "/api/cms/wabot/team/send", json);
@@ -776,12 +785,16 @@ test("WT2 send, window closed: an approved team template carries ONE line (full:
   assert.equal(r.status, 409); assert.equal(r.body.error, "window_closed"); assert.equal(r.body.ok, false);
   assert.equal(x.calls.length + x.sms.length, 0);
   assert.deepEqual(x.db.log.map((l) => [l.topic, l.via, l.ok, l.error]), [["direct", "none", false, "window_closed"]]);
-  const w = world({ waTeam: { members: WITH_SOC }, approved: ["fc_staff_team_notice"] });
+  /* UT1: fc_staff_task_notice (دوره + الساعة، من غير نص المالك) — fc_staff_team_notice المعتمد بيتخطّى (ميتا بتحاسبه تسويق) */
+  const w = world({ waTeam: { members: WITH_SOC }, approved: ["fc_staff_team_notice", "fc_staff_task_notice"] });
   const task = "ارفع فيديو التيك توك بتاع النهارده\nالساعة ٨ مع الصوت الترند، وحط ستيكر التصويت على الستوري وابعتلي اللينك قبل النشر عشان أراجعه";
   const t = await send(w, { phone: `0${SOC}`, text: task });
-  assert.equal(t.status, 200); assert.deepEqual([t.body.ok, t.body.via, t.body.full], [true, "wa_template", false]); assert.match(t.body.message, /جدّد التنبيهات/);
-  const tpl = w.calls[0].body.template, line = tpl.components[0].parameters[0].text;
-  assert.equal(tpl.name, "fc_staff_team_notice"); assert.ok(line.length <= 120 && !/\n|\s{2,}/.test(line), line); assert.match(line, /^رسالة من الإدارة/);
+  assert.equal(t.status, 200); assert.deepEqual([t.body.ok, t.body.via, t.body.full], [true, "wa_template", false]); assert.match(t.body.message, /«تنبيهات»/);
+  assert.equal(w.calls.length, 1);
+  const tpl = w.calls[0].body.template;
+  assert.equal(tpl.name, "fc_staff_task_notice");
+  assert.deepEqual(tpl.components[0].parameters.map((q) => q.text), ["السوشيال ميديا", "15:00"]);      // NOON = ١٥:٠٠ الرياض
+  assert.ok(!JSON.stringify(w.calls[0].body).includes("التيك توك"), "the owner's text never goes in a paid template");
   // a cashier with the default «portal only» outside the window: the owner's direct message is NOT turned into a portal notice
   const p = world({ portal: true }); p.wrote(CASH1, 30);
   const pr = await send(p, { phone: `0${CASH1}`, text: "تعال بدري بكرة" });
