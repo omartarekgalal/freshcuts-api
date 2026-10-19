@@ -74,6 +74,7 @@ export const RENEW_TITLE = "✅ جدّد التنبيهات";            // زر
 export const RENEW_TITLE_TPL = "جدّد التنبيهات";           // زر القالب: ميتا بترفض الإيموجي في أزرار القوالب
 export const TPL_RENEW = "fc_staff_alerts_renew";
 export const TPL_NOTICE = "fc_staff_team_notice";
+export const TPL_SLA = "fc_staff_sla_alert";             // CR4 (١٩/١٠): قالب خدمي (UTILITY) برقم الطلب — تصعيد «طلب جديد ما اتقبلش» (ackescalate.js)
 export const TPL_HANDOFF = "fc_staff_wa_handoff";          // قالب قديم في الكتالوج (سبب + ملخص) — بديل للتحويلات لو الجديد لسه مااتعتمدش
 
 /* أنواع «الحاجات الغريبة» — كل نوع مفتاح لوحده (settings.waTeam.odd.kinds) */
@@ -770,7 +771,8 @@ export function register(app, ctx, deps = {}) {
       if (typeof wa.sendStaffTemplate === "function" && ["window_closed", "WA_131047"].includes(String(why))) {
         for (const t of msg.templates || []) {
           if (!(await approved(cfg, t.name))) continue;
-          const r = await wa.sendStaffTemplate({ phoneNorm: m.phone, template: t.name, data: t.data || {}, lang: "ar" });
+          /* CR4: لغة القالب من المنادي لو بعتها (ackescalate: staffSmsLanguage)، وإلا عربي زي الأول */
+          const r = await wa.sendStaffTemplate({ phoneNorm: m.phone, template: t.name, data: t.data || {}, lang: t.lang === "en" ? "en" : "ar" });
           if (r.ok) return done("wa_template", true);
           why = `template:${r.skipped || r.error || "send_failed"}`;
           break;
@@ -1263,7 +1265,7 @@ export function register(app, ctx, deps = {}) {
     const teamPayload = async ({ owner, settings = null }) => {
       const st = await status({ full: owner, settings }), cfg = st.cfg, now = clock();
       const templates = {};
-      for (const n of [TPL_RENEW, TPL_NOTICE, TPL_HANDOFF]) templates[n] = { approved: Boolean(await approved(cfg, n)), source: await approved(cfg, n) };
+      for (const n of [TPL_RENEW, TPL_NOTICE, TPL_HANDOFF, TPL_SLA]) templates[n] = { approved: Boolean(await approved(cfg, n)), source: await approved(cfg, n) };
       const hour = new Date(now.getTime() - H).toISOString(), day = new Date(now.getTime() - 24 * H).toISOString();
       const oc = await q(`SELECT count(*) FILTER (WHERE status='sent' AND sent_at > $1)::int AS sent_hour, count(*) FILTER (WHERE status='pending')::int AS pending, count(*) FILTER (WHERE status='held')::int AS held FROM wa_team_odd WHERE at > $2`, [hour, day]);
       const byKind = await q("SELECT kind, count(*)::int AS n FROM wa_team_odd WHERE at > $1 GROUP BY 1 ORDER BY 2 DESC", [day]);

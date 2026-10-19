@@ -4,8 +4,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   ackEscCfg, ACK_ESC_DEFAULTS, ackStateOf, decide, restaurantClosed, makeAckEscalator, register, SQL,
-  staffWaText, staffTplLine, staffSms, pushFor, waitAr,
+  staffWaText, staffTplLine, staffSms, pushFor, waitAr, staffSlaLine,
 } from "./ackescalate.js";
+import { TEMPLATES as WA_CATALOG, bindTemplate } from "./watemplates.js";
 import { smsInfo } from "./staffalerts.js";
 import { buildTimeline } from "./portal-core.js";
 import { ORDER_EVENTS, buildOrderEvent } from "./order-events.js";
@@ -175,8 +176,9 @@ test("إعادة حادثة W1792354906756: ٩٠ ث إشعار تاني ⇒ ١٨
     assert.equal(x.cfg.outsideWindow, "template", "برّه النافذة ⇒ القالب ثم SMS، مش «إشعار بورتال بس»");
     assert.equal(x.msg.topic, "ack_escalation"); assert.equal(x.msg.urgent, true);
     assert.ok(x.msg.body.startsWith("🔔 طلب جديد W1792354906756 ما اتقبلش من ٣ دقايق — افتح البورتال/الكاشير"), x.msg.body);
-    assert.equal(x.msg.templates[0].name, "fc_staff_team_notice");
-    assert.ok(!/\n/.test(x.msg.templates[0].data.notice.text));
+    /* CR4: القالب الخدمي fc_staff_sla_alert برقم الطلب (مش fc_staff_team_notice اللي ميتا صنّفته تسويق)، بلغة الفريق (en هنا) */
+    assert.deepEqual(x.msg.templates, [{ name: "fc_staff_sla_alert", lang: "en",
+      data: { order: { order_no: "W1792354906756" }, sla: { text: "new order not accepted for 3 min" } } }]);
     assert.equal(smsInfo(x.msg.sms).segments, 1);
   }
   assert.equal(w.pushes.length, 2); assert.equal(w.pushes[1].tag, "order-W1792354906756-esc2");
@@ -300,6 +302,33 @@ test("النصوص: SMS رسالة واحدة (عربي وإنجليزي)، سط
   assert.match(staffWaText({ ...o, table_no: 4, option: "pickup" }, 185), /طاولة 4/);
   assert.equal(waitAr(90), "دقيقتين"); assert.equal(waitAr(60), "دقيقة"); assert.equal(waitAr(720), "١٢ دقيقة");
   assert.equal(pushFor(o, 2, 185, "https://x/").tag, "order-W1792354906756-esc2");
+});
+
+test("CR4: سطر {{2}} في fc_staff_sla_alert بلغة الفريق، والقالب (UTILITY بلغتين، مجموعة الفريق) بيتملي من غير نقص", () => {
+  assert.equal(staffSlaLine(185, "ar"), "طلب جديد ما اتقبلش من ٣ دقايق");
+  assert.equal(staffSlaLine(185, "en"), "new order not accepted for 3 min");
+  assert.equal(staffSlaLine(30, "en"), "new order not accepted for 1 min");
+  for (const lang of ["ar", "en"]) {
+    const t = WA_CATALOG.find((x) => x.name === "fc_staff_sla_alert" && x.language === lang);
+    assert.ok(t, lang); assert.equal(t.category, "UTILITY"); assert.equal(t.meta.audience, "staff");
+    const r = bindTemplate(t, { order: { order_no: "W1792354906756" }, sla: { text: staffSlaLine(185, lang) } });
+    assert.deepEqual(r.missing || [], [], lang);
+    assert.deepEqual(r.body, ["W1792354906756", staffSlaLine(185, lang)]);
+    assert.ok(!/\n/.test(staffSlaLine(185, lang)));
+  }
+});
+
+test("CR4: staffSmsLanguage=ar ⇒ قالب fc_staff_sla_alert بالعربي وسطره بالعربي؛ الرسالة الحرة والـSMS زي ما هم", async () => {
+  const w = world({ settings: { ...SETTINGS(), delivery: { ...SETTINGS().delivery, staffSmsLanguage: "ar" } } });
+  w.pool.orders.set("W1792354906756", INCIDENT());
+  w.at(185); await w.esc.tick();
+  assert.equal(w.staff.length, 2);
+  for (const x of w.staff) {
+    assert.deepEqual(x.msg.templates, [{ name: "fc_staff_sla_alert", lang: "ar",
+      data: { order: { order_no: "W1792354906756" }, sla: { text: "طلب جديد ما اتقبلش من ٣ دقايق" } } }]);
+    assert.equal(x.msg.body, staffWaText(INCIDENT(), 185));
+    assert.equal(x.msg.sms, staffSms(INCIDENT(), 185, "ar", 2));
+  }
 });
 
 /* ── التايملاين والأحداث ── */

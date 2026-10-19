@@ -49,7 +49,10 @@ export const CART_DEFAULTS = {
   sms2Enabled: true,
   sms2Hour: 17,              // تاني يوم من الساعة دي (الرياض)
   sms2MinSubtotal: 60,       // خطوة ٢ للسلة اللي تستاهل بس
-  cooldownDays: 7,           // فلو واحد لكل جوال
+  cooldownDays: 7,           // CR4: طول نافذة السقف بالأيام (كان: فلو واحد لكل جوال)
+  /* CR4 (عمر ١٩/١٠: «خلي السلات تاخد رسالتين ف الاسبوع ولو اشترى ميجلوش رسالة تاني غير لو عمل سلة في جلسة جديدة»):
+     أقصى رسايل سلة (واتساب + SMS بس — الإشعار ببلاش ومش محسوب) للجوال الواحد في آخر cooldownDays يوم، قبل خطوة ١ وقبل خطوة ٢. */
+  maxPerWeek: 2,
   minSubtotal: 0,
   autoFirst: true,           // FIRST (توصيل مجاني) لو مالوش طلب أونلاين مدفوع
   requireVerifiedPhone: true,// جوال اتأكد بـOTP أو عنده حساب — مش رقم مكتوب غلط
@@ -87,6 +90,8 @@ export const CART_FIELDS = Object.freeze({
   waTemplate2First: { ar: "قالب الخطوة التانية (أول طلب)", hint: "فيه كود FIRST وحدّه الأدنى من الكوبونات", type: "template" },
   waText1: { ar: "نص الرسالة الحرة — الخطوة الأولى", hint: "فاضي = النص الافتراضي؛ رابط السلة بيتحط آخره لوحده", type: "text", max: 300 },
   waText2: { ar: "نص الرسالة الحرة — الخطوة التانية", hint: "فاضي = النص الافتراضي؛ رابط السلة بيتحط آخره لوحده", type: "text", max: 300 },
+  maxPerWeek: { ar: "أقصى رسايل للعميل في الأسبوع", hint: "رسايل السلة (واتساب + SMS) للجوال الواحد في آخر «مدة السقف» يوم — الإشعار ببلاش ومش محسوب. اشترى ⇒ مفيش رسايل تانية للسلة دي", type: "int", min: 1, max: 10 },
+  cooldownDays: { ar: "مدة سقف الرسايل (يوم)", hint: "النافذة اللي بيتعدّ فيها «أقصى رسايل للعميل» — ٧ = أسبوع", type: "int", min: 1, max: 60 },
   smsFallback: { ar: "SMS بديل لو واتساب ماينفعش", hint: "مش على واتساب / القالب مش معتمد / سقف ميتا — ومحتاج مفتاح «رسايل SMS» شغّال", type: "bool" },
 });
 const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
@@ -100,6 +105,7 @@ export function cartCfg(settings) {
     sms2Enabled: bool("sms2Enabled"), sms2Hour: Math.round(clampN(x.sms2Hour, 12, 21, 17)),
     sms2MinSubtotal: clampN(x.sms2MinSubtotal, 0, 10000, 60),
     cooldownDays: Math.round(clampN(x.cooldownDays, 1, 60, 7)),
+    maxPerWeek: Math.round(clampN(x.maxPerWeek, 1, 10, 2)),
     minSubtotal: clampN(x.minSubtotal, 0, 10000, 0),
     autoFirst: bool("autoFirst"), requireVerifiedPhone: bool("requireVerifiedPhone"), respectOpenHours: bool("respectOpenHours"),
     waEnabled: bool("waEnabled"), waInWindowText: bool("waInWindowText"),
@@ -369,7 +375,8 @@ export function register(app, ctx, deps = {}) {
                          بيرجّع نفس السلة بالظبط + FIRST لو أول طلب أونلاين.
        خطوة ٢ (تاني يوم ١٧:٠٠): SMS بس لو السلة ≥ ٦٠ ر.س ولسه ماطلبش.
      ممنوع في ساعات الهدوء (٢٢–١٢) — خطوة ١ اللي فاتها ميعادها بتتنط لخطوة ٢.
-     فلو واحد بس لكل جوال كل ٧ أيام، بيقف فوراً لو طلب، والإيقاف /u/ محترم.
+     CR4 (١٩/١٠): بدل «فلو واحد لكل جوال كل ٧ أيام» ⇒ سقف رسايل للجوال (maxPerWeek=٢ واتساب/SMS في آخر cooldownDays يوم)
+     بيتشيّك قبل خطوة ١ وقبل خطوة ٢. بيقف فوراً لو طلب (markOrdered + orderedSince)، والإيقاف /u/ محترم.
      كل الأرقام من settings.abandonedCarts (بتتعدّل من اللوحة).
 
      الباج القديم: السطر بتاع «sms1_skipped» كان بيتضاف كل ٥ دقايق لنفس الصف
@@ -476,6 +483,8 @@ export function register(app, ctx, deps = {}) {
       const ok = await notify.sendToAudience({ phoneNorm: pn, deviceId: row.device_id, ...m, url: `https://${link}?s=push`, stage: "cart_recovery" }).catch(() => false);
       if (ok) return { channel: "push" };
     }
+    /* CR4: الإشعار فوق ببلاش ومش محسوب؛ واتساب والـSMS محسوبين ⇒ السقف مليان = سكوت (نهائي للسلة دي) */
+    if (ctx.capReached) return { channel: null, reason: "weekly_cap" };
     /* CR3: واتساب قبل الـSMS. الـSMS بعده بس لو واتساب مايقدرش يوصل (smsAfterWa) ومفتاح البديل شغّال. */
     let waNote = null;
     if (cfg.waEnabled !== false && waOf()) {
@@ -558,14 +567,16 @@ export function register(app, ctx, deps = {}) {
       if (ageMin > cfg.sms1AfterMinutes + cfg.sms1WindowMinutes) {
         await mark(row.device_id, -2, "step1_window_missed"); out.skipped++; continue; // خطوة ٢ ممكن تلحقه
       }
-      if (await inCooldown(row.phone_norm, cfg.cooldownDays, now)) { await mark(row.device_id, -1, "cooldown"); out.skipped++; continue; }
+      /* CR4: السقف مليان والإشعار مش ممكن ⇒ من غير فلو. -1 = خلصت (مفيش خطوة ٢ للسلة دي) */
+      const capReached = (await capUsed(row.phone_norm, cfg.cooldownDays, now)) >= cfg.maxPerWeek;
+      if (capReached && !(cfgNow.pushEnabled !== false && notify)) { await mark(row.device_id, -1, "weekly_cap"); out.skipped++; continue; }
       const flow = await createFlow(row);
-      const res = await sendStep(row, 1, cfgNow, s, flow, ctx);
+      const res = await sendStep(row, 1, cfgNow, s, flow, { ...ctx, capReached });
       if (!res.channel) {
         await pool.query("DELETE FROM cart_recovery WHERE id=$1", [flow.id]); // مااتبعتش حاجة = مايستهلكش الـ٧ أيام
         // CR3: سبب مؤقت (هدوء العميل / ساعات الـSMS) ⇒ السلة تفضل rec_step=0 وتتعاد الدورة الجاية لحد ما نافذتها تقفل
         if (res.retry) { await pool.query("UPDATE shop_carts SET rec_note=$2 WHERE device_id=$1", [row.device_id, res.reason]); out.skipped++; continue; }
-        await mark(row.device_id, -2, res.reason); out.skipped++; continue;
+        await mark(row.device_id, res.reason === "weekly_cap" ? -1 : -2, res.reason); out.skipped++; continue;
       }
       await pool.query(
         `UPDATE cart_recovery SET step1_channel=$2, step1_at=NOW(), step1_msg_id=$3, step1_cost=$4 WHERE id=$1`,
@@ -588,11 +599,10 @@ export function register(app, ctx, deps = {}) {
       for (const row of s2) {
         const paid = await orderedSince(row.phone_norm, new Date(new Date(row.updated_at).getTime() - 30 * 60000));
         if (paid) { await mark(row.device_id, 9, "ordered"); out.skipped++; continue; }
+        /* CR4: خطوة ٢ كانت بتكمّل الفلو من غير أي تشييك — دلوقتي نفس السقف (واتساب/SMS للجوال في آخر cooldownDays يوم) */
+        if ((await capUsed(row.phone_norm, cfg.cooldownDays, now)) >= cfg.maxPerWeek) { await mark(row.device_id, -3, "weekly_cap"); out.skipped++; continue; }
         let flow = row.rec_flow && row.flow_code ? { id: row.rec_flow, code: row.flow_code } : null;
-        if (!flow) {
-          if (await inCooldown(row.phone_norm, cfg.cooldownDays, now)) { await mark(row.device_id, -1, "cooldown"); out.skipped++; continue; }
-          flow = await createFlow(row);
-        }
+        if (!flow) flow = await createFlow(row);
         const res = await sendStep(row, 2, cfgNow, s, flow, ctx);
         if (!res.channel) {
           if (!row.rec_flow) await pool.query("DELETE FROM cart_recovery WHERE id=$1", [flow.id]);
@@ -610,11 +620,15 @@ export function register(app, ctx, deps = {}) {
     return out;
   }
 
-  async function inCooldown(pn, days, now) {
+  /* CR4: كام رسالة سلة (واتساب أو SMS — الإشعار مش محسوب) وصلت الجوال ده في آخر days يوم، من الخطوتين.
+     روابط «نبّهني لما تفتحوا» (createRestoreFlow) مالهاش step channel ⇒ مش محسوبة. */
+  async function capUsed(pn, days, now) {
     const r = await pool.query(
-      `SELECT 1 FROM cart_recovery WHERE phone_norm=$1 AND started_at > $2::timestamptz - ($3 || ' days')::interval LIMIT 1`,
+      `/*cr4:cap*/ SELECT (count(*) FILTER (WHERE step1_channel IN ('whatsapp','sms') AND step1_at > $2::timestamptz - ($3 || ' days')::interval)
+            + count(*) FILTER (WHERE step2_channel IN ('whatsapp','sms') AND step2_at > $2::timestamptz - ($3 || ' days')::interval))::int AS n
+         FROM cart_recovery WHERE phone_norm=$1 AND started_at > $2::timestamptz - ($3 || ' days')::interval - INTERVAL '3 days'`,
       [pn, now.toISOString(), String(days)]);
-    return r.rowCount > 0;
+    return Number(r.rows && r.rows[0] && r.rows[0].n) || 0;
   }
   async function createFlow(row) {
     for (let i = 0; i < 5; i++) {

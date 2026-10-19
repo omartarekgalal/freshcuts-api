@@ -9,7 +9,7 @@
    السلّم (لكل طلب أونلاين مدفوع، سلسلة واحدة):
      ١) escalateAfterSec (٩٠ ث) من الدفع ومحدش شاف/قبل ⇒ إشعار بوابة تاني بـtag مختلف (order-W…-esc1) + renotify ⇒ بيظهر ويرنّ تاني.
      ٢) step2AfterSec (١٨٠ ث) ⇒ واتساب للكاشير والمدير من دليل الفريق (wateam.sendToStaff: رسالة حرة جوّه نافذة الـ٢٤ ساعة ⇒
-        قالب الفريق المعتمد fc_staff_team_notice ⇒ SMS). **مش** «إشعار بورتال بس» (TW1) — البوابة نفسها هي اللي واقعة. + إشعار بوابة تاني.
+        قالب الفريق الخدمي fc_staff_sla_alert (CR4 ١٩/١٠: بدل fc_staff_team_notice اللي ميتا صنّفته تسويق) ⇒ SMS). **مش** «إشعار بورتال بس» (TW1) — البوابة نفسها هي اللي واقعة. + إشعار بوابة تاني.
      ٣) step3AfterSec (٣٦٠ ث) ⇒ SMS للمدير والمالك (دليل الفريق) + أرقام الإنذارات الحرجة (settings.delivery.alertPhones، staffalerts.js). + إشعار بوابة.
    بيقف أول ما: «شفته» على البوابة (portal_ack_at) · القبول على نقطة البيع (accepted_at / الحالة اتحركت / آخر approval في tsp_webhooks
    أو pos_approval «accept…/preparing/ready») · الإلغاء/الرفض/الاسترجاع. وقفة بعد خطوة واحدة على الأقل بتتسجّل («اتقبل بعد X»).
@@ -20,7 +20,7 @@
    - الإعدادات كلها من اللوحة: settings.delivery.ackEscalation (لوحة التوصيل ← «تنبيهات ومسؤولين») — deliverycontrol.js.
 ═══════════════════════════════════════════════════════════════════════════ */
 import { pushPayload } from "./portal-core.js";
-import { teamConfig, PORTAL_URL, TPL_NOTICE } from "./wateam.js";
+import { teamConfig, PORTAL_URL, TPL_SLA } from "./wateam.js";
 import { staffConfig, staffPhones, fitOneSms } from "./staffalerts.js";
 import { isRestaurantOpenAt, hoursKnown } from "./sendhours.js";
 import { PAID_AT, PAID_JOIN } from "./staffkpi.js";
@@ -135,6 +135,12 @@ export function staffWaText(o, sec) {
 }
 /* سطر القالب (≤١٢٠ من غير سطر جديد ولا إيموجي) */
 export const staffTplLine = (o, sec) => `طلب جديد ${o.order_no} ما اتقبلش من ${waitAr(sec)} - افتح البورتال/الكاشير`.slice(0, 120);
+/* CR4 (١٩/١٠): متغيّر {{2}} في قالب fc_staff_sla_alert (UTILITY معتمد) بلغة الفريق (staffSmsLanguage) — {{1}} = رقم الطلب.
+   عربي: «الطلب W… يحتاج تدخل الحين: طلب جديد ما اتقبلش من ٣ دقايق. افتح البورتال وتابعه.» */
+export const staffSlaLine = (sec, lang = "ar") => {
+  const m = Math.max(1, Math.round(sec / 60));
+  return lang === "en" ? `new order not accepted for ${m} min` : `طلب جديد ما اتقبلش من ${waitAr(sec)}`;
+};
 export function staffSms(o, sec, lang = "en", step = 2) {
   const m = Math.max(1, Math.round(sec / 60));
   if (lang === "ar") return fitOneSms(step >= 3 ? `فريش كاتس عاجل: طلب ${o.order_no} ماتقبلش من ${m}د - كلم الكاشير` : `فريش كاتس: طلب ${o.order_no} ماتقبلش من ${m}د - افتح البورتال/الكاشير`);
@@ -237,7 +243,7 @@ export function makeAckEscalator({ pool, getSettingsData, push = () => null, tea
     const forced = { ...tc, outsideWindow: "template" };
     const lang = staffConfig(settings).lang;
     const msg = { topic: "ack_escalation", kind: "step2", body: staffWaText(o, sec), button: false, urgent: true, ref4: String(o.order_no).slice(-4),
-      templates: [{ name: TPL_NOTICE, data: { notice: { text: staffTplLine(o, sec) } } }],
+      templates: [{ name: TPL_SLA, lang, data: { order: { order_no: String(o.order_no) }, sla: { text: staffSlaLine(sec, lang) } } }],
       sms: staffSms(o, sec, lang, 2), smsRef: `ack-esc2 ${o.order_no}` };
     for (const m of members) {
       let r;

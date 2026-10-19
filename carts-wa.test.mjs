@@ -288,3 +288,211 @@ test("اللوحة: GET بيرجّع التسميات وقوالب السلة، 
   assert.equal(r.config.waTemplate1, "fc_cart_1h", "قالب مش للسلة بيترفض للافتراضي");
   assert.equal(r.config.smsFallback, false);
 });
+
+/* ══ CR4 (عمر ١٩/١٠: «خلي السلات تاخد رسالتين ف الاسبوع ولو اشترى ميجلوش رسالة تاني غير لو عمل سلة في جلسة جديدة») ══
+   محاكاة صغيرة بالذاكرة لجداول shop_carts / cart_recovery / shop_orders — نفس الاستعلامات اللي carts.js بيبعتها،
+   عشان نمشي أسبوع كامل: لقطات من المتجر ⇒ دورات الحارس ⇒ طلب ⇒ سلة جديدة. أرقام وهمية، مفيش شبكة. */
+const RIYADH_DAY = (d) => new Date(new Date(d).getTime() + 3 * 3600_000).toISOString().slice(0, 10);
+function sim({ settings = {}, push = false } = {}) {
+  const st = { carts: new Map(), flows: [], orders: [], now: riyadh(18, 12), wa: [], pushes: 0, seq: 0 };
+  const T = (v) => new Date(v).getTime();
+  const pool = {
+    query: async (sql, p = []) => {
+      const s = String(sql), now = st.now;
+      if (s.includes("INSERT INTO shop_carts")) {
+        const [device, phone, stage] = p, ex = st.carts.get(device);
+        const base = ex || { device_id: device, rec_step: 0, rec_flow: null, rec_note: null, recovered_order: null, items: [], cart_raw: null };
+        if (ex && ex.recovered_order && stage !== "ordered") Object.assign(base, { rec_step: 0, rec_flow: null, recovered_order: null });
+        Object.assign(base, { phone_norm: phone || base.phone_norm || null, stage, item_count: p[4], subtotal: p[5], option: p[6], updated_at: now.toISOString() });
+        st.carts.set(device, base);
+        return { rows: [], rowCount: 1 };
+      }
+      if (s.includes("FROM shop_carts c") && s.includes("c.rec_step = 0")) {
+        const rows = [...st.carts.values()].filter((c) => !c.recovered_order && c.item_count > 0 && c.phone_norm && c.rec_step === 0 && c.subtotal >= p[0]
+          && T(c.updated_at) < T(p[1]) - Number(p[2]) * 60000 && T(c.updated_at) > T(p[1]) - 3 * 86400000);
+        return { rows: rows.map((c) => ({ ...c })), rowCount: rows.length };
+      }
+      if (s.includes("FROM shop_carts c") && s.includes("c.rec_step IN (1, -2)")) {
+        const rows = [...st.carts.values()].filter((c) => !c.recovered_order && c.item_count > 0 && c.phone_norm && [1, -2].includes(c.rec_step) && c.subtotal >= p[0]
+          && RIYADH_DAY(T(c.updated_at) + 86400000) === p[1]);
+        return { rows: rows.map((c) => ({ ...c, flow_code: (st.flows.find((f) => f.id === c.rec_flow) || {}).code || null })), rowCount: rows.length };
+      }
+      if (s.includes("FROM shop_orders WHERE phone_norm=$1 AND")) {
+        const r = st.orders.filter((o) => o.phone === p[0] && T(o.created_at) > T(p[1]));
+        return { rows: r.slice(0, 1).map((o) => ({ order_no: o.no, total: 100 })), rowCount: r.length ? 1 : 0 };
+      }
+      if (s.includes("INSERT INTO cart_recovery")) { const f = { id: ++st.seq, code: p[0], phone: p[1], device: p[2], started_at: now.toISOString() }; st.flows.push(f); return { rows: [{ id: f.id, code: f.code }], rowCount: 1 }; }
+      if (s.includes("DELETE FROM cart_recovery")) { st.flows = st.flows.filter((f) => f.id !== p[0]); return { rows: [], rowCount: 1 }; }
+      if (s.includes("UPDATE cart_recovery SET step1_channel")) { Object.assign(st.flows.find((f) => f.id === p[0]), { step1_channel: p[1], step1_at: now.toISOString() }); return { rows: [], rowCount: 1 }; }
+      if (s.includes("UPDATE cart_recovery SET step2_channel")) { Object.assign(st.flows.find((f) => f.id === p[0]), { step2_channel: p[1], step2_at: now.toISOString() }); return { rows: [], rowCount: 1 }; }
+      if (s.includes("UPDATE shop_carts SET rec_step")) { const c = st.carts.get(p[0]); Object.assign(c, { rec_step: p[1], rec_note: p[2], rec_flow: p[3] || c.rec_flow }); return { rows: [], rowCount: 1 }; }
+      if (s.includes("UPDATE shop_carts SET rec_note")) { st.carts.get(p[0]).rec_note = p[1]; return { rows: [], rowCount: 1 }; }
+      if (s.includes("UPDATE shop_carts SET stage='ordered'")) {
+        let n = 0;
+        for (const c of st.carts.values()) if ((c.device_id === p[1] || (c.phone_norm && c.phone_norm === p[0])) && !c.recovered_order) {
+          Object.assign(c, { stage: "ordered", recovered_order: p[2], updated_at: now.toISOString() }); n++;
+        }
+        return { rows: [], rowCount: n };
+      }
+      if (s.includes("/*cr4:cap*/")) {
+        const from = T(p[1]) - Number(p[2]) * 86400000;
+        let n = 0;
+        for (const f of st.flows.filter((x) => x.phone === p[0])) {
+          if (["whatsapp", "sms"].includes(f.step1_channel) && T(f.step1_at) > from) n++;
+          if (["whatsapp", "sms"].includes(f.step2_channel) && T(f.step2_at) > from) n++;
+        }
+        return { rows: [{ n }], rowCount: 1 };
+      }
+      if (s.includes("FROM wa_optins WHERE phone_norm=$1 AND (stopped_at")) return { rows: [{ stopped: false }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    },
+  };
+  const fakeWa = {
+    sendFreeform: async () => ({ ok: false, skipped: "window_closed" }),
+    sendTemplate: async (a) => { st.wa.push({ at: st.now.toISOString(), template: a.template, phone: a.phoneNorm }); return { ok: true, wamid: "wamid.CR4" }; },
+    templateStatusOf: async () => "APPROVED",
+  };
+  const notify = { sendToAudience: async () => { st.pushes++; return push; } };
+  const app = new Hono();
+  const ctx = { pool, requireAdmin: async () => null, getSettingsData: async () => settings, jb: (v) => JSON.stringify(v),
+    normPhone: (v) => String(v || "").replace(/\D/g, "").replace(/^(966|0)/, "") };
+  const api = register(app, ctx, { notify, wa: () => fakeWa });
+  const at = (d) => { st.now = d; };
+  const snap = async (deviceId, stage = "cart", subtotal = 95) => {
+    const r = await app.request("/api/carts/snapshot", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deviceId, phone: "0" + PHONE, stage, subtotal, items: [{ id: 1, name: "مشكل", qty: 2, price: subtotal / 2 }] }) });
+    assert.equal(r.status, 200);
+  };
+  const tick = () => api.runRecovery(st.now);
+  const order = async (deviceId, no) => { st.orders.push({ phone: PHONE, no, created_at: st.now.toISOString() }); await api.markOrdered({ phoneNorm: PHONE, deviceId, orderNo: no }); };
+  return { st, api, app, at, snap, tick, order, cart: (d) => st.carts.get(d) };
+}
+
+test("CR4 الإعداد: maxPerWeek افتراضي ٢ (من ١ لـ١٠) وليه تسمية عربي في اللوحة، والـGET بيرجّعه والـPUT بيحفظه", async () => {
+  assert.equal(CART_DEFAULTS.maxPerWeek, 2);
+  assert.equal(cartCfg({}).maxPerWeek, 2);
+  assert.equal(cartCfg({ abandonedCarts: { maxPerWeek: 0 } }).maxPerWeek, 1);
+  assert.equal(cartCfg({ abandonedCarts: { maxPerWeek: 99 } }).maxPerWeek, 10);
+  assert.equal(cartCfg({ abandonedCarts: { maxPerWeek: "x" } }).maxPerWeek, 2);
+  assert.deepEqual(CART_FIELDS.maxPerWeek && [CART_FIELDS.maxPerWeek.type, CART_FIELDS.maxPerWeek.min, CART_FIELDS.maxPerWeek.max], ["int", 1, 10]);
+  assert.match(CART_FIELDS.maxPerWeek.ar, /أقصى رسايل للعميل في الأسبوع/);
+  assert.match(CART_FIELDS.maxPerWeek.hint, /الإشعار/, "الهينت بيقول إن الإشعار مش محسوب");
+  const { app } = setup({ settings: { abandonedCarts: { maxPerWeek: 3 } } });
+  const g = await (await app.request("/api/carts/recovery")).json();
+  assert.equal(g.config.maxPerWeek, 3);
+  assert.equal(g.defaults.maxPerWeek, 2);
+  assert.ok(g.fields.maxPerWeek.ar);
+  const r = await (await app.request("/api/carts/recovery", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxPerWeek: 1 }) })).json();
+  assert.equal(r.config.maxPerWeek, 1);
+});
+
+test("CR4: سلتين في نفس الأسبوع (جهازين، نفس الجوال) ⇒ رسالتين بالكتير؛ التالتة لأ؛ وبعد ما الأسبوع يعدّي السلة الجديدة تاخد تاني", async () => {
+  const w = sim();
+  w.at(riyadh(18, 13)); await w.snap("dev-cr4-aaaa"); await w.snap("dev-cr4-bbbb");
+  w.at(riyadh(18, 14)); await w.tick();
+  assert.equal(w.st.wa.length, 2, "خطوة ١ للسلتين");
+  w.at(riyadh(19, 17, 30)); const o2 = await w.tick();
+  assert.equal(o2.step2, 0);
+  assert.equal(w.st.wa.length, 2, "خطوة ٢ اتمنعت للاتنين (السقف)");
+  assert.deepEqual([w.cart("dev-cr4-aaaa").rec_step, w.cart("dev-cr4-aaaa").rec_note], [-3, "weekly_cap"]);
+  w.at(riyadh(20, 13)); await w.snap("dev-cr4-cccc");
+  w.at(riyadh(20, 14)); await w.tick();
+  assert.equal(w.st.wa.length, 2, "سلة تالتة في نفس الأسبوع ⇒ سكوت");
+  assert.deepEqual([w.cart("dev-cr4-cccc").rec_step, w.cart("dev-cr4-cccc").rec_note], [-1, "weekly_cap"], "-1 = خلصت، مفيش خطوة ٢");
+  assert.equal(w.st.flows.length, 2, "مفيش فلو اتعمل للسلة الممنوعة (والإشعار اتجرّب ورجع لأ)");
+  w.at(riyadh(25, 13)); await w.snap("dev-cr4-dddd");
+  w.at(riyadh(25, 14, 30)); await w.tick();
+  assert.equal(w.st.wa.length, 3, "بعد ٧ أيام من أول رسالتين ⇒ السلة الجديدة تاخد");
+});
+
+test("CR4: خطوة ٢ بتتمنع لما السقف يتملي (maxPerWeek=١)، وبالافتراضي (٢) بتطلع", async () => {
+  const one = sim({ settings: { abandonedCarts: { maxPerWeek: 1 } } });
+  one.at(riyadh(18, 13)); await one.snap("dev-cr4-aaaa");
+  one.at(riyadh(18, 14)); await one.tick();
+  one.at(riyadh(19, 17, 30)); await one.tick();
+  assert.deepEqual(one.st.wa.map((x) => x.template), ["fc_cart_1h"]);
+  assert.deepEqual([one.cart("dev-cr4-aaaa").rec_step, one.cart("dev-cr4-aaaa").rec_note], [-3, "weekly_cap"]);
+  const two = sim();
+  two.at(riyadh(18, 13)); await two.snap("dev-cr4-aaaa");
+  two.at(riyadh(18, 14)); await two.tick();
+  two.at(riyadh(19, 17, 30)); await two.tick();
+  assert.deepEqual(two.st.wa.map((x) => x.template), ["fc_cart_1h", "fc_cart_24h"]);
+});
+
+test("CR4: الإشعار مش محسوب — السقف مليان والعميل مشترك ⇒ الإشعار بيطلع، وخطوة ٢ (واتساب) لأ؛ مش مشترك ⇒ ولا حاجة", async () => {
+  const prior = (w) => { for (const id of [901, 902]) w.st.flows.push({ id, code: "old" + id, phone: PHONE, started_at: riyadh(17, 14).toISOString(), step1_channel: "whatsapp", step1_at: riyadh(17, 14).toISOString() }); };
+  const p = sim({ push: true }); prior(p);
+  p.at(riyadh(18, 13)); await p.snap("dev-cr4-aaaa");
+  p.at(riyadh(18, 14)); const o = await p.tick();
+  assert.equal(o.step1, 1); assert.equal(p.st.pushes, 1); assert.equal(p.st.wa.length, 0);
+  p.at(riyadh(19, 17, 30)); await p.tick();
+  assert.equal(p.st.wa.length, 0, "خطوة ٢ واتساب ⇒ السقف");
+  assert.equal(p.cart("dev-cr4-aaaa").rec_note, "weekly_cap");
+  const n = sim({ push: false }); prior(n);
+  n.at(riyadh(18, 13)); await n.snap("dev-cr4-aaaa");
+  n.at(riyadh(18, 14)); await n.tick();
+  assert.equal(n.st.pushes, 1, "الإشعار اتجرّب (ببلاش)"); assert.equal(n.st.wa.length, 0);
+  assert.deepEqual([n.cart("dev-cr4-aaaa").rec_step, n.cart("dev-cr4-aaaa").rec_note], [-1, "weekly_cap"]);
+  assert.equal(n.st.flows.length, 2, "الفلو اللي اتعمل للمحاولة اتمسح");
+  // الإشعار مقفول من اللوحة ⇒ مفيش فلو أصلاً
+  const off = sim({ settings: { abandonedCarts: { pushEnabled: false } } }); prior(off);
+  off.at(riyadh(18, 13)); await off.snap("dev-cr4-aaaa");
+  off.at(riyadh(18, 14)); await off.tick();
+  assert.equal(off.st.pushes, 0); assert.equal(off.st.flows.length, 2);
+});
+
+test("CR4: الشراء بيوقف خطوة ٢ (markOrdered بيقفل السلة، ولو ماتنداش orderedSince بيمسكها)", async () => {
+  const w = sim();
+  w.at(riyadh(18, 13)); await w.snap("dev-cr4-aaaa");
+  w.at(riyadh(18, 14)); await w.tick();
+  w.at(riyadh(18, 15)); await w.order("dev-cr4-aaaa", "W100");
+  assert.equal(w.cart("dev-cr4-aaaa").recovered_order, "W100");
+  w.at(riyadh(19, 17, 30)); const o = await w.tick();
+  assert.equal(o.step2, 0); assert.equal(w.st.wa.length, 1, "رسالة خطوة ١ بس");
+  // markOrdered ماوصلش (طلب من مسار تاني) ⇒ orderedSince ⇒ rec_step 9
+  const x = sim();
+  x.at(riyadh(18, 13)); await x.snap("dev-cr4-aaaa");
+  x.at(riyadh(18, 14)); await x.tick();
+  x.at(riyadh(18, 15)); x.st.orders.push({ phone: PHONE, no: "W200", created_at: x.st.now.toISOString() });
+  x.at(riyadh(19, 17, 30)); await x.tick();
+  assert.equal(x.st.wa.length, 1);
+  assert.deepEqual([x.cart("dev-cr4-aaaa").rec_step, x.cart("dev-cr4-aaaa").rec_note], [9, "ordered"]);
+});
+
+test("CR4: بعد الشراء — سلة قديمة على جهاز تاني مابتاخدش رسالة؛ سلة جديدة (لقطة بعد الطلب) بس هي اللي ترجع، وتحت السقف", async () => {
+  const w = sim();
+  w.at(riyadh(18, 13)); await w.snap("dev-cr4-aaaa");
+  w.at(riyadh(18, 14)); await w.tick();
+  assert.equal(w.st.wa.length, 1);
+  w.at(riyadh(18, 14, 10)); await w.snap("dev-cr4-bbbb");           // سلة على جهاز تاني بنفس الجوال
+  w.at(riyadh(18, 14, 20)); await w.order("dev-cr4-aaaa", "W300");  // اشترى من الجهاز الأول
+  assert.equal(w.cart("dev-cr4-bbbb").recovered_order, "W300", "markOrdered قفل كل سلات الجوال");
+  w.at(riyadh(18, 16)); await w.tick();
+  w.at(riyadh(19, 17, 30)); await w.tick();
+  assert.equal(w.st.wa.length, 1, "السلة القديمة ماخدتش ولا خطوة ١ ولا ٢");
+  // سلة جديدة في جلسة جديدة على الجهاز الأول ⇒ اللقطة بتصفّر rec_step ⇒ مؤهلة (الرسالة التانية في الأسبوع)
+  w.at(riyadh(20, 13)); await w.snap("dev-cr4-aaaa");
+  assert.deepEqual([w.cart("dev-cr4-aaaa").rec_step, w.cart("dev-cr4-aaaa").recovered_order], [0, null]);
+  w.at(riyadh(20, 14)); await w.tick();
+  assert.equal(w.st.wa.length, 2);
+  w.at(riyadh(21, 17, 30)); await w.tick();
+  assert.equal(w.st.wa.length, 2, "خطوة ٢ للسلة الجديدة ⇒ السقف (٢ في الأسبوع)");
+  // لقطة «ordered» بعد الطلب مابتفتحش السلة
+  const y = sim();
+  y.at(riyadh(18, 13)); await y.snap("dev-cr4-aaaa");
+  y.at(riyadh(18, 13, 20)); await y.order("dev-cr4-aaaa", "W400");
+  y.at(riyadh(18, 13, 21)); await y.snap("dev-cr4-aaaa", "ordered");
+  y.at(riyadh(18, 15)); await y.tick();
+  assert.equal(y.st.wa.length, 0);
+  assert.equal(y.cart("dev-cr4-aaaa").recovered_order, "W400");
+});
+
+test("CR4: الطريق الوحيد لرجوع سلة لـrec_step=0 هو اللقطة (upsert لما recovered_order موجود والمرحلة مش ordered)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(new URL("./carts.js", import.meta.url), "utf8");
+  // كل كتابة في rec_step: يا الـupsert (CASE) يا mark() بـ$2 — مفيش «SET rec_step=0» في أي حتة
+  const writes = (src.match(/SET[^`"]*?rec_step\s*=\s*[^,\s]+|rec_step\s*=\s*CASE/g) || []).map((x) => x.replace(/^SET[^]*?rec_step/, "SET rec_step").replace(/\s+/g, " "));
+  assert.deepEqual(writes, ["SET rec_step = CASE", "SET rec_step=$2"], writes.join(" | "));
+  assert.match(src, /rec_step = CASE WHEN EXCLUDED\.stage <> 'ordered' AND shop_carts\.recovered_order IS NOT NULL\s+THEN 0 ELSE shop_carts\.rec_step END/);
+  for (const m of src.matchAll(/mark\(row\.device_id,\s*([^,]+),/g)) assert.notEqual(m[1].trim(), "0", m[0]);
+});

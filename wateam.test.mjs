@@ -513,7 +513,7 @@ test("routes: the status shows each member's window (open until … / closed sin
   assert.deepEqual([m1.phone, m1.last4, m1.role, m1.window.open, m1.window.until, m1.window.minutesLeft, m1.keeper.next, m1.keeper.why], [`0${CASH1}`, "0001", "cashier", true, "2026-10-14T10:00:00.000Z", 22 * 60, "none", "not_due"]);
   assert.deepEqual([m3.window.open, m3.window.closedSince, m3.keeper.next], [false, "2026-10-13T06:00:00.000Z", "closed"]);
   assert.deepEqual([m4.window.open, m4.window.lastInAt, m4.window.closedSince, m4.keeper.why], [false, null, null, "never_wrote"]);
-  assert.deepEqual(r.templates, { fc_staff_alerts_renew: { approved: true, source: "meta" }, fc_staff_team_notice: { approved: false, source: null }, fc_staff_wa_handoff: { approved: false, source: null } });
+  assert.deepEqual(r.templates, { fc_staff_alerts_renew: { approved: true, source: "meta" }, fc_staff_team_notice: { approved: false, source: null }, fc_staff_wa_handoff: { approved: false, source: null }, fc_staff_sla_alert: { approved: false, source: null } });
   assert.deepEqual([r.odd.cap, r.odd.sentLastHour], [12, 0]); assert.equal(r.schema.oddKinds.length, 14); assert.equal(r.config.members, undefined);      // FU1: + followup_brake
   w.setOwner(false);
   const r2 = (await w.call("GET", "/api/cms/wabot/team")).body;
@@ -843,4 +843,21 @@ test("WT2 seed: 544139417 «مسؤول السوشيال» is added ONCE as socia
   assert.deepEqual(T.seedParams().slice(0, 2), [T.SOCIAL_SEED.key, "544139417"]);
   assert.equal(T.seedOutcome({ dir: 1, claimed: 1, added: 0, present: true }), "present");
   assert.equal(w.calls.length + w.sms.length, 0, "the seed sends nothing");
+}));
+
+test("CR4 (19/10): a template entry may carry its language — fc_staff_sla_alert goes out in English when asked (staffSmsLanguage), Arabic by default; it passes the staff guard as UTILITY", withEnv(OPEN, async () => {
+  const w = world({ approved: ["fc_staff_sla_alert"] });
+  w.wrote(CASH2, 30);                                         // سارة: النافذة مقفولة
+  const cfg = { ...T.teamConfig(w.db.settings), outsideWindow: "template" };
+  const m = cfg.members.find((x) => x.phone === CASH2);
+  const data = { order: { order_no: "W1792354906756" }, sla: { text: "new order not accepted for 3 min" } };
+  const en = await w.team.sendToStaff(cfg, m, { topic: "ack_escalation", body: "x", sms: "x", templates: [{ name: T.TPL_SLA, lang: "en", data }] });
+  assert.deepEqual([en.ok, en.via], [true, "wa_template"]);
+  const c = w.calls[w.calls.length - 1].body;
+  assert.deepEqual([c.type, c.template.name, c.template.language.code], ["template", "fc_staff_sla_alert", "en"]);
+  assert.deepEqual(c.template.components.find((x) => x.type === "body").parameters.map((p) => p.text), ["W1792354906756", "new order not accepted for 3 min"]);
+  const ar = await w.team.sendToStaff(cfg, m, { topic: "ack_escalation", body: "x", sms: "x", templates: [{ name: T.TPL_SLA, data: { ...data, sla: { text: "طلب جديد ما اتقبلش من ٣ دقايق" } } }] });
+  assert.equal(ar.ok, true);
+  assert.equal(w.calls[w.calls.length - 1].body.template.language.code, "ar", "no lang ⇒ Arabic, as before");
+  assert.equal(w.sms.length, 0);
 }));

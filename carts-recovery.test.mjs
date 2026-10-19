@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { cartCfg, CART_DEFAULTS, cartSmsBody, cartMessages, rawCart } from "./carts.js";
 import { smsParts } from "./smsrules.js";
 
-test("defaults: 35 min, next day 17:00, ≥60 SAR, 7-day cooldown, SMS off until the owner enables", () => {
+test("defaults: 35 min, next day 17:00, ≥60 SAR, 7-day cap window with 2 messages max, SMS off until the owner enables", () => {
   const c = cartCfg({});
   assert.equal(c.sms1AfterMinutes, 35);
   assert.equal(c.sms2Hour, 17);
   assert.equal(c.sms2MinSubtotal, 60);
   assert.equal(c.cooldownDays, 7);
+  assert.equal(c.maxPerWeek, 2, "CR4: رسالتين واتساب/SMS للجوال في الأسبوع");
   assert.equal(c.smsEnabled, false);
   assert.equal(c.requireVerifiedPhone, true);
   assert.deepEqual(Object.keys(c).sort(), Object.keys(CART_DEFAULTS).sort());
