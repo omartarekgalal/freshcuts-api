@@ -68,8 +68,10 @@ test("«ممكن تصورلي الصوص؟»: the assistant cannot take photos �
   assert.deepEqual([sauce.ok, sauce.has_menu_photo], [true, false]); assert.match(sauce.rule, /cannot take or send photos/); assert.match(sauce.rule, /«موظف»/); assert.equal(T.photoItem, undefined);
   const withPhoto = W0.menu.items.find((i) => i.image);
   if (withPhoto) { const p = await W0.loop.exec("dish_photo", { id: withPhoto.id }, T); assert.equal(p.has_menu_photo, true); assert.equal(T.photoItem, String(withPhoto.id)); }
-  assert.match(AR.SYSTEM_PROMPT, /You cannot take, send or forward photos/); assert.match(AR.SYSTEM_PROMPT, /«جزء مقمر وجزء مستوي عادي»/); assert.match(AR.SYSTEM_PROMPT, /never promise the result; say that you wrote it as a note for the kitchen/);
+  assert.match(AR.SYSTEM_PROMPT, /You cannot take, send or forward photos/); assert.match(AR.SYSTEM_PROMPT, /«جزء مقمر وجزء مستوي عادي»/); assert.match(AR.SYSTEM_PROMPT, /never promise the result; say that you wrote it as a note in their cart/);      // BF1 D: مفيش حاجة بتوصل المطبخ من المحادثة
   const c = await W0.tools.build_cart(PHONE, { option: "pickup", items: [{ id: "16", qty: 1, note: "جزء مقمر وجزء مستوي عادي" }] }, { save: false });
   assert.equal(c.lines[0].note, "جزء مقمر وجزء مستوي عادي");
-  assert.ok(AR.checkReply("ما أقدر أصوّر، بس كتبتها ملاحظة للمطبخ: جزء مقمر وجزء مستوي عادي.", { facts: [], lang: "ar", recentCustomer: "والطرب ابغا جزء منه مقمر وجزء مستوي عادي" }).ok);
+  assert.ok(AR.checkReply("ما أقدر أصوّر، بس كتبتها ملاحظة في سلتك: جزء مقمر وجزء مستوي عادي.", { facts: [], lang: "ar", recentCustomer: "والطرب ابغا جزء منه مقمر وجزء مستوي عادي", actions: { cartBuilt: false, cartTouched: true } }).ok);
+  /* BF1 D (…6102 ١٨/١٠): «كتبت للمطبخ ملاحظة» ممنوعة حتى مع سلة: المطبخ بيشوف الطلب بعد الدفع بس */
+  assert.deepEqual(AR.checkReply("أضفت كريب زنجر سوبريم وكتبت للمطبخ ملاحظة حار زيادة", { facts: [], lang: "ar", actions: { cartBuilt: false, cartTouched: true } }).problems.map((p) => p.type), ["promise_not_done"]);
 });

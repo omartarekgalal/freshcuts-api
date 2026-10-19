@@ -72,18 +72,20 @@ export function campaignReplyOffer(row, { now = Date.now(), bundles = null, stor
   if (!title) return { ok: false, why: "no_title" };
   if (TOKEN_RE.test(title) || TOKEN_RE.test(nz(values["offer.price"])) || TOKEN_RE.test(nz(values["offer.untilText"]))) return { ok: false, why: "token" };
   const slug = nz(row.link_slug).trim();
-  if (!slug) return { ok: false, why: "no_link" };
-  if (row.link_active !== true) return { ok: false, why: "link_off" };
+  /* BF1 G (…4333): العرض وقع (خلص / الرابط اتقفل / البوكس اتشال) ⇒ الاسم والسعر وعدد الأشخاص بيرجعوا مع السبب، عشان البوت يقترح بديل لنفس العدد */
+  const gone = (why) => ({ ok: false, why, title, price: (() => { const v = Number(latinDigits(nz(values["offer.price"])).replace(/[^\d.]/g, "")); return Number.isFinite(v) && v > 0 ? v : null; })(), jobName: nz(row.job_name) || null, jobId: Number(row.job_id) || null, targetBox: row.target_type === "box" ? nz(row.target_id) || null : null });
+  if (!slug) return gone("no_link");
+  if (row.link_active !== true) return gone("link_off");
   const untilText = cleanLine(values["offer.untilText"]);
   const uDay = untilText ? untilDay(untilText, now) : null;
-  if (uDay && riyadhDay(Number(now)) > uDay) return { ok: false, why: "expired" };
+  if (uDay && riyadhDay(Number(now)) > uDay) return gone("expired");
   const p = Number(latinDigits(nz(values["offer.price"])).replace(/[^\d.]/g, ""));
   let price = Number.isFinite(p) && p > 0 ? p : null, priceDropped = false, boxSlug = null;
   /* رابط بيفتح بوكس بعينه: لازم يكون لسه في البوكسات الحيّة، وسعره = سعر الرسالة (غير كده/مانعرفش ⇒ من غير رقم) */
   if (row.target_type === "box" && row.target_id) {
     const list = Array.isArray(bundles) ? bundles : [];
     const b = list.find((x) => x && (nz(x.slug) === nz(row.target_id) || nz(x.id) === nz(row.target_id)));
-    if (list.length && (!b || b.active === false || b.available === false)) return { ok: false, why: "box_gone" };
+    if (list.length && (!b || b.active === false || b.available === false)) return gone("box_gone");
     if (b && b.slug) boxSlug = nz(b.slug);      // مراجعة CR2: المساعد بيكمّل بنفس البوكس (get_box) لو العميل قال «نعم» بعد الرد
     if (price != null && (!b || !(Math.abs(Number(b.price) - price) < 0.01))) { price = null; priceDropped = true; }
   }

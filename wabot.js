@@ -81,6 +81,8 @@ export function detectLang(text) {
   const t = String(text || "").replace(/https?:\/\/\S+|www\.\S+/gi, " ");      // MJ1 #٣: رابط لوحده (أو رابط + إيموجي) = عربي، مش إنجليزي
   if (!t.trim() || hasArabic(t)) return "ar";
   const n = normalize(t);
+  /* BF1 J (مراجعة ١٩/١٠): «Hello / Hi» لوحدها أو نص إعلان «راسلنا» الجاهز («Can I get more info on this?») = مش لغة العميل — الترحيب بالعربي */
+  if (/^(?:hi+|hello|helo|hey|heya|hai|hallo|good (?:morning|evening|afternoon))(?: there)?$/.test(n) || /^(?:hello |hi |hey )?(?:can i get|could i get|i want|tell me) (?:more )?(?:info|information|details)(?: (?:on|about) (?:this|it))?$/.test(n)) return "ar";
   if (/\b[a-z]*[2375689][a-z]+\b|\b[a-z]+[2375689]\b/.test(n)) return "ar"; // فرانكو
   const EN = /\b(the|is|are|you|your|what|where|when|how|can|do|does|i|my|me|order|menu|open|close|closed|price|prices|hi|hello|hey|thanks|thank|please|pls|want|delivery|deliver|much|have|any|food|pay|cash|location|address|hours|cancel|refund|help|good|stop|start|ok|okay|yes|no)\b/;
   if (/\b(abi|abgha|3ayez|3awz|talabi|talaby|fen|fein|wen|wein|kam|bkam|3ndko|3andko|mat3am|ya|habibi|yalla|mashawi|el|ana|enta|inta|tawseel|twseel|shukran|shokran|salam|slm|marhaba|ahlan|hala|mawa3eed)\b/.test(n)) return "ar";

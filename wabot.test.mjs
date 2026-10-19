@@ -422,7 +422,8 @@ test("نص صفحة التتبع يتحوّل لصياغة سعودية، وال
   const r = buildReply("order_status", baseCtx({ order: ACTIVE_ORDER }));
   assert.ok(!/بيجهّز/.test(r.messages[0].interactive.body.text));
   assert.equal(detectLang("asdkjh"), "ar");
-  assert.equal(detectLang("hello"), "en");
+  assert.equal(detectLang("hello"), "ar", "BF1 J (…0448 «Hello» لوحدها): الترحيب بالعربي");
+  assert.equal(detectLang("hello where is my order"), "en");
 });
 
 test("مهايئ setBot: نفس عقد runBot في whatsapp.js (phone=5XXXXXXXX، interactiveId)", async () => {

@@ -36,7 +36,8 @@ test("the 15/10 pack row on Friday 17:18 ⇒ title, price, last day, the recipie
 });
 
 test("refusals ⇒ the generic reply: expired, link off/missing, «طبقك المفضل», unreplaced token, no title", () => {
-  assert.deepEqual(campaignReplyOffer(PACK, { now: SAT }), { ok: false, why: "expired" });
+  /* BF1 G: الرفض بيرجع اسم العرض وسعره (عشان البوت يقترح بديل لنفس العدد) */
+  { const x = campaignReplyOffer(PACK, { now: SAT }); assert.deepEqual([x.ok, x.why, x.price], [false, "expired", 225]); assert.match(x.title, /باقة التجمّع لـ4 إلى 6 أشخاص/); }
   assert.equal(campaignReplyOffer({ ...PACK, link_active: false }, { now: FRI }).why, "link_off");
   assert.equal(campaignReplyOffer({ ...PACK, link_active: null }, { now: FRI }).why, "link_off", "link row missing");
   assert.equal(campaignReplyOffer({ ...PACK, link_slug: null }, { now: FRI }).why, "no_link");

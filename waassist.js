@@ -13,6 +13,7 @@
    الثوابت اللي هنا (ASSIST_DEFAULTS) هتبقى إعدادات في اللوحة مع الشريحة ٢.
 ═══════════════════════════════════════════════════════════════════════════ */
 import { normalize } from "./wabot.js";
+import { siteItems } from "./waorders.js";      // BF1: أصناف الطلب في order_status
 import { loyaltyCfgOf, loyaltyStatusFor, LOYALTY_COUNTED_SQL } from "./loyalty.js";
 import { firstEligibility, couponQueries } from "./couponrules.js";
 import { itemKind, coversOf, isUpgrade, dishType, habitPick, personalOf } from "./wapersonal.js";      // S1: البيع الشخصي (ملف صافي)
@@ -689,11 +690,12 @@ export function makeAssistTools(deps = {}) {
   /* حالة الطلب: من غير أي مُدخل — الرقم هو مُرسِل الرسالة (بيتحدد في الكود، مش من الموديل) */
   async function order_status(phone) {
     if (!okPhone(phone)) return { ok: false, error: "no_phone" };
-    const r = await q(`SELECT order_no, status, option, total, created_at FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '72 hours' ORDER BY created_at DESC LIMIT 3`, [phone]);
+    const r = await q(`SELECT order_no, status, option, total, created_at, items FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '72 hours' ORDER BY created_at DESC LIMIT 3`, [phone]);
     if (r === null) return unavailable("orders");
     /* EX4 (عمر ١٣/١٠): حالة الطلب للطلب المفتوح بس. المقفول (اتسلّم / اتلغى / اترجّع) بيرجع في closed للعلم، ومابيتقالش عنه «في الطريق». */
     const CLOSED = new Set(["delivered", "rejected_refunded", "refund_failed", "cancelled", "canceled"]);
-    const row = (o) => ({ order_no: o.order_no, status: o.status, mode: o.option, total: round2(o.total), track_url: `${STORE}/track/${o.order_no}` });
+    /* BF1 (…0356 «الطلب جاي معاه رز؟» ⇒ «ما عندي تفاصيل أصنافه… اكتب موظف»): أصناف الطلب المفتوح (الاسم + الكمية + ملاحظة العميل) عشان يجاوب من غير موظف */
+    const row = (o) => { const items = siteItems(o.items); return { order_no: o.order_no, status: o.status, mode: o.option, total: round2(o.total), track_url: `${STORE}/track/${o.order_no}`, ...(items.length ? { items } : {}) }; };
     const open = r.filter((o) => !CLOSED.has(String(o.status))), closed = r.filter((o) => CLOSED.has(String(o.status)));
     return { ok: true, has_open_order: open.length > 0, orders: open.map(row), closed: closed.slice(0, 2).map(({ order_no, status }) => ({ order_no, status })),
       ...(open.length ? {} : { note: "No open order under this number. Say so plainly; offer to order, or to type «موظف». Do not describe a closed order as being prepared or on its way." }) };

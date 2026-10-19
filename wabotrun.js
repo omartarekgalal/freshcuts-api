@@ -71,6 +71,9 @@ import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarke
 import { FREE_STAGES } from "./waswitches.js";      // RT2 مراجعة (١٧/١٠): نص مرحلة «اتسلّم من الفرع» من السجل الواحد
 import { JOURNEY_GROUP, JOURNEY_GROUP_AR, JOURNEY_DEFAULTS, JOURNEY_NUMS, JOURNEY_BOOLS, JOURNEY_SCHEMA, journeyCfg, holdUntil, deferDecision, PROACTIVE_KEYS, PROACTIVE_JOB_KINDS, PAID_CONFIRM_SQL } from "./wajourney.js";      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض
 import { OF_KIND, OF_GROUP, OF_GROUP_AR, OF_DEFAULTS, OF_NUMS, OF_BOOLS, OF_SCHEMA, OF_DDL, ofConfig, openingPlan, cartSnapshotOf, makeOpenFollowUp } from "./waopenfu.js";      // WO1 (١٩/١٠): «نكمّل لما نفتح»
+import { LEARN_GROUP, LEARN_GROUP_AR, LEARN_DEFAULTS, LEARN_NUMS, LEARN_BOOLS, LEARN_SCHEMA, learnConfig, makeLearn, registerLearnRoutes } from "./walearn.js";      // BF1 (١٩/١٠): الحرّاس + سجل الأخطاء + الدروس + الفحص الليلي
+import { promiseProblems, isGoAhead, spamKind, comingKind, loneLatinGreeting, adPrefill, locationConfirm, socialLink, asksStaffByName, partySizeOf, altBoxFor, praiseOnly } from "./waguard.js";      // BF1
+import { ordersSince, recentOrdersOf, existingOrderBrief, POS_ITEMS_SQL } from "./waorders.js";      // BF1 A: طلب من أي قناة (موقع / كاشير / صالة)
 import { COURIER_JOB_DEFAULTS, COURIER_JOB_SCHEMA, COURIER_JOB_SCHEMA_GROUP, courierJobConfig, courierJobFromBody } from "./courierwa-cfg.js";      // CW1
 import { UTILITY_FIRST_DEFAULTS, UTILITY_FIRST_SCHEMA, UTILITY_FIRST_SCHEMA_GROUP, utilityFirstConfig, utilityFirstFromBody } from "./wautility-cfg.js";      // UT1
 import { REVIEW_FLOW_DEFAULTS, REVIEW_FLOW_SCHEMA, REVIEW_SCHEMA_GROUP, REVIEW_TEXTS, reviewFlowConfig, reviewFlowFromBody, starOfListId, starOfQr, typedStar, reasonOfListId, reviewsCfgOf,
@@ -115,6 +118,7 @@ export const DEFAULTS = Object.freeze({
   paidNoteEnabled: true,       // EX6: العميل دفع طلب بعد ما كلّم البوت/المساعد والنافذة مفتوحة ⇒ سطر تأكيد برقم الطلب
   leadFollowUpMin: 20,         // EX6: «متابعة المحادثة» — رسالة عميل ماخدتش رد مفيد (سكوت، بره النطاق، «ما فهمت») ومحدش رد ⇒ متابعة واحدة بعد الدقايق دي. صفر = مقفول. مرة في اليوم للمحادثة
   ...FU_DEFAULTS,              // FU1 (١٥/١٠): متابعة واحدة جوّه النافذة للي ردّ على حملة أو ضغط زر وماطلبش (wafollow.js)
+  ...LEARN_DEFAULTS,           // BF1 (١٩/١٠): حرّاس مراجعة ١٩/١٠ + التعلّم من الأخطاء (walearn.js)
   ...OF_DEFAULTS,              // WO1 (١٩/١٠): «نكمّل لما نفتح» — العميل طلب والمطعم مقفول ⇒ رسالة واحدة وقت الفتح بسلته (waopenfu.js)
   ...JOURNEY_DEFAULTS,         // CJ1a (١٧/١٠): مفيش رسايل ورا بعض — هدوء بعد آخر رسالة، تأكيد مرة واحدة، SMS المندوب مش مع واتساب، سقف رسايل الطلب (wajourney.js)
   autoInboundPatterns: true,   // EX5: رسالة واردة شكلها رد آلي من نشاط تجاري («شكراً لتواصلك»، «لسنا متوفرين»، thank you for contacting…) ⇒ auto_inbound: لا رد ولا مساعد ولا تحويل
@@ -567,6 +571,13 @@ export const TEXTS = Object.freeze({
   st_refunded: t("حالة: مسترجع", "اعتذر المطعم عن الطلب وتم استرجاع المبلغ لوسيلة الدفع.", "the restaurant could not fulfil it and the amount was refunded to your payment method.", [], [], 160),
   st_refund_pending: t("حالة: الاسترجاع جاري", "استرجاع المبلغ جاري وفريقنا يتابعه.", "the refund is in progress and our team is following it.", [], [], 160),
   st_courier_arranging: t("حالة: نرتّب مندوب", "نرتّب مندوب لطلبك وفريقنا يتابعه.", "we are arranging a courier and our team is on it.", [], [], 160),
+  /* BF1 (مراجعة ١٩/١٠) */
+  coming: t("العميل قال «أنا جاي / دقيقتين وأكون عندكم»", "حيّاك الله، نستناك 🌟", "You're welcome, see you soon 🌟", [], [], 200),
+  loc_ok: t("العميل أكّد الموقع اللي بعته («ده الموقع مظبوط»)", "تمام 👍 وصلنا موقعك.", "Got it 👍 we have your location.", [], [], 200),
+  spam_line: t("سبام / رابط دعوة (مرة في اليوم، من غير تحويل ولا متابعة)", "هذا الرقم لطلبات فريش كاتس فقط 🙏", "This number is for Fresh Cuts orders only 🙏", [], [], 200),
+  camp_alt_body: t("الحملة اللي العميل رد عليها عرضها انتهى ⇒ أقرب بوكس لنفس العدد", "عرض «{offer}» انتهى 🙏 ولنفس العدد عندنا *{name}* بـ {price} ر.س.\n{desc}\nتقدر تطلبه من الزر 👇", "The «{offer}» offer has ended 🙏 For the same group we have *{name}* for SAR {price}.\n{desc}\nOrder it from the button 👇", ["offer", "name", "price"], ["desc"], 600),
+  bf_sg_after: t("اقتراح تحت السلة (زرّين أضفه / لا شكراً) لما العميل قال «جهّزه»", "تحب أضيف لسلتك {item}؟", "Want me to add {item} to your cart?", ["item"], [], 200),
+  location_map: t("سطر رابط الخريطة تحت عنوان الفرع", "🗺️ الخريطة: {url}", "🗺️ Map: {url}", ["url"], [], 300),
 });
 export const TEXT_KEYS = Object.keys(TEXTS);
 
@@ -756,6 +767,7 @@ export function botConfig(settings) {
     ...fuConfig(x),      // FU1
     ...journeyCfg(x),    // CJ1a
     ...ofConfig(x),      // WO1
+    ...learnConfig(x),   // BF1
     autoInboundPatterns: x.autoInboundPatterns !== false, autoInboundSec: num(x.autoInboundSec, 0, 120, DEFAULTS.autoInboundSec),
     loopGuardCount: num(x.loopGuardCount, 0, 20, DEFAULTS.loopGuardCount), loopGuardFastSec: num(x.loopGuardFastSec, 1, 30, DEFAULTS.loopGuardFastSec),
     loopGuardSeconds: num(x.loopGuardSeconds, 10, 600, DEFAULTS.loopGuardSeconds), loopGuardMuteHours: num(x.loopGuardMuteHours, 1, 168, DEFAULTS.loopGuardMuteHours),
@@ -833,10 +845,10 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback", "campaignReplyHours",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "collectedSkipIfReviewWithinMin", "followBannerSkipHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "activeOrderHours", "activeOrderMergeSec", "handoverBurstSec", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS), ...Object.keys(JOURNEY_NUMS), ...Object.keys(OF_NUMS)]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "collectedSkipIfReviewWithinMin", "followBannerSkipHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "activeOrderHours", "activeOrderMergeSec", "handoverBurstSec", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS), ...Object.keys(JOURNEY_NUMS), ...Object.keys(OF_NUMS), ...Object.keys(LEARN_NUMS)]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "followBanner", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", "campaignReply", "activeOrderFirst", ...FU_BOOLS, ...JOURNEY_BOOLS, ...OF_BOOLS]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "followBanner", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", "campaignReply", "activeOrderFirst", ...FU_BOOLS, ...JOURNEY_BOOLS, ...OF_BOOLS, ...LEARN_BOOLS]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -1150,6 +1162,7 @@ export const SCHEMA = Object.freeze({
   replyRateSar: S("cost", "number", "سعر الرد بعد المجاني", "", { min: 0, max: 5, unit: "ر.س", step: 0.0001 }),
   waRates: S("cost", "rates", "بطاقة أسعار قوالب واتساب", "تسويقي / خدمي / رمز تحقق + تاريخ البطاقة."),
   ...FU_SCHEMA,      // FU1 (١٥/١٠): متابعة اللي ردّ وماطلبش — مجموعتها لوحدها في اللوحة
+  ...LEARN_SCHEMA,   // BF1 (١٩/١٠): «ماجد والبوت: الحرّاس والتعلّم من الأخطاء» — مجموعتها لوحدها في «كل إعدادات البوت»
   ...OF_SCHEMA,      // WO1 (١٩/١٠): «نكمّل لما نفتح» — مجموعتها لوحدها، بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...JOURNEY_SCHEMA, // CJ1a (١٧/١٠): «رحلة العميل في النافذة: مفيش رسايل ورا بعض» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...ASSIST_SCHEMA,
@@ -1157,7 +1170,7 @@ export const SCHEMA = Object.freeze({
   ...UTILITY_FIRST_SCHEMA,      // UT1: «💸 الخدمي أولاً» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...REVIEW_FLOW_SCHEMA,      // RV1: «التقييمات على واتساب» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
 });
-export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", orderMsgs: "رسايل الطلب: توفير القوالب وزر «تابع طلبك»", [FU_GROUP]: FU_GROUP_AR, [OF_GROUP]: OF_GROUP_AR, [JOURNEY_GROUP]: JOURNEY_GROUP_AR, greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
+export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", orderMsgs: "رسايل الطلب: توفير القوالب وزر «تابع طلبك»", [FU_GROUP]: FU_GROUP_AR, [OF_GROUP]: OF_GROUP_AR, [LEARN_GROUP]: LEARN_GROUP_AR, [JOURNEY_GROUP]: JOURNEY_GROUP_AR, greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
   faq: "الأسئلة الشائعة", texts: "النصوص", optin: "موافقة التحديثات", ai: "الذكاء الاصطناعي", cost: "التكلفة", assist: "مساعد الطلبات", ...REVIEW_SCHEMA_GROUP, ...COURIER_JOB_SCHEMA_GROUP, ...UTILITY_FIRST_SCHEMA_GROUP });
 const getPath = (o, p) => p.split(".").reduce((a, k) => (a && typeof a === "object" ? a[k] : undefined), o);
 /* للّوحة: كل إعداد بقيمته الحالية والافتراضية وحدوده وشرحه. */
@@ -1452,7 +1465,20 @@ export function buildReply(key, c) {
     case "location": {
       const url = String(data.settings?.googlePlace?.mapsUrl || MAPS_URL);
       if (!/^https:\/\/(maps\.google\.com|www\.google\.com\/maps|maps\.app\.goo\.gl|g\.page)\//.test(url)) throw new DataMissing("mapsUrl");
-      return { body: T("location"), cta: { title: T("cta_map"), url } };
+      /* BF1 K (…6575 «ارسل موقع المحل» ⇒ العنوان بس): الرابط في النص كمان — بيبان في الإشعار وفي أي جهاز مابيعرضش الزر */
+      let mapLine = ""; try { mapLine = F("location_map", { url }); } catch { mapLine = ""; }
+      return { body: mapLine ? `${T("location")}\n${mapLine}` : T("location"), cta: { title: T("cta_map"), url } };
+    }
+    /* BF1 (مراجعة ١٩/١٠): «أنا جاي» ⇒ حيّاك · «ده الموقع مظبوط» ⇒ تمام · سبام ⇒ سطر واحد */
+    case "coming": return { body: T("coming") };
+    case "loc_ok": return { body: T("loc_ok") };
+    case "spam": return { body: T("spam_line") };
+    /* BF1 G (…4333 باقة التجمّع ٤–٦ خلصت ⇒ رد عام): أقرب بوكس حي لنفس العدد بسعره وزره (data.campAlt من work) */
+    case "camp_alt": {
+      const ca = data.campAlt, b2 = ca && ca.box ? (data.bundles || []).find((x) => x.slug === String(ca.box.slug) && Number(x.price) > 0) || ca.box : null;
+      if (!ca || !b2 || !ca.title) throw new DataMissing("camp_alt");
+      const slug = data.links && data.links[b2.slug] === true ? b2.slug : pickLink(cfg, data, c.referral);
+      return { body: F("camp_alt_body", { offer: ca.title, name: (lang === "en" && b2.name_en) || b2.name, price: money(b2.price), desc: String((lang === "en" && b2.description_en) || b2.description || "").trim() }), cta: { title: T("cta_box"), url: linkUrl(slug) }, link: slug };
     }
     case "payment": {
       const f = (data.settings?.storefront?.seo?.faq || []).find((x) => /طرق الدفع|الدفع/.test(String(x?.q || "")));
@@ -1598,7 +1624,7 @@ export function toPayload(r, { cfg, lang, interactive = true, footer: withFooter
   }
   if (interactive && r.cta) return msgCta(r.body, r.cta.title, r.cta.url, { footer });
   if (interactive && r.buttons) return msgButtons(r.body, r.buttons, { footer });
-  if (r.cta) return msgText(`${r.body}\n${r.cta.url}`, true);
+  if (r.cta) return msgText(String(r.body || "").includes(r.cta.url) ? String(r.body) : `${r.body}\n${r.cta.url}`, true);      // BF1 K: الرابط في النص أصلاً (رد الموقع) ⇒ مايتكررش
   return msgText(r.body, false);
 }
 export function payloadProblem(p) {
@@ -2019,10 +2045,10 @@ export function pauseState({ cfg, now, open, lastEchoAt, hours }) {
   const until = t + cfg.humanPauseMin * 60_000;
   return { paused: until > now.getTime(), until, kind: "staff_pause" };
 }
-const FACTUAL_KEYS = new Set(["other_city", "whoami", "delivery_time", "hours", "hoursloc", "location", "status", "thanks", "stop", "stop_updates", "cancel_what", "start", "optin_yes", "optin_no", "resume_all", "resume_updates", "rf_no",
+const FACTUAL_KEYS = new Set(["coming", "loc_ok", "spam", "other_city", "whoami", "delivery_time", "hours", "hoursloc", "location", "status", "thanks", "stop", "stop_updates", "cancel_what", "start", "optin_yes", "optin_no", "resume_all", "resume_updates", "rf_no",
   "review_reason"]);      // RV1: سبب التقييم الواطي = رد على سؤالنا وهو عند المدير ⇒ «وصلت ملاحظتك» (مش «محادثتك عند الموظف»)
 /* أسئلة المنيو والأسعار والتوصيل: معلومات. بتتجاوب حتى والمحادثة عند الموظف — إلا لو التحويل شكوى/مشكلة (SERIOUS). */
-const MENU_KEYS = new Set(["main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area", "faq", "dishfact", "rf_yes"]);
+const MENU_KEYS = new Set(["camp_alt", "main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area", "faq", "dishfact", "rf_yes"]);
 const SERIOUS = new Set(["allergy_severe", "complaint", "problem", "order_change", "order_late", "order_issue", "send_failed", "review_low"]);      // RV1: تقييم واطي = شكوى (معلومات بس، ومفيش تنبيه تاني لو كتب شكوى بعده)
 /* مراجعة RV1: «تقييم واطي» عند المدير رأي على طلب خلص — مايمسكش المحادثة زي الشكوى. طول ما هو مفتوح:
      • المنيو والأسعار والطلب الجديد / «نفس طلبي» / العروض بيتخدموا عادي (REVIEW_SOFT_KEYS).
@@ -2151,7 +2177,8 @@ export function decide(ev, ctx) {
   }
   /* EX6: نفس الكارت (صنف / قسم / قايمة أصناف) طلع مرتين ورا بعض على رسايل مكتوبة والعميل لسه بيكتب ⇒ مانكررهوش تالت مرة: موظف. (المساعد لو شغّال بياخد الرسايل دي قبل ما توصل هنا.) */
   if (!ev.interactiveId && !optout && ctx.cardRun && ["item", "items", "cat"].includes(key) && ctx.cardRun.key === key && ctx.cardRun.arg === argKey(c.arg)) { key = "staff"; handoff = ["repeated_card", "normal"]; }
-  if (stale && !optout && !HANDOFF_KEYS[key]) { key = "staff"; handoff = ["late_message", "normal"]; }      // إيقاف/رجوع وشكوى متأخرين بياخدوا ردهم العادي
+  /* BF1 B (…8282 «تابع طلبي»، …6102 «أبغى أطلب» — ميتا وصّلت الضغطة بعد ٣٠+ دقيقة): قاعدة الرسالة المتأخرة للنص المكتوب بس. الضغطة على زرار بتتنفّذ عادي. */
+  if (stale && !optout && !HANDOFF_KEYS[key] && !ev.interactiveId) { key = "staff"; handoff = ["late_message", "normal"]; }      // إيقاف/رجوع وشكوى متأخرين بياخدوا ردهم العادي
   // ٥) الرسالة الغير مفهومة بيترد عليها فوراً (سطر صريح + القائمة + «موظف»): مفيش «انتظار الموظف ٣ دقايق» — كان بيبان إن البوت مابيردّش (١٢/١٠).
   //    اللي لسه مستني من قبل التحديث (afterWait = unknown_wait) بيتنفّذ عادي.
   if (HANDOFF_KEYS[key] && !handoff) handoff = HANDOFF_KEYS[key];
@@ -2230,10 +2257,10 @@ export function decide(ev, ctx) {
 }
 
 /* نص تنبيه الفريق — رسالة SMS واحدة (fitOneSms حارس أخير). مفيش اسم العميل ولا نص رسالته. */
-const REASON_EN = { order_note: "note on an active order", review_low: "LOW RATING, please call", review_note: "note on their order", repeated_card: "the bot repeated the same card and the customer kept asking", loop_guard: "automatic messages in a loop, bot muted", repeated_question: "repeated the same question", late_message: "message arrived late", media_flood: "many files with no text", complaint: "complaint", problem: "payment/site problem", order_change: "change/cancel order", asked_human: "asked for staff", asked_manager: "asked for a MANAGER", needs_staff: "question for staff",
+const REASON_EN = { claim_silent: "a colleague took this chat but wrote nothing", closed_complaint: "complaint / low rating answered while closed, nobody replied", order_note: "note on an active order", review_low: "LOW RATING, please call", review_note: "note on their order", repeated_card: "the bot repeated the same card and the customer kept asking", loop_guard: "automatic messages in a loop, bot muted", repeated_question: "repeated the same question", late_message: "message arrived late", media_flood: "many files with no text", complaint: "complaint", problem: "payment/site problem", order_change: "change/cancel order", asked_human: "asked for staff", asked_manager: "asked for a MANAGER", needs_staff: "question for staff",
   media: "sent photo/voice", not_understood_twice: "not understood", rate_limit: "many messages", data_missing: "bot could not answer", order_not_found: "order not found",
   allergy_severe: "SEVERE ALLERGY question", custom_offer: "wants a tailored group offer", order_late: "LATE order", order_issue: "order issue", send_failed: "bot reply failed" };
-const REASON_AR = { order_note: "ملاحظة على طلب شغّال", staff_silent: "رقم في قايمة الموظفين كتب ومحدش رد", review_low: "تقييم منخفض", review_note: "ملاحظة على طلب", repeated_card: "البوت كرر نفس الرد والعميل لسه بيسأل", loop_guard: "رسايل آلية متكررة من الرقم — البوت اتكتم", repeated_question: "كرر نفس السؤال", late_message: "رسالة وصلت متأخرة", media_flood: "صور/ملفات كتير من غير نص", allergy_severe: "حساسية شديدة", custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", asked_manager: "طلب مسؤول", needs_staff: "سؤال", media: "صورة/صوت",
+const REASON_AR = { claim_silent: "موظف استلم المحادثة وماكتبش", closed_complaint: "شكوى / تقييم اتردّ عليه والمطعم مقفول ومحدش رد", order_note: "ملاحظة على طلب شغّال", staff_silent: "رقم في قايمة الموظفين كتب ومحدش رد", review_low: "تقييم منخفض", review_note: "ملاحظة على طلب", repeated_card: "البوت كرر نفس الرد والعميل لسه بيسأل", loop_guard: "رسايل آلية متكررة من الرقم — البوت اتكتم", repeated_question: "كرر نفس السؤال", late_message: "رسالة وصلت متأخرة", media_flood: "صور/ملفات كتير من غير نص", allergy_severe: "حساسية شديدة", custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", asked_manager: "طلب مسؤول", needs_staff: "سؤال", media: "صورة/صوت",
   not_understood_twice: "غير مفهوم", rate_limit: "رسائل كثيرة", data_missing: "البوت لم يجب", order_not_found: "طلب غير موجود", order_late: "طلب متاخر", order_issue: "مشكلة طلب", send_failed: "فشل رد البوت" };
 export function alertText({ phone, reason, orderNo = null }, lang = "en") {
   const ph = `0${phone}`;
@@ -2356,7 +2383,7 @@ export function register(app, ctx, deps = {}) {
     { const keep = botConfig((await getSettingsData().catch(() => null)) || {}).logKeepDays; await pool.query("DELETE FROM wa_bot_log WHERE at < NOW() - make_interval(days => $1::int)", [keep]).catch(() => {}); }
     await pool.query(`CREATE TABLE IF NOT EXISTS wa_bot_config_log (id BIGSERIAL PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW(), who TEXT, changes JSONB NOT NULL)`).catch((e) => console.error("[wabot] config log:", e.message));
   }
-  const ready = ensureSchema().then(() => botCarts.ensure().catch((e) => console.error('[wabot] cart schema:', e.message))).then(() => aicost.ensure().catch((e) => console.error('[wabot] ai-cost schema:', e.message))).then(() => assistStore.ensure().then(async () => assistStore.purge(botConfig((await getSettingsData().catch(() => null)) || {}).assist.keepDays)).catch((e) => console.error('[wabot] assist schema:', e.message))).then(() => ensureWaConsentSchema(pool).catch((e) => console.error('[wabot] consent schema:', e.message))).then(() => console.log("[wabot] runtime ready")).catch((e) => console.error("[wabot] init failed:", e.message));
+  const ready = ensureSchema().then(() => botCarts.ensure().catch((e) => console.error('[wabot] cart schema:', e.message))).then(() => aicost.ensure().catch((e) => console.error('[wabot] ai-cost schema:', e.message))).then(() => assistStore.ensure().then(async () => assistStore.purge(botConfig((await getSettingsData().catch(() => null)) || {}).assist.keepDays)).catch((e) => console.error('[wabot] assist schema:', e.message))).then(() => ensureWaConsentSchema(pool).catch((e) => console.error('[wabot] consent schema:', e.message))).then(() => learnApi.ensure().catch((e) => console.error('[wabot] learn schema:', e.message))).then(() => console.log("[wabot] runtime ready")).catch((e) => console.error("[wabot] init failed:", e.message));
 
   let tune = botConfig({});          // آخر إعدادات اتقرت — مدد الكاش بتتاخد منها (بتتحدّث مع كل رسالة وكل قراءة للإعدادات)
   let bundleCache = { at: 0, rows: null };
@@ -2463,6 +2490,34 @@ export function register(app, ctx, deps = {}) {
   const favApi = () => { try { return (typeof deps.fav === "function" ? deps.fav() : deps.fav) || null; } catch { return null; } };
   /* CR2 (١٦/١٠): آخر رسالة حملة Cloud للرقم (أو الرسالة اللي اتضغط زرها) ⇒ عرضها باسمه وسعره ورابطها (wacampreply.js) */
   const campReplyApi = deps.campReply || makeCampaignReply({ pool });
+  /* ═══ BF1 (١٩/١٠) ═══ */
+  /* آخر كلام لماجد في الجلسة (نص) — «نفس الطلب؟» قبل «جهّزه» */
+  const lastAssistantText = (sess) => { const ms = sess && Array.isArray(sess.messages) ? sess.messages : []; for (let i = ms.length - 1; i >= 0; i--) { const m = ms[i]; if (m && m.role === "assistant" && Array.isArray(m.content)) { const t = m.content.filter((b) => b && b.type === "text").map((b) => String(b.text || "")).join("\n"); if (t) return t; } } return ""; };
+  /* فيه طلب سابق بيتجهّز على المنيو الحي؟ (نفس منطق loadData للـreorder) */
+  async function hasReorder(phone, know) {
+    try { const snaps = await botCarts.lastOrderCarts(phone, tune.reorderMaxDays, { limit: tune.reorderLookback, minTotal: tune.reorderMinTotal });
+      for (const snap of snaps || []) { const plan = reorderPlan(snap, { menu: know && know.menu, bundles: know && know.bundles && know.bundles.length ? know.bundles : null }); if (plan && plan.ok) return true; } }
+    catch (e) { console.error("[wabot] has reorder:", e.message); }
+    return false;
+  }
+  /* البورتال (wahandover): تصعيد للمدير */
+  const handoversApi = () => { try { return (typeof deps.handovers === "function" ? deps.handovers() : deps.handovers) || null; } catch { return null; } };
+  /* سجل الأخطاء + الدروس + الفحص الليلي (walearn.js) */
+  const learnApi = deps.learn || makeLearn({ q, ddl: (sql) => pool.query(sql), jb, now: clock, menuIndex: async () => menuIndex((await getSettingsData().catch(() => null)) || {}, clock()), bundles: async () => bundles(), getSettings: async () => (await getSettingsData().catch(() => null)) || {}, log: console });
+  /* آخر حملة وصلت العميل (أسبوع): لماجد قبل ما يقول «ما عندنا عرض» — اسمها، شغّالة ولا خلصت، والبديل لنفس العدد لو خلصت */
+  async function lastCampaignFact(phone, know) {
+    let r = null; try { r = await campReplyApi.lastCampaign(phone, { hours: 168, bundles: (know && know.bundles) || [], store: STORE, now: clock().getTime() }); } catch { r = null; }
+    const o = r && r.offer ? r.offer : null;
+    if (o && o.ok) return { title: o.title, ...(o.price != null ? { price: o.price } : {}), still_valid: true, ...(o.until ? { until: o.until } : {}) };
+    if (o && o.title && ["expired", "box_gone", "link_off", "no_link"].includes(o.why)) {
+      const alt = altBoxFor({ people: partySizeOf(o.title) || partySizeOf(o.jobName || ""), price: o.price, bundles: (know && know.bundles) || [] });
+      return { title: o.title, still_valid: false, ...(alt ? { alternative: { box: alt.name, slug: String(alt.slug), price: Number(alt.price) } } : {}) };
+    }
+    if (o && o.why === "fav_campaign" && favApi()) { let camp = null; try { camp = await favApi().lastOffer(phone, 168); } catch { camp = null; }
+      if (camp) { const v = camp.values || {}, f = camp.fav || {}; const title = String(v["offer.title"] || f.boxName || f.name || f.title || "").trim().slice(0, 80);
+        if (title) return { title, still_valid: true, note: "a personal offer built around their favourite dish; the «أبغى أطلب» button under that message gives a ready cart" }; } }
+    return null;
+  }
 
   /* البيانات الحية لرسالة واحدة. أي مصدر وقع ⇒ قيمته null/فاضية ⇒ الرد اللي محتاجه بيتحوّل لموظف. */
   async function loadData({ settings, cfg, phone, orderNo, key, now, know = null, arg = null, campaign = null, campReply = null }) {
@@ -2519,7 +2574,7 @@ export function register(app, ctx, deps = {}) {
     data.campaign = key === "order" && campaign && campaign.fav ? campaign : null;
     data.campReply = key === "order" && !data.campaign && campReply && campReply.ok ? campReply : null;      // CR2: عرض الحملة اللي العميل رد عليها
     const campSlug = data.campaign && data.campaign.fav.slug ? [String(data.campaign.fav.slug)] : [];
-    const slugs = [...new Set([cfg.links.organic, cfg.links.ads, cfg.links.packs, "wab-menu", ...(key === "box" && arg ? [String(arg)] : []), ...campSlug, ...Object.values(cfg.links.adMap)])];
+    const slugs = [...new Set([cfg.links.organic, cfg.links.ads, cfg.links.packs, "wab-menu", ...((key === "box" || key === "camp_alt") && arg ? [String(arg)] : []), ...campSlug, ...Object.values(cfg.links.adMap)])];
     const lr = await q("SELECT slug FROM cms_links WHERE slug = ANY($1::text[]) AND active", [slugs]);
     for (const x of lr || []) data.links[x.slug] = true;
     return data;
@@ -2762,7 +2817,7 @@ export function register(app, ctx, deps = {}) {
     const oddAfter = async ({ d, handoff, okSent }) => {
       const ho = handoff ? handoff[0] : null, typed = !ev.interactiveId && ev.opener !== "unsupported" && String(ev.type || "text") === "text" ? String(ev.text || "") : "";
       if (d.key === "secret" && okSent) await oddThing(settings, cfg, "secret", phone, { detail: "سأل عن وصفة / مقادير / مورّد — خد الرد المهني من غير أي تفصيلة" });
-      const nc = typed ? nonCustomerKind(typed) : null;
+      const nc = typed && d.key !== "spam" ? nonCustomerKind(typed) : null;      // BF1 I: السبام مالوش تنبيه للفريق
       if (nc) await oddThing(settings, cfg, "non_customer", phone, { detail: nc === "job_seeker" ? "شكله بيدوّر على شغل" : "شكله عرض من مورّد / شركة" });
       if (ho === "complaint") await oddThing(settings, cfg, "complaint", phone);
       if (ho === "problem") await oddThing(settings, cfg, "payment_problem", phone);
@@ -2922,12 +2977,16 @@ export function register(app, ctx, deps = {}) {
          الأحدث «طبقك المفضل» والـFD1 رفض ⇒ مفيش عرض هنا (مانرجعش لحملة أقدم). «نعم» على متابعة FU1 (followup_yes) ليها ردها. العرض خلص/الرابط موقوف ⇒ الرد العام.
          rawIntent campaign_reply ⇒ القواعد دايماً (assistEligible: /^campaign_/) عشان رابط الحملة يطلع مضمون. */
       let campReply = null;
-      if (ok && cfg.campaignReply && !campOffer && cls.key === "order" && cls.rawIntent !== "followup_yes") {
+      const lc = learnConfig(settings.waBot || {});      // BF1
+      let campAlt = null;
+      /* BF1 E (…0494 «محتاج أطلب العرض» ⇒ «ما عندنا عرض مؤقت» وهو واصله عرض): «العرض» مكتوبة (تصنيف عروض، قصيرة) بتقرا آخر حملة وصلت الرقم كمان */
+      const offersAsk = Boolean(lc.campExpiredAlt) && cls.key === "offers" && !ev.interactiveId && !afterWait && [...String(ev.text || "")].length <= 60;
+      if (ok && cfg.campaignReply && !campOffer && (cls.key === "order" || offersAsk) && cls.rawIntent !== "followup_yes") {
         const tapId = ev.interactiveId ? String(ev.interactiveId).trim() : "";
         const tap = Boolean(tapId) && CAMPAIGN_TAP_IDS.has(tapId);
         /* مراجعة CR2 (١٦/١٠): المكتوبة لازم تكون نية طلب «فاضية» (isCampaignYes: «أبغى أطلب» / «ابي اطلب» / «ابي العرض»). طلب فيه حاجة بعينها
            («ابي اطلب كيلو مشكل توصيل»، «ابي اطلب مشويات ل ٥ اشخاص») أو سؤال («كيف أطلب») بيمشي في طريقه العادي (المساعد/القواعد) — نفس قاعدة FD1. */
-        const typed = !tapId && !afterWait && String(ev.type || "text") === "text" && isCampaignYes(ev.text);
+        const typed = !tapId && !afterWait && String(ev.type || "text") === "text" && (isCampaignYes(ev.text) || offersAsk);
         if (tap || typed) {
           const ctxId = ev.contextId ? String(ev.contextId) : null;
           let r = null;
@@ -2938,9 +2997,42 @@ export function register(app, ctx, deps = {}) {
             if (echoAt && r.offer.sentAt && Date.parse(echoAt) > Date.parse(r.offer.sentAt)) why = "staff_since";
             else { let sess = null; try { sess = await assistStore.loadSession(phone, now, cfg.assist.sessionMin); } catch { sess = null; } if (sess && !(sess.state && sess.state.seed)) why = "assist_session"; }
           }
-          if (!why) { campReply = r.offer; cls = { ...cls, arg: `camp:${r.offer.jobId || 0}`, rawIntent: "campaign_reply", lang: "ar" };      /* arg: «نفس المعلومة» بيتحسب على نفس الحملة بس، مش على رد «أبي أطلب» العام */
+          if (!why) { campReply = r.offer; cls = { ...cls, key: "order", arg: `camp:${r.offer.jobId || 0}`, rawIntent: "campaign_reply", lang: "ar" };      /* arg: «نفس المعلومة» بيتحسب على نفس الحملة بس، مش على رد «أبي أطلب» العام */
             await q("UPDATE wa_bot_log SET intent=$2, detail=$3 WHERE id=$1", [logId, "campaign_reply", `campaign_reply:job${r.offer.jobId || "?"}`]); }
-          else if (!["no_campaign", "bad_phone"].includes(why)) await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `campaign_reply:${String(why).slice(0, 40)}`]);
+          else if (!["no_campaign", "bad_phone"].includes(why)) {
+            await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `campaign_reply:${String(why).slice(0, 40)}`]);
+            /* BF1 G: العرض خلص / الرابط اتقفل / البوكس اتشال ⇒ أقرب بوكس حي لنفس العدد (من اسم العرض أو اسم الحملة) بسعره وزره — مش الرد العام */
+            const o = r && r.offer ? r.offer : null;
+            if (lc.campExpiredAlt && o && o.title && ["expired", "box_gone", "link_off", "no_link"].includes(why)) {
+              const people = partySizeOf(o.title) || partySizeOf(o.jobName || "");
+              const alt = altBoxFor({ people, price: o.price, bundles: (know && Array.isArray(know.bundles) && know.bundles.length ? know.bundles : await bundles()) });
+              if (alt) { campAlt = { title: o.title, box: alt, people, why }; cls = { ...cls, key: "camp_alt", arg: String(alt.slug), rawIntent: "campaign_expired", lang: "ar" };
+                await q("UPDATE wa_bot_log SET intent=$2, detail=$3 WHERE id=$1", [logId, "campaign_expired", `campaign_expired:${why} → ${String(alt.slug).slice(0, 40)} (${people || "?"} أشخاص)`]); }
+            }
+          }
+        }
+      }
+      /* ═══ BF1 — تصنيفات من مراجعة ١٩/١٠ قبل القرار (النص المكتوب بس؛ الضغطات زي ما هي) ═══ */
+      if (ok && !afterWait && !ev.autoWaited && !campOffer && !campReply && !campAlt) {
+        const tx = !ev.interactiveId && String(ev.type || "text") === "text" ? String(ev.text || "").trim() : "";
+        const soft = ["unknown", "greet", "order", "offers", "ack", "thanks", "main", "notmenu", "item", "items", "location", "hoursloc", "hours", "cats", "best", "status"].includes(String(cls.key || ""));
+        const sk = tx && lc.spamQuiet ? spamKind(tx) : null;
+        if (sk) {      // I (…0639 رابط تيمو ⇒ «أنا معك» ⇒ بوكس العائلة): سطر واحد في اليوم، من غير مساعد ولا تحويل ولا متابعة
+          const was = await q("SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 AND reply_key='spam' AND decision IN ('replied','dry') AND at > NOW() - INTERVAL '24 hours' LIMIT 1", [phone]);
+          if (was && was.length) { await finish({ decision: "silent", reason: "spam_repeat", key: "spam", detail: `spam:${sk}` }); return; }
+          cls = { ...cls, key: "spam", arg: null, rawIntent: `spam:${sk}`, lang: "ar" };
+        } else if (tx && soft && comingKind(tx)) cls = { ...cls, key: "coming", arg: null, rawIntent: "coming" };      // …0558
+        else if (tx && ["location", "hoursloc", "unknown", "ack", "area"].includes(String(cls.key)) && locationConfirm(tx) && chat.last_loc && now.getTime() - Date.parse(chat.last_loc.at || 0) < 60 * 60_000) cls = { ...cls, key: "loc_ok", arg: null, rawIntent: "location_confirm" };      // E …7271
+        else if (tx && asksStaffByName(tx) && !["stop", "start", "complaint", "problem", "change", "stop_updates"].includes(String(cls.key))) cls = { ...cls, key: "human", arg: null, rawIntent: "asks_staff_by_name" };      // F …2488
+        else if (tx && cls.key === "unknown" && praiseOnly(tx)) { const ro = await recentOrdersOf(q, phone, now, lc.orderAwareHours); if (ro && ro.length) cls = { ...cls, key: "thanks", arg: null, rawIntent: "praise_after_order" }; }      // …3214 (٠٫٢٢ ر.س لكل «شكراً»)
+        /* H (…1526 «إيه، جهّزه ✅» على «نفس الطلب؟» من ماجد): مفيش سلة اتسعّرت في الجلسة وآخر كلام ماجد كان «نفس الطلب» ⇒ سلة نفس الطلب الأخير على طول.
+           G (…9156 / …4333): ضغطة «أبغى أطلب» من غير حملة شغّالة ⇒ سلة نفس الطلب الأخير لو بيتجهّز (وإلا الرد العادي). */
+        if (lc.goAheadCart && cfg.reorderEnabled && !["reorder", "camp_alt", "spam", "coming", "human"].includes(String(cls.key)) && cls.rawIntent !== "followup_yes" && isGoAhead(tx, ev.interactiveId)) {
+          let sess = null; try { sess = await assistStore.loadSession(phone, now, cfg.assist.sessionMin); } catch { sess = null; }
+          const priced = Boolean(sess && sess.state && sess.state.lastInput);
+          const offeredSame = /نفس (?:ال)?طلب|same order/i.test(lastAssistantText(sess));
+          const orderTap = Boolean(ev.interactiveId) && CAMPAIGN_TAP_IDS.has(String(ev.interactiveId).trim());
+          if (!priced && (offeredSame || orderTap) && (await hasReorder(phone, know))) cls = { ...cls, key: "reorder", arg: null, rawIntent: offeredSame ? "go_ahead_reorder" : "order_tap_reorder" };
         }
       }
       const rc = cls.key ? await recent(phone, cls.key, cls.arg, ["text", "interactive", "button"].includes(String(ev.type || "text")) ? String(ev.text || "").slice(0, 300) : "") : { n: 0, lastSame: null, sameTextAt: null, sameTextKey: null, failedRecently: false };
@@ -3009,6 +3101,13 @@ export function register(app, ctx, deps = {}) {
         if (data.campaign) cls = { ...cls, rawIntent: "campaign_order", lang: "ar" };
       } else if (data.campaign) data.campaign = null;
       data.chat = chat;
+      if (campAlt) data.campAlt = campAlt;      // BF1 G
+      /* BF1 C (…2488: تقييم 3★ ردّت ٩:١١ الصبح والمطعم مقفول، ومحدش رجعلها لحد ٥:٢٠): رد على تقييم واطي / شكوى مفتوحة والمطعم مقفول ⇒ شغلة واحدة وقت الفتح للمدير */
+      if (ok && !afterWait && lc.closedComplaintAtOpen && data.open && data.open.open === false && ["review_low", "complaint", "review_note"].includes(String(chat.handoff_reason || "")) && chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) {
+        let plan = null; try { plan = openingPlan({ now, settings, lastInMs: now.getTime(), delayMin: 0 }); } catch { plan = null; }
+        const dueAt = plan && plan.dueAt ? plan.dueAt : plan && plan.openAt ? plan.openAt : null;
+        if (dueAt) await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`cc:${phone}:${Date.parse(dueAt)}`, phone, "closed_complaint", dueAt, jb({ at: ev.at || now.toISOString(), reason: String(chat.handoff_reason), text: maskText(String(ev.text || "")).slice(0, 160) }), logId]);
+      }
       /* مساعد الطلبات شغّال للعميل ده (١٢/١٠، بعد تجربة عمر: المساعد ماردّش ولا مرة عشان التحويل والرد المؤجّل كانوا للقواعد):
          • الموظف كتب ⇒ المساعد يتراجع assist.staffStepBackMin (٥ د) بدل humanPauseMin (٣٠ د)، وبعدها يرجع لوحده.
          • تحويل عادي (طلب موظف، سؤال، عرض مخصص، صورة) مابيمسكش المحادثة: المساعد يكمل يرد على اللي يعرفه.
@@ -3037,8 +3136,10 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         }
       }
       const aud = (cfg.mode === "test" || cfg.mode === "live") && ok ? await assistAudience({ cfg, phone, chat, now, hasReferral: Boolean(ev.referral), count: !afterWait }) : { on: false, why: "bot_mode" };
-      const assistOn = aud.on;
+      let assistOn = aud.on;
       data.assistWhy = aud.why;
+      /* BF1 L (…5430 / …0448 / …9572: ماجد والكاشير ردّوا مع بعض): موظف كتب في المحادثة خلال humanPauseMin ⇒ ماجد مايمسكش الرسالة (القواعد بقاعدة سكوت الموظف العادية) */
+      if (assistOn && lc.staffStopsMajed && echoAt && now.getTime() - Date.parse(echoAt) < cfg.humanPauseMin * 60_000) { assistOn = false; data.assistWhy = "staff_in_chat"; }
       if (!afterWait && aud.why === "daily_cap" && cfg.assist.liveDailyCustomers > 0) await oddThing(settings, cfg, "budget_cap", null, { detail: `سقف عملاء المساعد اليومي (${cfg.assist.liveDailyCustomers}) اتوصل له — الباقي بيرد عليهم بوت القواعد`, repeatMin: 1440 });
       const held = assistOn && seriousHeld(chat, cfg, now);
       data.assistOn = assistOn;
@@ -3157,6 +3258,13 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         await assistDone({ okSent: false });
         if (!afterWait && !gate5.never) await oddAfter({ d, handoff: d.handoff, okSent: false });
         return;
+      }
+      /* BF1 L: ماجد كان بيكتب والموظف كتب (أو استلم المحادثة) في نفس اللحظة ⇒ رد ماجد مايتبعتش (من غير تحويل ولا تنبيه) */
+      if (ar && ar.d && d.key === "assist" && ok && lc.staffStopsMajed && cfg.mode !== "dry") {
+        const since = ev.at && Number.isFinite(Date.parse(ev.at)) ? new Date(ev.at).toISOString() : now.toISOString();
+        const e2 = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 AND ${STAFF_ECHO_SQL} LIMIT 1`, [phone, since]);
+        const c2 = await chatOf(phone);
+        if ((e2 && e2.length) || (c2.muted_until && Date.parse(c2.muted_until) > clock().getTime())) { await finish({ decision: "silent", reason: "staff_replied_during_turn", key: "assist", detail: d.detail }); await assistDone({ okSent: false }); return; }
       }
       // ٣) الإرسال: dry = مفيش. test = قايمة التجربة بس. live = الأقفال الكاملة. محاولة واحدة (+ نص عادي لو التفاعلي فشل).
       let sent = 0, error = null;
@@ -3320,8 +3428,8 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       const ls = await q(`SELECT l.phone_norm, l.at, l.lang FROM wa_bot_log l
                            WHERE l.at > NOW() - make_interval(mins => $1::int + 60) AND l.at <= NOW() - make_interval(mins => $1::int)
                              AND l.id = (SELECT max(x.id) FROM wa_bot_log x WHERE x.phone_norm = l.phone_norm)
-                             AND l.decision = 'silent' AND l.reason IN ('out_of_scope','ignored_type','auto_reply_covered') AND COALESCE(l.msg_type,'') <> 'revoke'
-                           ORDER BY l.at LIMIT 20`, [Math.ceil(cfg.leadFollowUpMin)]);
+                             AND l.decision = 'silent' AND l.reason IN ('out_of_scope','ignored_type','auto_reply_covered') AND COALESCE(l.msg_type,'') NOT IN ('revoke','reaction','sticker','system','ephemeral','request_welcome')
+                           ORDER BY l.at LIMIT 20`, [Math.ceil(cfg.leadFollowUpMin)]);      // BF1 A (…9821: ❤️ بعد «شكراً» ⇒ «ما قدرنا نخدمك»): التفاعل/الملصق مش رسالة محتاجة رد
       for (const l of ls || []) await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`lead:${l.phone_norm}:${riyadhDay(now)}`, l.phone_norm, "lead_followup", now.toISOString(), jb({ at: new Date(l.at).toISOString(), lang: l.lang === "en" ? "en" : "ar" }), null]);
     }
     /* SX1 — شبكة الأمان: رقم البوت ساكت عليه بسبب قايمة «موظفين / فريق» — مش عضو في دليل الفريق — كتب ومحدش رد خلال
@@ -3350,6 +3458,19 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         }
       }
     }
+    /* BF1 C — «استلم» من غير رد (…8282 / …6102 / …0356): محادثة مسحوبة من claimSilentMin والعميل كتب في آخر ٢٤ ساعة ومحدش من الفريق كتب له من ساعة السحب ⇒ شغلة واحدة لكل سحبة (cs:<الرقم>:<وقت السحب>) */
+    const lc = learnConfig(settings.waBot || {});
+    if (lc.claimSilentMin > 0) {
+      const cs = await q(`/*bf1:claims*/ SELECT h.phone_norm, h.since, h.by_name FROM wa_chat_holds h
+          WHERE h.state = 'held' AND h.since <= NOW() - make_interval(mins => $1::int) AND h.since > NOW() - INTERVAL '3 hours'
+            AND EXISTS (SELECT 1 FROM wa_messages i WHERE i.phone_norm = h.phone_norm AND i.direction = 'in' AND COALESCE(i.source,'api') <> 'history' AND i.created_at > NOW() - INTERVAL '24 hours')
+            AND NOT EXISTS (SELECT 1 FROM wa_messages m WHERE m.phone_norm = h.phone_norm AND m.created_at > h.since AND ${HUMAN_OUT})
+          LIMIT 20`, [Math.round(lc.claimSilentMin)]);
+      for (const c of cs || []) { const t0 = new Date(c.since); if (!Number.isFinite(t0.getTime())) continue; if (cfg.mode === "test" && !cfg.testPhones.includes(c.phone_norm)) continue;
+        await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`cs:${c.phone_norm}:${t0.getTime()}`, c.phone_norm, "claim_silent", now.toISOString(), jb({ since: t0.toISOString(), by: c.by_name ? String(c.by_name).slice(0, 60) : null }), null]); }
+    }
+    /* BF1 ج — الفحص الليلي (قراية بس): بعد selfReviewHour:selfReviewMinute الرياض، مرة لليوم التشغيلي اللي خلص */
+    try { await learnApi.maybeNightly(now, lc); } catch (e) { console.error("[learn] nightly:", e.message); }
   }
   /* رسالة من البوت من غير رسالة عميل وراها: إرسال + صف في السجل (زي متابعة السلة). ⇒ خطأ الإرسال أو null */
   /* FU1: نفس الإرسال بس بيرجّع رقم الرسالة كمان (wamid) — دفتر المتابعة محتاجه عشان يعرف لو الرسالة فشلت بعدين (حظر / ماوصلتش) للفرامل */
@@ -3561,6 +3682,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     /* FU1: «لا شكراً» على متابعة خلال replyFollowUpDeclineDays ⇒ مفيش رسايل بيع (مكافأة / سلة) — تتبّع طلبه الشغّال بس */
     const declinedFu = Boolean(chat.follow_declined_at && now.getTime() - Date.parse(chat.follow_declined_at) < cfg.replyFollowUpDeclineDays * 86400_000);
     if (!rep && declinedFu) return no("declined");
+    if (!rep) { const ro = await recentOrdersOf(q, phone, now, learnConfig(settings.waBot || {}).orderAwareHours); if (ro === null) return no("order_check_failed"); if (ro.length) return no("ordered_recently"); }      // BF1 A: مفيش بيع لحد طلب
     if (!rep && assist && !op.marketing_off_at) { try { const of = await assist.get_offers(phone), soon = ((of && of.rewards) || []).find((r) => r.freeDelivery && r.expires && Date.parse(`${r.expires}T23:59:59+03:00`) - now.getTime() < 3 * 86400_000);
       if (soon) { const line = salesTextOf(cfg, "sb_reward_until", { code: soon.code, from: soon.minTotal, until: dayMonth(soon.expires) }, lang); if (line) { reason = "reward_expiring"; rep = { body: line }; } } } catch { /* من غير المكافأة */ } }
     if (!rep) { const cart = await q(`SELECT b.code FROM wa_bot_carts b WHERE b.phone_norm=$1 AND b.created_at > $2::timestamptz - INTERVAL '2 hours' AND b.expires_at > NOW()
@@ -3601,6 +3723,8 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (g5.never || g5.out) return no(g5.never ? "never_reply" : "out_of_scope");
     const out = await q(OUT_AFTER_SQL, [phone, ev.at]);
     if (out === null) return no("out_check_failed"); if (out.length) return no("already_answered");      // حد رد عليه (اللوحة / البوت) بعد رسالته
+    /* BF1 A (…1149 / …0448 / …9821: «ما قدرنا نخدمك، نعتذر» لعميل طلب من الموقع أو الكاشير): طلب من أي قناة في آخر orderAwareHours ⇒ مفيش اعتذار */
+    { const ro = await recentOrdersOf(q, phone, now, learnConfig(settings.waBot || {}).orderAwareHours); if (ro === null) return no("order_check_failed"); if (ro.length) return no("ordered_recently"); }
     const cmp = await q(COMPLAINT_24H_SQL, [phone]);
     if (cmp === null) return no("complaint_check_failed"); if (cmp.length) return no("complaint_today");
     let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
@@ -3841,6 +3965,44 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const alert = await handoffNow(settings, cfg, phone, ["staff_silent", "normal"], null, note.slice(0, 200), "ar");
     return end("done", `handover:${alert || "?"}`.slice(0, 80));
   }
+  /* ── BF1 C — الموظف استلم وماكتبش ⇒ الكارت يرنّ تاني + التنبيه + تصعيد للمدير (مرة لكل سحبة). مافيش رسالة للعميل من هنا (المحادثة مسحوبة = البوت ساكت). ── */
+  async function runClaimSilent(j, settings, cfg, now, end) {
+    const phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
+    const no = (reason) => end("cancelled", reason), lc = learnConfig(settings.waBot || {});
+    if (!(lc.claimSilentMin > 0)) return no("off"); if (!ev.since) return no("bad_job");
+    if (cfg.mode !== "test" && cfg.mode !== "live") return no("mode_off");
+    const h = await q("SELECT since, by_name FROM wa_chat_holds WHERE phone_norm=$1 AND state='held'", [phone]);
+    if (h === null) return no("hold_check_failed"); if (!h[0] || new Date(h[0].since).toISOString() !== ev.since) return no("not_held_anymore");
+    const hu = await q(`SELECT 1 FROM wa_messages m WHERE m.phone_norm = $1 AND m.created_at > $2 AND ${HUMAN_OUT} LIMIT 1`, [phone, ev.since]);
+    if (hu === null) return no("reply_check_failed"); if (hu.length) return no("staff_answered");
+    const waited = Math.max(0, Math.round((now.getTime() - Date.parse(ev.since)) / 60_000));
+    if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: "claim_silent", reasonAr: `${REASON_AR.claim_silent}${ev.by ? ` (${ev.by})` : ""}`, urgent: true, orderNo: null, at: now.toISOString(), test: cfg.mode === "test", reminder: true, waitedMin: waited }); } catch (e) { console.error("[wabot] portal:", e.message); } }
+    let alert = "would", esc = null;
+    if (cfg.mode === "live" || cfg.alertInTest) {
+      alert = await alertStaff(settings, cfg, { phone, reason: "claim_silent", orderNo: null, urgent: true, stage: "reminder", waitedMin: waited });
+      if (lc.claimEscalate) { const hv = handoversApi(); if (hv && typeof hv.escalate === "function") { try { esc = await hv.escalate({ phone, waitedMin: waited, reason: "claim_silent", reasonAr: REASON_AR.claim_silent }); } catch (e) { console.error("[wabot] claim escalate:", e.message); } } }
+    }
+    return end("done", `realert:${alert}${esc ? " · manager" : ""}`.slice(0, 80));
+  }
+  /* ── BF1 C — العميل رد على تقييمه الواطي / شكوته والمطعم مقفول ⇒ وقت الفتح: لو محدش من الفريق كتب له من ساعتها ⇒ كارت عاجل + تنبيه + المدير ── */
+  async function runClosedComplaint(j, settings, cfg, now, end) {
+    const phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
+    const no = (reason) => end("cancelled", reason), lc = learnConfig(settings.waBot || {});
+    if (!lc.closedComplaintAtOpen) return no("off"); if (!ev.at) return no("bad_job");
+    if (cfg.mode !== "test" && cfg.mode !== "live") return no("mode_off");
+    if (cfg.mode === "test" && !cfg.testPhones.includes(phone)) return no("not_test_phone");
+    if (now.getTime() - new Date(j.due_at).getTime() > 3 * 3600_000) return no("stale");
+    const hu = await q(`SELECT 1 FROM wa_messages m WHERE m.phone_norm = $1 AND m.created_at > $2 AND ${HUMAN_OUT} LIMIT 1`, [phone, ev.at]);
+    if (hu === null) return no("reply_check_failed"); if (hu.length) return no("staff_answered");
+    const reason = "closed_complaint", note = `${REASON_AR.closed_complaint}${ev.reason ? ` (${REASON_AR[ev.reason] || ev.reason})` : ""}${ev.text ? ` — «${String(ev.text).slice(0, 80)}»` : ""}`.slice(0, 200);
+    if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason, reasonAr: REASON_AR.closed_complaint, urgent: true, orderNo: null, at: now.toISOString(), test: cfg.mode === "test", note }); } catch (e) { console.error("[wabot] portal:", e.message); } }
+    let alert = "would", esc = null;
+    if (cfg.mode === "live" || cfg.alertInTest) {
+      alert = await alertStaff(settings, cfg, { phone, reason, orderNo: null, urgent: true, stage: "reopened" });
+      const hv = handoversApi(); if (hv && typeof hv.escalate === "function") { try { esc = await hv.escalate({ phone, waitedMin: Math.round((now.getTime() - Date.parse(ev.at)) / 60_000), reason, reasonAr: REASON_AR.closed_complaint }); } catch (e) { console.error("[wabot] complaint escalate:", e.message); } }
+    }
+    return end("done", `opening:${alert}${esc ? " · manager" : ""}`.slice(0, 80));
+  }
   /* WO1 — «نكمّل لما نفتح» (waopenfu.js): التسجيل من assistTurn، والإرسال من runDueJobs. كل الأقفال من نفس دوال البوت. */
   const openFu = makeOpenFollowUp({ q, jb, STORE, get store() { return assistStore; }, get assist() { return assist; }, sendOwnX, ownGate, brakeState, audience: assistAudience, complaintSql: COMPLAINT_24H_SQL,
     text: (cfg, key, lang, vars) => fill(key, textOf(cfg, key, lang), vars), modeButtons: (cfg, lang) => assistExtras(cfg, lang, { buttons: { kind: "mode" } }),
@@ -3885,6 +4047,8 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         if (j.kind === "media_burst") { await runMediaBurst(j, ev, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "handover_check") { await runHandoverCheck(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "staff_silent") { await runStaffSilent(j, settings, cfg, now, end); ran++; continue; }      // SX1
+        if (j.kind === "claim_silent") { await runClaimSilent(j, settings, cfg, now, end); ran++; continue; }      // BF1 C
+        if (j.kind === "closed_complaint") { await runClosedComplaint(j, settings, cfg, now, end); ran++; continue; }      // BF1 C
         if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) { await cancel("stale"); continue; }
         const echo = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 AND ${STAFF_ECHO_SQL} LIMIT 1`, [j.phone_norm, ev.at || new Date(j.due_at).toISOString()]);
         if (echo === null) { await cancel("echo_check_failed"); continue; }      // مانعرفش الموظف رد ولا لأ ⇒ مانردّش
@@ -4149,7 +4313,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
   /* WO1: المساعد يقول «أول ما نفتح أرسل لك سلتك» بس لو الرسالة دي هتتبعت فعلاً (المفتاح شغّال والفتح + التأخير قبل ما النافذة تقفل) */
   const openFollowOk = (cfg, settings, now) => { try { return Boolean(cfg.openFollowUp) && openingPlan({ now, settings, lastInMs: now.getTime(), delayMin: cfg.openFollowUpDelayMin }).ok; } catch { return false; } };
   const laterOk = (settings) => { try { const p = preorderCfg(settings || {}); return p.enabled === true && Array.isArray(p.slots) && p.slots.length > 0; } catch { return false; } };
-  async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending = null, ev = null, settings = null }) {
+  async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending = null, ev = null, settings = null, noSell = false }) {
     const hours = await assist.get_hours();
     let handback = null; { const fl = flowApi(); if (fl && typeof fl.handbackFor === "function") { try { handback = await fl.handbackFor(phone); } catch (e) { console.error("[assist] handback:", e.message); handback = null; } } }
     let profile = null, offers = null, reorder = null, notes = null, ad = null, personal = undefined, mem = null;
@@ -4175,6 +4339,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     /* MJ1 (١٦/١٠: «تبي نفس طلبك السابق؟» لعميل طلبه لسه في المطبخ ×٢): طلب شغّال ⇒ مفيش عرض إعادة طلب، والموديل عارف إن له طلب ماشي */
     let activeOrder = null;
     if (cfg.activeOrderFirst) { try { const ao = await activeOrderOf(phone, cfg); if (ao) { activeOrder = { order_no: String(ao.order_no), status: String(ao.status) }; reorder = null; } } catch (e) { console.error("[assist] active order:", e.message); } }
+    if (noSell) reorder = null;      // BF1 A/F: طلب موجود أو شكوى مفتوحة ⇒ مفيش «نفس طلبك؟»
     let branch = null; try { branch = fresh ? textOf(cfg, "location", lang) : null; } catch { branch = null; }
     return { profile, personal, mem, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel, handback, later: laterOk(settings), activeOrder, openFollow: openFollowOk(cfg, settings, now) }), handback: Boolean(handback) };
   }
@@ -4202,6 +4367,14 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       return planReminder({ now: clock(), day, time, lastInMs: clock().getTime(), quietStart: gate ? 0 : cfg.assist.reminderQuietStart, quietEnd: gate ? 0 : cfg.assist.reminderQuietEnd, lang,
         isOpenAt: (dt) => { try { if (gate) return isRestaurantOpenAt(dt, settings); return settings?.hours ? isOpenNow(settings.hours, dt) : null; } catch { return null; } } }); },
     onCall: async (m) => { const rec = await aicost.record({ ...m, purpose: "assistant", logId }, cfg.llm.prices); return { costSar: rec.costSar, in: rec.in, out: rec.out, cached: rec.cached }; } });
+  /* BF1: مشاكل المراجِع اللي من نوع الحرّاس الجديدة ⇒ wa_bot_guard_hits (الفحص الليلي بيحوّلها «مشتبه» في سجل الأخطاء) */
+  const GUARD_TYPES = { promise_not_done: "promise", denied_received_offer: "offer", sold_during_complaint: "complaint_sell", sold_after_order: "order_sell" };
+  async function noteGuards(trace, phone = null) {
+    try {
+      for (const v of ((trace && trace.verdicts) || []).filter((x) => x && !x.ok)) for (const p of (v.problems || []).filter((x) => GUARD_TYPES[x.type]))
+        await learnApi.recordGuardHit({ phone, guard: GUARD_TYPES[p.type], kind: p.type, value: p.value, text: v.text, blocked: true });
+    } catch (e) { console.error("[learn] guard note:", e.message); }
+  }
   async function assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone, held = false, allowed = false }) {
     const acfg = cfg.assist;
     if (!assist || !allowed) return null;
@@ -4227,12 +4400,15 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         const campTurn = cls.rawIntent === "campaign_reply" && d && d.key === "order" && data && data.campReply && data.campReply.ok && ["tap", "rules:campaign_order"].includes(el.why);
         if (campTurn) await assistStore.saveSession(phone, noteCampaignTurn(session, now, { text: ev.text, offer: data.campReply, sent: sentText }), now);
         else if (session) await assistStore.saveSession(phone, noteRulesTurn(session, ev.text, ruleKey()), now);
+        /* BF1 (…7878: «أحتاج المنيو» ⇒ أقسام المنيو، ومحدش تابع): رد المنيو من القواعد لعميل المساعد ⇒ متابعة «أنا معك» واحدة لو سكت (كل شروطها بتتراجع وقتها) */
+        if (el.why === "rules:menu" && acfg.nudgeMin > 0) { try { await scheduleNudge(phone, { at: clock().toISOString(), lang }, acfg); } catch (e) { console.error("[assist] menu nudge:", e.message); } }
         else if (el.seed) { const s0 = newSession(now); s0.state.seed = true; await assistStore.saveSession(phone, noteRulesTurn(s0, ev.text, "dish card: price + order button"), now); }
         await turnRow({ handledBy: "rules_owned", outcome: `rules:${el.why.replace(/^rules:/, "")}`, masked: maskText(ev.text), trace: {} });
       } };
     }
     const fallback = async (reason, trace = {}) => {
       await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `assist off: ${reason}`]);
+      if (reason === "validator") await noteGuards(trace, phone);      // BF1: الحارس منع رد ⇒ سطر للفحص الليلي
       /* ST1: رد للمساعد اترفض من المراجِع مرتين ⇒ «حاجة غريبة» ومعاها اللي كان هيقوله؛ وسقف المصروف / حد الردود اليومي ⇒ مرة في اليوم. */
       if (reason === "validator") { const v = Array.isArray(trace.verdicts) ? trace.verdicts[trace.verdicts.length - 1] : null;
         await oddThing(settings, cfg, "assist_refused", phone, { tried: v && v.text ? String(v.text) : null, detail: v && Array.isArray(v.problems) ? `سبب الرفض: ${v.problems.map((p) => p.type).slice(0, 4).join("، ")}` : null }); }
@@ -4257,7 +4433,17 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (seeded) { session = JSON.parse(JSON.stringify(session)); delete session.state.seed; }
     /* تحويل عادي لسه مستني موظف: المساعد يعرف (مايحوّلش نفس الحاجة تاني، ويقول للعميل إن الموظف هيرد) ويكمل يساعد. */
     const pending = handoverOpenOf(chat, cfg, echoAt, now) ? { reason: String(chat.handoff_reason || "handover"), minutes_ago: Math.max(0, Math.round((now.getTime() - Date.parse(chat.handoff_at)) / 60_000)) } : null;
-    const cx = await assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending, ev, settings });
+    /* BF1 — السياق من مراجعة ١٩/١٠: طلب موجود (A/E …0356)، شكوى مفتوحة (F …2488)، آخر حملة (E …0494)، رابط ريل (…7858) */
+    const lcfg = learnConfig(settings.waBot || {}), extra = {};
+    { const ro = await recentOrdersOf(q, phone, now, lcfg.orderAwareHours);
+      if (ro && ro.length) { const posItems = ro[0].channel === "pos" ? await q(POS_ITEMS_SQL, [ro[0].ref]) : null; const b = existingOrderBrief(ro, now, posItems);
+        if (b) extra.existing_order = { ...b, rule: "This number already ordered (see placed / minutes_ago). Treat the chat as being about that order: answer about it (items above or order_status), no selling, no «لكم شخص؟», no previous-order offer, no explanation of how to order. A question about what is in the order is answered from its items." }; } }
+    { const cmp = await q(COMPLAINT_24H_SQL, [String(phone)]); const lowOpen = ["review_low", "complaint", "review_note", "problem"].includes(String(chat.handoff_reason || "")) && chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000;
+      if ((cmp && cmp.length) || lowOpen) extra.complaint_open = { rule: "This customer has an open complaint or low rating with the manager today: no selling of any kind unless they ask to order themselves (then help normally). Be kind and short. If they ask for a person (by name or not) or want to add something about the problem, say you will pass their message to the team and call handover(needs_staff)." }; }
+    if (lcfg.campExpiredAlt && /عرض|عروض|offer|حمل[ةه]|الرسال[ةه] اللي وصلت/i.test(String(ev.text || ""))) { const lcf = await lastCampaignFact(phone, know); if (lcf) extra.last_campaign = { ...lcf, rule: "the last offer message we sent this customer: name it before ever saying we have no offer; if still_valid is false say it ended and propose the alternative (same number of people) with its price" }; }
+    if (socialLink(ev.text)) extra.customer_sent_a_link = { rule: "The customer sent a social-media link (often one of our ads, which you cannot open). Say in one line you cannot open links, ask which dish or offer they saw, and name two or three of our best sellers (recommend) with prices." };
+    const cx = await assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending, ev, settings, noSell: Boolean(extra.existing_order || extra.complaint_open) });
+    if (Object.keys(extra).length) { cx.context = { ...cx.context, ...extra }; if (extra.existing_order || extra.complaint_open) cx.reorder = null; }
     if (ev.heard) cx.context = { ...cx.context, ...heardContext(ev.heard === "voice" ? "voice" : "image") };      // PS2: القاعدة بتيجي مع المفتاح
     /* PS1 — الشخصية: الاسم في سياق أول دور، وجملة التعريف في الدور اللي التعريف مستحق فيه بس (أول رد في المحادثة / مرة كل disclosureHours). */
     const discloseDue = !chat.last_disclosed_at || now.getTime() - Date.parse(chat.last_disclosed_at) >= cfg.disclosureHours * 3600_000;
@@ -4278,9 +4464,16 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     } catch (e) { console.error("[assist] earlier pictures:", e.message); earlierPictures = null; } }
     const loop = makeAssistLoop(assistDeps(cfg, settings, logId));
     const text = cls.key === "area" ? "📍" : String(ev.text || "");      // الموقع نفسه مابيتبعتش للموديل: علامة بس، والسياق بيقول إنه شارك موقعه
-    const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile, earlierPictures, personal: cx.personal, mem: cx.mem, tap: ev.interactiveId || null });      // S1: السجل الشخصي + ذاكرة الرفض (أول دور) + معرّف الزر
+    const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile, earlierPictures, personal: cx.personal, mem: cx.mem, tap: ev.interactiveId || null, guards: { goAhead: lcfg.goAheadCart, promise: lcfg.promiseGuard }, lessons: (await learnApi.lessonsNow(lcfg)).text || null });      // BF1: الحرّاس + دروس الأخطاء · S1: السجل الشخصي + ذاكرة الرفض (أول دور) + معرّف الزر
     if (!r.ok) { if (fresh) session = null; if (/^model_http_400/.test(r.reason)) { await assistStore.dropSession(phone); session = null; } return fallback(r.reason, r.trace); }
-    const tr = r.trace, nowMs = now.getTime(), L = tr.lang === "en" ? "en" : tr.lang === "ar" ? "ar" : lang;      // لغة الدور زي ما المساعد حدّدها («Pickup» وسط محادثة إنجليزية = إنجليزي)
+    const tr = r.trace, nowMs = now.getTime(), L = tr.lang === "en" ? "en" : tr.lang === "ar" ? "ar" : lang;
+    await noteGuards(tr, phone);      // BF1: المراجِع مسك وعد/بيع غلط واتكتب تاني ⇒ سطر للفحص الليلي
+    /* BF1 D — الحارس الأخير على الرد اللي هيتبعت (حتى لو المراجِع عدّاه): وعد بحاجة ماحصلتش ⇒ مايتبعتش، ورد القواعد الثابت بداله */
+    if (lcfg.promiseGuard && !r.handover && r.text) {
+      /* المطبخ / «طلبك اتأكد» ممنوعين دايماً من ماجد. «جهّزت / أضفت» بيتراجعوا في المراجِع (اللي بيشيل نصوص الكود المعتمدة: ملخص السلة، لحظة الرسوم…) */
+      const pp = promiseProblems(r.text, { cartBuilt: Boolean(r.cart), cartTouched: Boolean(r.cart) || (tr.tools || []).some((x) => x.name === "preview_cart" && x.result && x.result.ok !== false) }).filter((x) => x.kind === "kitchen" || x.kind === "order_state");
+      if (pp.length) { await learnApi.recordGuardHit({ phone, guard: "promise", kind: pp[0].kind, value: pp.map((x) => x.value).join(" · "), text: r.text, logId, blocked: true }); if (fresh) session = null; return fallback("promise_guard", tr); }
+    }      // لغة الدور زي ما المساعد حدّدها («Pickup» وسط محادثة إنجليزية = إنجليزي)
     const bc = { cfg, lang: L, data, referral: null, factual: false, arg: null };
     let reply, handoff = null;
     try {
@@ -4295,6 +4488,10 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     /* persona: المساعد قال التعريف في مكانه الطبيعي؛ لو ماقالوش (أو الرد نص تحويل ثابت) الكود بيحطه — التعريف مضمون بالكود مش بالموديل. classic: السطر القديم فوق الرد. */
     if (disclose) { try { reply = { ...reply, body: persona ? ensureIntro(reply.body, introSay(personaNameOf(cfg, L), L), personaNameOf(cfg, L)) : `${disclosureLine(cfg, L, settings)}\n${reply.body}` }; } catch { /* من غير التعريف أحسن من مفيش رد */ } }
     const payloads = [toPayload(reply, { cfg, lang: L, interactive: cfg.interactive, footer: false })], fb = [toPayload(reply, { cfg, lang: L, interactive: false, footer: false })];
+    /* BF1 H: «جهّزه» ⇒ السلة اتبعتت، والاقتراح (رز / مشروب) زرّين «أضفه / لا شكراً» تحتها — مش سؤال قبلها */
+    if (r.afterCart && r.afterCart.name && r.cart) { try { const sg = { body: fill("bf_sg_after", textOf(cfg, "bf_sg_after", L), { item: r.afterCart.name }), ...assistExtras(cfg, L, { buttons: { kind: "sg" } }) };
+      const p2 = toPayload(sg, { cfg, lang: L, interactive: cfg.interactive, footer: false }), f2 = toPayload({ body: sg.body }, { cfg, lang: L, interactive: false, footer: false });
+      if (!payloadProblem(p2) && !payloadProblem(f2)) { payloads.push(p2); fb.push(f2); } } catch { /* السلة لوحدها */ } }
     if ([...payloads, ...fb].map(payloadProblem).find(Boolean)) { if (fresh) session = null; return fallback("payload", tr); }
     const outcome = r.handover ? `handover:${r.handover.reason}` : "sent";
     const nd = { act: "reply", reason: "assistant", key: "assist", rawIntent: cls.rawIntent, lang: cls.lang, score: cls.score, payloads, fallback: fb, handoff, note: r.handover ? r.handover.note : null,
@@ -4306,7 +4503,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       await assistStore.saveSession(phone, session, now);
       /* WO1 — «نكمّل لما نفتح»: الرد اتبعت والمطعم مقفول بمواعيده وفيه سلة (أو كلمة طلب) ⇒ شغلة واحدة وقت الفتح بصورة السلة (الجلسة بتموت بعد sessionMin، الصورة لأ) */
       /* بس لو الدور ده لمس الطلب (سلة اتسعّرت / اتعملت، أو كلمة طلب): «لا خلاص» بعد سلة قديمة في الجلسة مابتجدّدش الوعد — والشغلة المستنية بتتلغي وقتها «العميل كتب» */
-      if (!r.handover) { try { const intent = ORDER_RE.test(normalize(String(ev.text || ""))), touched = Boolean(r.cart) || (tr.tools || []).some((x) => (x.name === "preview_cart" || x.name === "build_cart") && x.result && x.result.ok === true);
+      if (!r.handover) { try { const intent = ORDER_RE.test(normalize(String(ev.text || ""))) || adPrefill(ev.text), touched = Boolean(r.cart) || (tr.tools || []).some((x) => (x.name === "preview_cart" || x.name === "build_cart") && x.result && x.result.ok === true);
         if (intent || touched) await openFu.record({ phone, settings, cfg, now: clock(), msgAt: ev.at || null, lang: L, snapshot: cartSnapshotOf({ cart: r.cart, state: session.state, trace: tr }), intent });
       } catch (e) { console.error("[assist] open followup:", e.message); } }
       if (cx.handback) { const fl = flowApi(); if (fl && typeof fl.handbackUsed === "function") { try { await fl.handbackUsed(phone); } catch (e) { console.error("[assist] handback used:", e.message); } } }
@@ -4372,6 +4569,10 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (cart === null) return no("cart_check_failed"); if (cart.length) return no("has_cart");
     const ord = await q("SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND created_at > $2 AND status <> 'expired' LIMIT 1", [phone, since]);
     if (ord === null) return no("order_check_failed"); if (ord.length) return no("ordered");
+    /* BF1 A (…0558 / …3214 / …0494: «أنا معك 🙂 قل لي كم شخص» بعد طلب كاشير/صالة) + I (…0639 سبام) + «أنا جاي» */
+    { const lc0 = learnConfig(settings.waBot || {}), ro = await recentOrdersOf(q, phone, now, Math.max(6, lc0.orderAwareHours)); if (ro === null) return no("order_check_failed"); if (ro.length) return no("ordered_recently");
+      const lk = await q("SELECT reply_key FROM wa_bot_log WHERE phone_norm=$1 AND decision IN ('replied','dry') AND at > NOW() - INTERVAL '24 hours' AND reply_key IN ('spam','coming') LIMIT 1", [phone]);
+      if (lk && lk.length) return no(lk[0].reply_key === "spam" ? "spam" : "coming"); }
     const prior = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_nudge','lead_followup','assist_followup','${FU_KIND}','${OF_KIND}') AND status='done' AND done_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]);      // FU1: + متابعة اللي ردّ
     if (prior === null) return no("prior_check_failed"); if (prior.length) return no("already_followed_up");
     let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
@@ -4409,6 +4610,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (!ev.at || !ev.setAt) return no("bad_job");
     const ord = await q("SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND created_at > $2 AND status <> 'expired' LIMIT 1", [phone, ev.setAt]);
     if (ord === null) return no("order_check_failed"); if (ord.length) return no("ordered");
+    { const ro = await ordersSince(q, phone, ev.setAt); if (ro === null) return no("order_check_failed"); if (ro.length) return no("ordered"); }      // BF1 A: كمان طلب الكاشير / الصالة
     const m = await q(`SELECT max(created_at) FILTER (WHERE direction='in' AND COALESCE(source,'api') <> 'history') AS last_in,
                               count(*) FILTER (WHERE source='echo' AND created_at > $2 AND COALESCE(echo_kind,'staff') <> 'auto')::int AS staff
                          FROM wa_messages WHERE phone_norm=$1 AND created_at > NOW() - INTERVAL '25 hours'`, [phone, ev.setAt]);
@@ -4500,6 +4702,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (cart === null) return no("cart_check_failed"); if (!cart[0] || !cart[0].live) return no("cart_gone");
     const ord = await q("SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND created_at > $2 AND status <> 'expired' LIMIT 1", [phone, ev.sentAt]);
     if (ord === null) return no("order_check_failed"); if (ord.length) return no("ordered");
+    { const ro = await ordersSince(q, phone, ev.sentAt); if (ro === null) return no("order_check_failed"); if (ro.length) return no("ordered"); }      // BF1 A: كمان طلب الكاشير / الصالة
     const m = await q(`SELECT max(created_at) FILTER (WHERE direction='in' AND COALESCE(source,'api') <> 'history') AS last_in,
                               count(*) FILTER (WHERE direction='in' AND created_at > $2)::int AS wrote, count(*) FILTER (WHERE source='echo' AND created_at > $2 AND COALESCE(echo_kind,'staff') <> 'auto')::int AS staff
                          FROM wa_messages WHERE phone_norm=$1 AND created_at > NOW() - INTERVAL '25 hours'`, [phone, ev.sentAt]);
@@ -4799,8 +5002,11 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const billable = Math.max(0, monthReplies - cfg.freeRepliesPerMonth);
     const waiting = (await q("SELECT count(*)::int AS n FROM wa_bot_jobs WHERE status='pending'", [])) || [{ n: 0 }];
     return c.json({ ok: true, days, mode: cfg.mode, totals: tot || {}, byKey, byReason, ordersAfterReply: ord || {}, links, mutedNow: muted[0]?.n || 0, waitingNow: waiting[0]?.n || 0,
-      month: { replies: monthReplies, free: cfg.freeRepliesPerMonth, billable, rateSar: cfg.replyRateSar, costSar: Math.round(billable * cfg.replyRateSar * 100) / 100 } });
+      month: { replies: monthReplies, free: cfg.freeRepliesPerMonth, billable, rateSar: cfg.replyRateSar, costSar: Math.round(billable * cfg.replyRateSar * 100) / 100 },
+      mistakes: await learnApi.dailyCounts(days) });      // BF1 د: الأخطاء في اليوم حسب النوع (من الفحص الليلي) + مرات الحرّاس
   });
+  /* BF1 أ/ب/ج — سجل الأخطاء (جدول للّوحة) + الدروس بنسخها + الفحص الليلي */
+  registerLearnRoutes(app, { requireAdmin, ownerOnly, actorOf, learn: learnApi, q, cfgOf: async () => learnConfig(((await getSettingsData()) || {}).waBot || {}) });
 
   const normPh = (v) => String(v || "").replace(/\D/g, "").replace(/^(00966|966|0)/, "");
   async function chatRows() {
@@ -5367,5 +5573,5 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
   /* strict: نفس الكاش بس من غير «الكاش القديم لحد ساعة» لو التحديث فشل (الحملة مابتقولش سعر من كاش قديم) */
   const live = { menu: async (o = {}) => menuIndex((await getSettingsData().catch(() => null)) || {}, clock(), Boolean(o && o.strict)), bundles: (o = {}) => bundles(Boolean(o && o.strict)),
     offers: async (o = {}) => liveOffers((await getSettingsData().catch(() => null)) || {}, clock(), Boolean(o && o.strict)) };
-  return { carts: botCarts, live, handle, ready, loadData, runDueJobs, muteChat, holdChat, unmuteChat, setNeverReply, neverReplyOf, sendFlowLine, reviewAsk, reasonAr: (r) => REASON_AR[r] || null, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
+  return { carts: botCarts, live, handle, ready, loadData, runDueJobs, learn: learnApi, muteChat, holdChat, unmuteChat, setNeverReply, neverReplyOf, sendFlowLine, reviewAsk, reasonAr: (r) => REASON_AR[r] || null, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
 }

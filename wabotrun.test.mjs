@@ -53,7 +53,7 @@ const CONFIGURED = { WHATSAPP_TOKEN: "tok", WHATSAPP_PHONE_ID: "PHONE1" };      
 const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
-function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
+function world({ handovers = null, waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
   at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null, team = null, flow = null, fav = null, expandBundle = null, campReply = null, courierWa = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
@@ -144,6 +144,26 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   }
   /* WO1: «نكمّل لما نفتح» — نسخة في الذاكرة من جمل waopenfu.OF_SQL (/*of:<الاسم>*\/) على db.jobs / db.of (الدفتر) / db.holds */
   db.of = []; db.holds = [];
+  /* BF1 (١٩/١٠): طلبات نقطة البيع (db.pos: { order_id, phone_norm, order_date, total, items }) + المحادثات المسحوبة بوقتها (db.claimHolds) — نفس منطق جمل waorders / walearn / سحب المحادثة */
+  db.pos = []; db.claimHolds = [];
+  const isHumanOut = (m) => m.direction === "out" && !["failed", "skipped"].includes(m.status || "") && ((m.source === "echo" && (m.echo_kind || "staff") !== "auto") || (!m.template && !["bot", "window", "echo"].includes(m.source || "api")));
+  function bf1Fake(name, p) {
+    switch (name) {
+      case "orders_since": {
+        const since = Date.parse(p[1]);
+        const site = orders.filter((o) => o.phone_norm === p[0] && !o.is_test && !(p[2] || []).includes(o.status) && Date.parse(o.created_at) > since)
+          .map((o) => ({ channel: "site", ref: o.order_no, at: o.created_at, status: o.status, option: o.option, total: Number(o.total) || 0, table_no: o.table_no || null, items: o.items || null }));
+        const pos = db.pos.filter((o) => o.phone_norm === p[0] && Date.parse(o.order_date) > since)
+          .map((o) => ({ channel: "pos", ref: o.order_id, at: o.order_date, status: "1", option: o.option || "takeaway", total: Number(o.total) || 0, table_no: null, items: null }));
+        return { rows: [...site, ...pos].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 5) };
+      }
+      case "pos_items": return { rows: ((db.pos.find((o) => o.order_id === p[0]) || {}).items) || [] };
+      case "claims": return { rows: db.claimHolds.filter((h) => Date.parse(h.since) <= nowMs - p[0] * 60_000 && Date.parse(h.since) > nowMs - 3 * 3600_000
+          && db.msgs.some((m) => m.phone_norm === h.phone_norm && m.direction === "in" && m.source !== "history" && nowMs - Date.parse(m.created_at) < 24 * 3600_000)
+          && !db.msgs.some((m) => m.phone_norm === h.phone_norm && Date.parse(m.created_at) > Date.parse(h.since) && isHumanOut(m))).map((h) => ({ phone_norm: h.phone_norm, since: h.since, by_name: h.by_name || null })) };
+      default: return { rows: [] };
+    }
+  }
   function ofFake(name, p) {
     const led = (k) => db.of.find((x) => x.job_key === k);
     switch (name) {
@@ -173,6 +193,12 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       const s = String(sql).replace(/\s+/g, " ").trim();
       if (failDb && failDb.test(s)) throw new Error("db down");
       { const om = /^\/\*of:([a-z_]+)\*\//.exec(s); if (om) return ofFake(om[1], p); }
+      { const bm = /^\/\*bf1:([a-z_]+)\*\//.exec(s); if (bm) return bf1Fake(bm[1], p); }      // BF1
+      if (/^INSERT INTO wa_bot_guard_hits/i.test(s)) { (db.guardHits ||= []).push({ phone: p[0], guard: p[1], kind: p[2], value: p[3], text: p[4] }); return { rows: [] }; }      // BF1
+      if (/^SELECT version, text FROM wa_bot_lessons ORDER BY version DESC LIMIT 1/i.test(s)) return { rows: (db.lessons || []).slice(-1) };      // BF1
+      if (/^SELECT 1 FROM wa_bot_log WHERE phone_norm=\$1 AND reply_key='spam' AND decision IN \('replied','dry'\) AND at > NOW\(\) - INTERVAL '24 hours'/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.reply_key === 'spam' && ['replied', 'dry'].includes(l.decision) && nowMs - Date.parse(l.at) < 86400_000).slice(0, 1).map(() => ({})) };      // BF1 I
+      if (/^SELECT reply_key FROM wa_bot_log WHERE phone_norm=\$1 AND decision IN \('replied','dry'\) AND at > NOW\(\) - INTERVAL '24 hours' AND reply_key IN \('spam','coming'\)/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && ['replied', 'dry'].includes(l.decision) && nowMs - Date.parse(l.at) < 86400_000 && ['spam', 'coming'].includes(l.reply_key)).slice(0, 1).map((l) => ({ reply_key: l.reply_key })) };      // BF1
+      if (/^SELECT since, by_name FROM wa_chat_holds WHERE phone_norm=\$1 AND state='held'/i.test(s)) return { rows: db.claimHolds.filter((h) => h.phone_norm === p[0]).map((h) => ({ since: h.since, by_name: h.by_name || null })) };      // BF1 C
       if (/^CREATE TABLE|^DELETE FROM wa_bot_log|wa_webhook_health|wa_contact_names|wa_threads/i.test(s)) return { rows: [], rowCount: 0 };
       /* FU1: «متابعة اللي ردّ» — كل جمل wafollow.FU_SQL بتبدأ بعلامة /*fu:<الاسم>*\/ */
       { const fm = /^\/\*fu:([a-z_]+)\*\//.exec(s); if (fm) return fuFake(fm[1], p); }
@@ -193,7 +219,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^SELECT o\.order_no, o\.phone_norm FROM shop_orders o/i.test(s)) return { rows: orders.filter((o) => !o.is_test && ["paid", "pos_created", "accepted", "courier_requested", "courier_assigned", "on_the_way"].includes(o.status) && nowMs - Date.parse(o.created_at) < 7200_000
         && db.log.some((l) => l.phone_norm === o.phone_norm && l.decision === "replied" && Date.parse(l.at) < Date.parse(o.created_at) + 600_000 && Date.parse(l.at) > Date.parse(o.created_at) - 86400_000) && !db.jobs.some((j) => j.wamid === `paid:${o.order_no}`)).map((o) => ({ order_no: o.order_no, phone_norm: o.phone_norm })) };
       if (/^SELECT l\.phone_norm, l\.at, l\.lang FROM wa_bot_log l/i.test(s)) { const last = new Map(); for (const l of db.log) last.set(l.phone_norm, l);
-        return { rows: [...last.values()].filter((l) => nowMs - Date.parse(l.at) >= p[0] * 60_000 && nowMs - Date.parse(l.at) < (p[0] + 60) * 60_000 && l.decision === "silent" && ["out_of_scope", "ignored_type", "auto_reply_covered"].includes(l.reason) && !(/<> 'revoke'/.test(s) && l.msg_type === "revoke")).map((l) => ({ phone_norm: l.phone_norm, at: l.at, lang: l.lang })) }; }
+        return { rows: [...last.values()].filter((l) => nowMs - Date.parse(l.at) >= p[0] * 60_000 && nowMs - Date.parse(l.at) < (p[0] + 60) * 60_000 && l.decision === "silent" && ["out_of_scope", "ignored_type", "auto_reply_covered"].includes(l.reason) && !(/<> 'revoke'/.test(s) && l.msg_type === "revoke") && !((/msg_type,''\) NOT IN \(([^)]*)\)/.exec(s) || [null, ""])[1].includes(`'${l.msg_type}'`))).map((l) => ({ phone_norm: l.phone_norm, at: l.at, lang: l.lang })) }; }      // BF1: قايمة الأنواع اللي مالهاش متابعة من الجملة نفسها
       /* «شكوى في آخر ٢٤ ساعة» (COMPLAINT_24H_SQL): القوايم بتتقري من الجملة نفسها — اللي في الكود هو اللي بيتجرّب */
       if (/^SELECT 1 FROM wa_bot_log WHERE phone_norm=\$1 AND at > NOW\(\) - INTERVAL '24 hours' AND \(reply_key IN/i.test(s)) {
         const inList = (re) => ((re.exec(s) || [])[1] || "").split(",").map((x) => x.trim().replace(/^'|'$/g, "")).filter(Boolean);
@@ -495,7 +521,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const botCarts = { ensure: async () => {}, lastOrderCarts: async (ph, days, o) => { const v = typeof lastCart === "function" ? lastCart(ph, days, o) : lastCart; return (Array.isArray(v) ? v : v ? [v] : []).map((x, i) => ({ latest: i === 0, ...x })); },
     create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, created_at: iso(), ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
   const portalEvents = [];
-  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}), ...(flow ? { flow: () => flow } : {}), ...(fav ? { fav: () => fav } : {}), ...(campReply ? { campReply } : {}), ...(courierWa ? { courierWa: () => courierWa } : {}),
+  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}), ...(flow ? { flow: () => flow } : {}), ...(fav ? { fav: () => fav } : {}), ...(handovers ? { handovers: () => handovers } : {}), ...(campReply ? { campReply } : {}), ...(courierWa ? { courierWa: () => courierWa } : {}),
     assist: { expandBundle: expandBundle || (async () => ({ ok: false, error: "bundle_not_found" })), modifiersCatalog: async () => ({ cfg: { enabled: true }, catalog: {} }), modifiersResolve: async () => ({ ok: true, shown: 0 }),
       quote: async (x) => (typeof quote === "function" ? quote(x.lat, x.lng) : quote), buildProfile: async () => ({ identity: { name: "أحمد" }, summary: { orders: 2, status: "repeat" }, orders: [], favorites: { items: [] }, addresses: [] }) }, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
@@ -996,7 +1022,7 @@ test("rule 7: the first bot message of a conversation says it is automated and h
   const a = await w.say("السلام عليكم");
   assert.equal(a.sent[0].interactive.body.text, `${DISC}، أو اتصل على 0546715683\nحيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة.`);
   w.clock.advance(2);
-  assert.equal((await w.say("وين موقعكم")).sent[0].interactive.body.text, "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.", "not repeated in the same conversation");
+  assert.equal((await w.say("وين موقعكم")).sent[0].interactive.body.text, "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.\n🗺️ الخريطة: https://maps.google.com/?cid=14767749764292326433", "not repeated in the same conversation");
   w.clock.advance(24 * 60);
   assert.match((await w.say("طرق الدفع")).sent[0].text.body, /^معك المساعد الآلي لفريش كاتس 🤖 للتحدث مع موظف اكتب: موظف، أو اتصل على 0546715683\n💳 /, "again after 24 h");
   // no public number in the settings ⇒ the «موظف» path alone; a number set on the bot page wins
@@ -1072,7 +1098,7 @@ test("Meta refuses the message: one plain-text retry for an interactive message,
   assert.equal((await c.say("شكرا")).sent.length, 1);
   const d = world({ waBot: { mode: "live", interactive: false } });
   const t = await d.say("وين موقعكم");
-  assert.deepEqual(t.sent, [txt(ME, "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.\nhttps://maps.google.com/?cid=14767749764292326433", true)]);
+  assert.deepEqual(t.sent, [txt(ME, "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.\n🗺️ الخريطة: https://maps.google.com/?cid=14767749764292326433", true)]);      // BF1 K: الرابط في النص مرة واحدة (مش متكرر في النص العادي)
 }));
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -1108,7 +1134,7 @@ test("conversation: greeting (link + main menu) → order → delivery → hours
   w.clock.advance(1);
   assert.deepEqual((await w.say("متى تقفلون")).sent, [txt(ME, "⏰ مواعيدنا:\nالسبت – الأربعاء: 12 ظهراً – 2 فجراً\nالخميس – الجمعة: 12 ظهراً – 3 فجراً\n🟢 مفتوحين الحين لين 2 فجراً.")]);
   w.clock.advance(1);
-  assert.deepEqual((await w.say("وين موقعكم")).sent, [cta(ME, "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.", "افتح الخريطة", "https://maps.google.com/?cid=14767749764292326433")]);
+  assert.deepEqual((await w.say("وين موقعكم")).sent, [cta(ME, "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.\n🗺️ الخريطة: https://maps.google.com/?cid=14767749764292326433", "افتح الخريطة", "https://maps.google.com/?cid=14767749764292326433")]);      // BF1 K
   w.clock.advance(1);
   assert.deepEqual((await w.say("تقبلون كاش؟")).sent, [txt(ME, "💳 الدفع الإلكتروني عبر Apple Pay وmada والبطاقات الائتمانية وSTC Pay.")]);
   w.clock.advance(1);
@@ -2570,7 +2596,7 @@ const AST = await import("./waassistrun.js");
 const tUse = (name, input = {}) => ({ type: "tool_use", id: `tu_${name}_${Math.random().toString(36).slice(2, 8)}`, name, input });
 const mSay = (text) => ({ ok: true, content: [{ type: "text", text }], stop: "end_turn", usage: { input_tokens: 1000, output_tokens: 100, cache_read_input_tokens: 6000 }, ms: 900, provider: "litellm:llm.o2m8.me" });
 const mUse = (...u) => ({ ok: true, content: u, stop: "tool_use", usage: { input_tokens: 1000, output_tokens: 60 }, ms: 700, provider: "litellm:llm.o2m8.me" });
-function aModel(steps) { const seen = [], full = []; let i = 0; return { seen, full, used: () => i, push: (...s) => steps.push(...s), callModel: async (a) => { seen.push({ model: a.model, messages: JSON.parse(JSON.stringify(a.messages)) }); full.push({ system: a.system, brief: a.brief ?? null }); const s = steps[i++]; if (!s) throw new Error("scripted model: no step left"); return s; } }; }
+function aModel(steps) { const seen = [], full = [], lessons = []; let i = 0; return { seen, full, lessons, used: () => i, push: (...s) => steps.push(...s), callModel: async (a) => { seen.push({ model: a.model, messages: JSON.parse(JSON.stringify(a.messages)) }); full.push({ system: a.system, brief: a.brief ?? null }); lessons.push(a.lessons ?? null); const s = steps[i++]; if (!s) throw new Error("scripted model: no step left"); return s; } }; }
 function memStore() {
   const st = { sessions: new Map(), turns: [], sugg: [], tags: [] };
   return { st, ensure: async () => {}, purge: async () => {}, loadSession: async (p, now, min) => { const x = st.sessions.get(p); return x && now.getTime() - x.at <= min * 60_000 ? JSON.parse(x.s) : null; },
@@ -2809,7 +2835,7 @@ test("assistant settings and owner routes: schema rows, limits enforced, «live�
 }));
 
 test("assistant: «خلها بدون طحينة» while building a cart is a note for the assistant; the same words from someone with a paid order today stay an order change for staff", withEnv(CONFIGURED, async () => {
-  const w = aWorld([mSay("تمام، أضفتها ملاحظة: بدون طحينة. توصيل ولا استلام؟")]);
+  const w = aWorld([mSay("تمام، بدون طحينة 👍 توصيل ولا استلام؟")]);      // BF1: «أضفتها» من غير سلة اتسعّرت بقت ممنوعة (حارس الوعود)
   const r = await w.say("طيب خلها بدون طحينة");
   assert.equal(R.classify({ text: "طيب خلها بدون طحينة", type: "text" }, {}).key, "change");
   assert.deepEqual([r.log.reply_key, r.log.handoff], ["assist", null]); assert.equal(w.m.used(), 1);
@@ -2833,7 +2859,8 @@ test("assistant: «خلها بدون طحينة» while building a cart is a not
 
 /* ══ ١٢/١٠ بعد تجربة عمر الحيّة (المساعد ماردّش ولا مرة): الموظف والمساعد في نفس المحادثة ═══════════════ */
 test("item 8 — an offers question after a staff reply is answered by the ASSISTANT: it steps back 5 minutes (not 30), waits for staff, then answers; unknown messages are not dropped", withEnv(CONFIGURED, async () => {
-  const w = aWorld([mUse(tUse("get_offers", {})), mSay("عندك عرض الطلب الأول: توصيل مجاني للطلبات من 60 ر.س. تحب أرشح لك شي؟"), mSay("أنا معك. وش تحب تطلب؟")], { waBot: { staffWaitMin: 2 } });
+  /* BF1 L (عمر ١٩/١٠: «لما الموظف يكتب ماجد يسكت فوراً»): السلوك ده (ماجد يرجع بعد ٥ د) بقى ورا مفتاح staffStopsMajed=false — الافتراضي الجديد في bf1-bot-fixes.test.mjs */
+  const w = aWorld([mUse(tUse("get_offers", {})), mSay("عندك عرض الطلب الأول: توصيل مجاني للطلبات من 60 ر.س. تحب أرشح لك شي؟"), mSay("أنا معك. وش تحب تطلب؟")], { waBot: { staffWaitMin: 2, staffStopsMajed: false } });
   await w.cashier("هلا بك، كيف اخدمك"); w.clock.advance(1);
   // the customer writes one minute after staff: nothing is sent yet, the message waits for the staff member (2 min)
   const a = await w.say("عندكم عروض؟");
@@ -2846,7 +2873,7 @@ test("item 8 — an offers question after a staff reply is answered by the ASSIS
   w.clock.advance(1); const u = await w.say("انت بطيء اوي");
   assert.equal(u.log.decision, "waiting"); assert.equal((await w.tick(2)).filter((b) => b.type).length, 1); assert.equal(u.log.reply_key, "assist");
   // five minutes after the LAST staff message the assistant answers at once again; with the assistant off the old 30-minute pause still applies
-  const s = aWorld([mSay("هلا 👋 وش تحب تطلب؟")]); await s.cashier("لحظة"); s.clock.advance(6);
+  const s = aWorld([mSay("هلا 👋 وش تحب تطلب؟")], { waBot: { staffStopsMajed: false } }); await s.cashier("لحظة"); s.clock.advance(6);
   const now = await s.say("ابي بيتزا"); assert.deepEqual([now.log.decision, now.log.reply_key], ["replied", "assist"]);
   const off = aWorld([], { waBot: { assist: { mode: "off" } } }); await off.cashier("لحظة"); off.clock.advance(6);
   assert.equal((await off.say("ابي بيتزا")).log.decision, "waiting", "assistant off: the rules bot's own pause, as before");
@@ -6028,12 +6055,16 @@ test("CR2 موظف كتب لها من موبايل المطعم بعد الحم�
 
 test("CR2 العرض خلص أو مش متاح ⇒ الرد العام زي الأول: آخر يوم عدّى (السبت ١٧/١٠)، الرابط موقوف، أقدم من campaignReplyHours، ضغطة تحت رسالة تانية، المفتاح مقفول", withEnv(LOCKS_OPEN, async () => {
   const sat = cr2World({ at: "2026-10-17T14:00:00Z" });
+  /* BF1 G (مراجعة ١٩/١٠، …4333): العرض خلص / الرابط اتقفل ⇒ مش الرد العام: أقرب بوكس حي لنفس العدد (٤–٦ ⇒ العائلة) بسعره وزره */
   const r1 = await cr2Tap(sat, "wamid.PACK15");
-  assert.match(bodyOf(r1.sent[0]), GENERIC); assert.equal(r1.log.detail, "campaign_reply:expired");
+  assert.match(bodyOf(r1.sent[0]), /^عرض «.*باقة التجمّع.*» انتهى 🙏 ولنفس العدد عندنا \*.+\* بـ \d+ ر\.س\./); assert.match(r1.log.detail, /^campaign_expired:expired → /);
   assert.ok(!/225/.test(bodyOf(r1.sent[0])), "مفيش سعر عرض خلص");
   const off = cr2World({ rows: [{ ...PACK15_ROW, link_active: false }] });
   const r2 = await cr2Tap(off, "wamid.PACK15");
-  assert.match(bodyOf(r2.sent[0]), GENERIC); assert.equal(r2.log.detail, "campaign_reply:link_off");
+  assert.match(bodyOf(r2.sent[0]), /انتهى 🙏 ولنفس العدد/); assert.match(r2.log.detail, /^campaign_expired:link_off → /);
+  const noAlt = cr2World({ at: "2026-10-17T14:00:00Z", waBot: { campExpiredAlt: false } });      // المفتاح مقفول ⇒ الرد العام زي قبل BF1
+  const r0 = await cr2Tap(noAlt, "wamid.PACK15");
+  assert.match(bodyOf(r0.sent[0]), GENERIC); assert.equal(r0.log.detail, "campaign_reply:expired");
   const old = cr2World({ waBot: { campaignReplyHours: 12 } });
   const r3 = await cr2Tap(old, "wamid.PACK15");
   assert.match(bodyOf(r3.sent[0]), GENERIC); assert.equal(r3.log.detail, "campaign_reply:not_campaign_msg");
@@ -6060,7 +6091,7 @@ test("CR2 أحدث حملة هي اللي بتتقرا: «طبقك المفضل�
   assert.ok(!/39|42/.test(bodyOf(r3.sent[0])));
   const gone = cr2World({ rows: [MIX15_ROW], bundles: LIVE.bundles.filter((b) => b.slug !== "box-solo-mixgrill") });
   const r4 = await cr2Tap(gone, "wamid.MIX15");
-  assert.match(bodyOf(r4.sent[0]), GENERIC); assert.equal(r4.log.detail, "campaign_reply:box_gone");
+  assert.match(bodyOf(r4.sent[0]), /^عرض «اخترنا لك بوكس الميكس جريل الفردي» انتهى 🙏 ولنفس العدد عندنا \*.+\* بـ \d+ ر\.س\./, "BF1 G: البوكس اتشال ⇒ بوكس فردي تاني بسعره"); assert.match(r4.log.detail, /^campaign_expired:box_gone → /);
 }));
 
 /* ── مراجعة CR2 (١٦/١٠): المساعد شغّال للعملاء كلهم (زي الإنتاج: assist.mode=live، liveAudience=all) ── */
@@ -6133,8 +6164,8 @@ test("مراجعة CR2 ٢: بوكس بعينه ⇒ المساعد بياخد box
   assert.equal((await w.say("نعم", { from: CR2_C })).log.reply_key, "assist");
   const sat = cr2A([], { at: "2026-10-17T14:00:00Z" });
   const g = await cr2Tap(sat, "wamid.PACK15", { from: CR2_C });
-  assert.match(bodyOf(msgs(g)[0]), GENERIC);
-  assert.equal(sessOf(sat), null, "العرض خلص ⇒ الرد العام ومفيش جلسة بعرض");
+  assert.match(bodyOf(msgs(g)[0]), /انتهى 🙏 ولنفس العدد/, "BF1 G: العرض خلص ⇒ البديل لنفس العدد");
+  assert.equal(sessOf(sat), null, "العرض خلص ⇒ مفيش جلسة بعرض");
 }));
 
 test("CR2 مابيلمسش غير «أبغى أطلب»: زر المنيو تحت نفس رسالة الحملة وسؤال حالة الطلب بيمشوا في طريقهم، ومن غير قراءة حملات", withEnv(LOCKS_OPEN, async () => {
@@ -6516,7 +6547,8 @@ test("RV6 typed answers: «نعم» while the question waits counts as «✅ ق�
    الإعادة هنا بنفس الأصناف (13 / 79 من المنيو الحي) على رقم تجربة مقنّع 0500000012، والموديل مكتوب. */
 const WO1_AT = "2026-10-19T07:36:42Z";      // الاثنين ١٠:٣٦ الرياض — مقفول، بيفتح ١٢:٠٠ (٠٩:٠٠Z)
 const WO1_P = "500000012", WO1_TO = "966500000012";
-const WO1_SAY = "وعليكم السلام ورحمة الله 👋 مقفلين الحين، وأجهّز لك السلة من الحين تكملها وقت ما نفتح.\nوجبة نصف دجاجة على الفحم 28 ر.س + بطاطس محمرة 6 ر.س = 34 ر.س.\nتوصيل ولا استلام؟";
+/* BF1 (١٩/١٠): «وأجهّز لك السلة من الحين» من غير سلة بقت ممنوعة (حارس الوعود — مراجعة ١٩/١٠ D) ⇒ الصياغة الصح: السعر + «أول ما نفتح أرسل لك سلتك» (الوعد اللي WO1 بينفّذه) */
+const WO1_SAY = "وعليكم السلام ورحمة الله 👋 مقفلين الحين، وأول ما نفتح أرسل لك سلتك.\nوجبة نصف دجاجة على الفحم 28 ر.س + بطاطس محمرة 6 ر.س = 34 ر.س.\nتوصيل ولا استلام؟";
 const WO1_OPEN_MSG = "فتحنا الحين 👋 سلتك جاهزة: وجبة نصف دجاجة على الفحم + بطاطس محمرة = 34 ر.س.\nتوصيل ولا استلام؟";
 const wo1Steps = () => [mUse(tUse("search_menu", { query: "نص دجاج فحم" })), mUse(tUse("search_menu", { query: "بطاطس" })), mUse(tUse("preview_cart", { option: "pickup", items: [{ id: "13", qty: 1 }, { id: "79", qty: 1 }] })), mSay(WO1_SAY)];
 const wo1World = (o = {}) => aWorld(wo1Steps(), { at: WO1_AT, ...o, waBot: { testPhones: ["0500000012"], ...(o.waBot || {}), assist: { boldNames: false, ...((o.waBot || {}).assist || {}) } } });
@@ -6614,4 +6646,248 @@ test("WO1 مفتاح المالك مقفول ⇒ مفيش تسجيل ولا رس
   assert.equal(off.db.jobs.filter((x) => x.kind === "open_followup").length, 0); assert.equal(off.db.of.length, 0);
   const open = wo1World({ at: "2026-10-19T12:00:00Z" }); await wo1Ask(open);
   assert.equal(open.db.jobs.filter((x) => x.kind === "open_followup").length, 0);
+}));
+
+/* ══ BF1 (١٩/١٠): مراجعة ردود البوت وماجد (docs/designs-2026-10/whatsapp/bot-review-2026-10-19.md) ═════════════════════════════
+   كل حادثة بتتعاد هنا خطوة بخطوة بأرقام مقنّعة 5000000xx (مش أرقام العملاء)، والنصوص زي ما هي في المراجعة. عمر: «مش عايز اي غلطات من دي». */
+const BF = (n) => `5000000${String(n).padStart(2, "0")}`, BFTO = (n) => `966${BF(n)}`;
+const bfJob = (w, kind, phone, ev) => { const at = w.clock.now().toISOString(); w.db.jobs.push({ id: w.db.jobs.length + 1, wamid: `${kind}:${phone}:${w.db.jobs.length}`, phone_norm: phone, kind, due_at: at, ev, log_id: null, status: "pending", reason: null, created_at: at }); return w.db.jobs.at(-1); };
+const bfRules = (n, o = {}) => world({ ...o, waBot: { mode: "test", testPhones: [`0${BF(n)}`], footerMode: "smart", ...(o.waBot || {}) } });
+const bfA = (n, steps, o = {}) => aWorld(steps, { ...o, waBot: { ...(o.waBot || {}), testPhones: [`0${BF(n)}`], assist: { ...((o.waBot || {}).assist || {}) } } });
+const minsAgo = (w, m) => new Date(w.clock.now().getTime() - m * 60_000).toISOString();
+
+test("BF1 B …8282 (١٨/١٠): «تابع طلبي» وصلت من ميتا بعد ٣٤ دقيقة وطلبه متوصّل ⇒ الضغطة بتتنفّذ (الحالة)، مش «سؤالك يحتاج واحد من الفريق»؛ النص المكتوب المتأخر لسه للموظف", withEnv(CONFIGURED, async () => {
+  const P = BF(21);
+  const w = bfRules(21, { orders: [order({ phone_norm: P, status: "delivered", created_at: new Date(Date.parse(OPEN_AT) - 60 * 60_000).toISOString() })] });
+  const t = await w.say(null, { from: BFTO(21), agoMin: 34, raw: { type: "button", button: { text: "تابع طلبي", payload: "تابع طلبي" } } });
+  assert.equal(t.log.reply_key, "status", JSON.stringify(t.log)); assert.equal(t.log.handoff, null); assert.ok(!/يحتاج واحد من الفريق/.test(bodyOf(msgs(t)[0])));
+  w.clock.advance(1);
+  const x = await w.say("وين طلبي يا جماعة", { from: BFTO(21), agoMin: 34 });
+  assert.equal(x.log.handoff, "late_message", "a late TYPED message still goes to staff");
+}));
+
+test("BF1 B …6102 (١٨/١٠ 18:15): «أبغى أطلب» (الضغطة وقتها 16:54) ⇒ بتتنفّذ عادي، مش تحويل late_message", withEnv(CONFIGURED, async () => {
+  const w = bfRules(22);
+  const r = await w.say(null, { from: BFTO(22), agoMin: 81, raw: { type: "button", button: { text: "أبغى أطلب", payload: "أبغى أطلب" } } });
+  assert.notEqual(r.log.handoff, "late_message"); assert.notEqual(r.log.reply_key, "staff"); assert.equal(msgs(r).length >= 1, true);
+  assert.deepEqual(w.portal.filter(([e]) => e === "wa_handover"), [], "no staff card for a tap");
+}));
+
+test("BF1 A …0448 / …1149: «وصلتنا رسالتك وما قدرنا نخدمك وقتها، نعتذر» مايتبعتش لعميل طلب من الموقع أو الكاشير في آخر ٣ ساعات (orderAwareHours)", withEnv(CONFIGURED, async () => {
+  const P = BF(23);
+  const run = async (setup) => {
+    const w = bfRules(23); await w.say("السلام عليكم", { from: BFTO(23) }); w.clock.advance(15);
+    if (setup) setup(w);
+    const j = bfJob(w, "lead_followup", P, { at: w.clock.now().toISOString(), lang: "ar" });
+    const out = (await w.tick(0)).filter((b) => b.type && /ما قدرنا نخدمك/.test(JSON.stringify(b)));
+    return { out, job: j };
+  };
+  const ctl = await run(null);
+  assert.equal(ctl.out.length, 1, `control: the follow-up goes (${ctl.job.reason})`);
+  const paid = await run((w) => { w.db.pos.push({ order_id: "TS-0448", phone_norm: P, order_date: minsAgo(w, 23), total: 48 }); });
+  assert.deepEqual([paid.out.length, paid.job.reason], [0, "ordered_recently"], "…0448 paid 23 minutes before: no apology");
+  const old = await run((w) => { w.db.pos.push({ order_id: "TS-OLD", phone_norm: P, order_date: minsAgo(w, 5 * 60), total: 25 }); });
+  assert.equal(old.out.length, 1, "an order 5 hours ago is outside orderAwareHours (3)");
+}));
+
+test("BF1 A …9821: ❤️ بعد «شكراً + جوجل» مش رسالة محتاجة رد ⇒ مفيش «ما قدرنا نخدمك»", withEnv(CONFIGURED, async () => {
+  const w = bfRules(24);
+  await w.say("السلام عليكم", { from: BFTO(24) }); w.clock.advance(1);
+  const r = await w.say(null, { from: BFTO(24), raw: { type: "reaction", reaction: { message_id: "wamid.OUT1", emoji: "❤️" } } });
+  assert.deepEqual(msgs(r), []);
+  const out = (await w.tick(25)).filter((b) => b.type);
+  assert.deepEqual(out, []); assert.equal(w.db.jobs.filter((j) => j.kind === "lead_followup").length, 0);
+}));
+
+test("BF1 A …0558 / …3214 / …0494: «أنا معك 🙂 قل لي كم شخص» مايتبعتش لعميل طلب في الصالة / الكاشير بعد سؤال ماجد", withEnv(CONFIGURED, async () => {
+  const P = BF(25);
+  const mk = () => bfA(25, [mSay("هلا والله 👋 كم شخص أنتم؟")], { waBot: { assist: { nudgeMin: 20 } } });
+  const c = mk(); await c.say("السلام عليكم", { from: BFTO(25) });
+  assert.equal(c.db.jobs.filter((j) => j.kind === "assist_nudge").length, 1, "the nudge is scheduled after the question");
+  const sent = (await c.tick(21)).filter((b) => b.type);
+  assert.equal(sent.length, 1, "control: no order ⇒ the nudge goes");
+  const w = mk(); await w.say("السلام عليكم", { from: BFTO(25) }); w.clock.advance(9);
+  w.db.pos.push({ order_id: "TS-0558", phone_norm: P, order_date: w.clock.now().toISOString(), total: 95 });      // دخل الصالة 17:44
+  assert.deepEqual((await w.tick(12)).filter((b) => b.type), []);
+  assert.equal(w.db.jobs.find((j) => j.kind === "assist_nudge").reason, "ordered_recently");
+}));
+
+test("BF1 D …6102 (١٨/١٠): «أضفت كريب … وكتبت للمطبخ ملاحظة حار زيادة» من غير سلة ⇒ مايتبعتش أبداً (المراجِع + رد القواعد الثابت)، والحارس بيتسجّل للفحص الليلي", withEnv(CONFIGURED, async () => {
+  const BAD = "أضفت كريب زنجر سوبريم وكتبت للمطبخ ملاحظة حار زيادة 🌶️";
+  const w = bfA(26, [mUse(tUse("preview_cart", { option: "pickup", items: [{ id: "8", qty: 1 }] })), mSay(BAD), mSay(BAD)]);
+  const r = await w.say("وكريب زنجر سوبريم حراق", { from: BFTO(26) });
+  assert.notEqual(r.log.reply_key, "assist");
+  assert.ok(!msgs(r).some((b) => /للمطبخ|أضفت/.test(bodyOf(b))), JSON.stringify(msgs(r)));
+  assert.match(w.store.turns.at(-1).outcome, /fallback:validator/);
+  assert.ok((w.db.guardHits || []).some((h) => h.guard === "promise" && h.phone === BF(26)), "guard hit recorded");
+  assert.match(w.m.seen[2].messages.at(-1).content[0].text, /Nothing reaches the kitchen from this chat/, "the retry note explains it");
+  // the same intent done right: the cart is built in the turn ⇒ it goes with its button
+  const ok = bfA(26, [mUse(tUse("build_cart", { option: "pickup", items: [{ id: "8", qty: 1 }] })), mSay("سلتك جاهزة: كريب زنجر سوبريم = 25 ر.س. اضغط الزر وكمّل الدفع 👇")]);
+  const g = await ok.say("ابي كريب زنجر سوبريم استلام", { from: BFTO(26) });
+  assert.equal(g.log.reply_key, "assist"); assert.match(urlOf(msgs(g)[0]), /^https:\/\/freshcuts\.sa\/c\/[a-z0-9]+$/);
+}));
+
+test("BF1 D …6102 (١٩/١٠ 10:36): «أجهّز لك السلة من الحين» والمطعم مقفول من غير سلة ⇒ مرفوض، والصياغة الصح («أول ما نفتح أرسل لك سلتك») بتعدّي", withEnv(CONFIGURED, async () => {
+  const A = await import("./waassistrun.js");
+  const bad = A.checkReply("مقفلين الحين، ونفتح اليوم الساعة 12 ظهراً، وأجهّز لك السلة من الحين تكملها وقت ما نفتح.", { facts: ["12"], lang: "ar", actions: { cartBuilt: false, cartTouched: true } });
+  assert.deepEqual(bad.problems.map((p) => p.type), ["promise_not_done"]);
+  assert.ok(A.checkReply("مقفلين الحين، وأول ما نفتح أرسل لك سلتك. توصيل ولا استلام؟", { facts: [], lang: "ar", actions: { cartBuilt: false, cartTouched: true } }).ok);
+  assert.ok(A.checkReply("بوكس التشكيلة بـ 105 ر.س. أجهّزه لك؟", { facts: ["105", "بوكس التشكيلة"], lang: "ar", actions: { cartBuilt: false, cartTouched: false } }).problems.every((p) => p.type !== "promise_not_done"), "an offer as a question is not a promise");
+}));
+
+test("BF1 H …1526 (١٨/١٠ 23:50): «إيه، جهّزه ✅» على سلة اتسعّرت ⇒ رابط السلة في نفس الرد بالكود (من غير موديل)، والاقتراح زرّين تحتها مش سؤال قبلها", withEnv(CONFIGURED, async () => {
+  const w = bfA(27, [mUse(tUse("preview_cart", { option: "pickup", items: [{ id: "13", qty: 1 }] })), mSay("وجبة نصف دجاجة على الفحم بـ 28 ر.س. توصيل ولا استلام؟")]);
+  await w.say("ابي نص دجاج فحم", { from: BFTO(27) }); w.clock.advance(1);
+  const r = await w.say("إيه، جهّزه ✅", { from: BFTO(27) });
+  assert.equal(w.m.used(), 2, "no model call for the go-ahead");
+  const out = msgs(r);
+  assert.equal(out[0].interactive.type, "cta_url"); assert.match(urlOf(out[0]), /^https:\/\/freshcuts\.sa\/c\/[a-z0-9]+$/);
+  assert.match(bodyOf(out[0]), /وجبة نصف دجاجة على الفحم/); assert.ok(!/[؟?]\s*$/.test(bodyOf(out[0])), "the cart message does not end with an upsell question");
+  if (out[1]) assert.deepEqual(out[1].interactive.action.buttons.map((b) => b.reply.id), ["as:sg:yes", "as:sg:no"], "the suggestion is two buttons under the cart");
+  assert.equal(r.log.reply_key, "assist"); assert.equal(w.store.turns.at(-1).trace.goAhead.startsWith("cart"), true);
+}));
+
+test("BF1 H …1526: «إيه، جهّزه ✅» بعد «نفس الطلب؟» من ماجد (مفيش سلة اتسعّرت) ⇒ سلة نفس الطلب الأخير على طول (القواعد)، مش «أضيف لك أرز؟»", withEnv(CONFIGURED, async () => {
+  const w = bfA(28, [mSay("هلا والله 👋 آخر طلب لك كان كريب زنجر سوبريم × 2. نفس الطلب؟")], { lastCart: SNAP() });
+  await w.say("هلا", { from: BFTO(28) }); w.clock.advance(1);
+  const r = await w.say("إيه، جهّزه ✅", { from: BFTO(28) });
+  assert.equal(r.log.reply_key, "reorder", JSON.stringify(r.log)); assert.equal(w.m.used(), 1);
+  assert.match(urlOf(msgs(r)[0]), /^https:\/\/freshcuts\.sa\/c\/[a-z0-9]+$/);
+}));
+
+test("BF1 G/E …0494 (١٨/١٠ 01:04): «محتاج أطلب العرض» والعرض اللي وصله خلص ⇒ أقرب بوكس لنفس العدد بسعره وزره، مش «ما عندنا عرض»", withEnv(LOCKS_OPEN, async () => {
+  const w = cr2World({ at: "2026-10-17T14:00:00Z" });
+  const r = await w.say("محتاج أطلب العرض");
+  assert.equal(r.log.reply_key, "camp_alt", JSON.stringify(r.log));
+  assert.match(bodyOf(r.sent[0]), /^عرض «.*» انتهى 🙏 ولنفس العدد عندنا \*.+\* بـ \d+ ر\.س\./); assert.ok(!/ما عندنا عرض/.test(bodyOf(r.sent[0])));
+  assert.match(urlOf(r.sent[0]), /^https:\/\/freshcuts\.sa\/l\//);
+  const off = cr2World({ at: "2026-10-17T14:00:00Z", waBot: { campExpiredAlt: false } });
+  assert.notEqual((await off.say("محتاج أطلب العرض")).log.reply_key, "camp_alt", "switch off ⇒ as before");
+}));
+
+test("BF1 C …8282 / …6102 / …0356: الموظف ضغط «استلم» وماكتبش ٣ دقايق ⇒ الكارت يرنّ تاني + التنبيه + المدير (مرة لكل سحبة)؛ رد الموظف بيلغيها", withEnv(CONFIGURED, async () => {
+  const P = BF(29), hv = { calls: [], escalate: async (x) => { hv.calls.push(x); return { ok: true }; } };
+  const w = bfRules(29, { handovers: hv, waBot: { alertInTest: true } });
+  await w.say("السلام عليكم", { from: BFTO(29) });
+  w.db.claimHolds.push({ phone_norm: P, since: w.clock.now().toISOString(), by_name: "كاشير" });
+  w.clock.advance(2); await w.tick(0);
+  assert.equal(w.db.jobs.filter((j) => j.kind === "claim_silent").length, 0, "before claimSilentMin: nothing");
+  w.clock.advance(2); await w.tick(0);
+  const card = w.portal.filter(([e, d]) => e === "wa_handover" && d.reason === "claim_silent");
+  assert.equal(card.length, 1); assert.deepEqual([card[0][1].reminder, card[0][1].urgent], [true, true]);
+  assert.deepEqual(hv.calls.map((x) => x.reason), ["claim_silent"]);
+  w.clock.advance(5); await w.tick(0);
+  assert.equal(w.portal.filter(([e, d]) => e === "wa_handover" && d.reason === "claim_silent").length, 1, "once per claim");
+  // a staff reply after the claim ⇒ no re-alert
+  const s = bfRules(29, { handovers: hv, waBot: { alertInTest: true } });
+  await s.say("السلام عليكم", { from: BFTO(29) });
+  s.db.claimHolds.push({ phone_norm: P, since: s.clock.now().toISOString(), by_name: "كاشير" });
+  s.clock.advance(1); await s.cashier("حيّاك الله، معك الكاشير", BFTO(29)); s.clock.advance(4); await s.tick(0);
+  assert.equal(s.portal.filter(([e, d]) => e === "wa_handover" && d.reason === "claim_silent").length, 0);
+}));
+
+test("BF1 C …2488: تقييم 3★ والعميلة ردّت ٩:١١ الصبح والمطعم مقفول ⇒ أول ما نفتح: كارت عاجل + تنبيه + المدير (لو محدش كتب لها)", withEnv(CONFIGURED, async () => {
+  const P = BF(30), hv = { calls: [], escalate: async (x) => { hv.calls.push(x); return { ok: true }; } };
+  const w = bfRules(30, { at: CLOSED_AT, handovers: hv, waBot: { alertInTest: true } });
+  w.db.chats.set(P, { phone_norm: P, unknown_streak: 0, last_disclosed_at: w.clock.now().toISOString(), handoff_at: new Date(Date.parse(CLOSED_AT) - 9 * 3600_000).toISOString(), handoff_reason: "review_low" });
+  await w.say("شيء ثاني", { from: BFTO(30) });
+  const j = w.db.jobs.find((x) => x.kind === "closed_complaint");
+  assert.ok(j, "a job at opening"); assert.equal(j.due_at, "2026-10-12T09:00:00.000Z");
+  w.clock.set("2026-10-12T09:00:30Z"); await w.bot.runDueJobs();
+  assert.ok(w.portal.some(([e, d]) => e === "wa_handover" && d.reason === "closed_complaint" && d.urgent === true));
+  assert.equal(hv.calls.at(-1).reason, "closed_complaint"); assert.equal(j.status, "done");
+}));
+
+test("BF1 L …9572 / …5430 / …0448: موظف كتب ⇒ ماجد مايمسكش الرسالة (حتى بعد ٥ دقايق)، ورد ماجد اللي كان بيتكتب والموظف كتب في نفس اللحظة مايتبعتش", withEnv(CONFIGURED, async () => {
+  const w = bfA(31, [mSay("هلا 👋 وش تحب تطلب؟")]);
+  await w.cashier("عليكم السلام، معك الكاشير", BFTO(31)); w.clock.advance(6);
+  const a = await w.say("ابي بيتزا", { from: BFTO(31) });
+  assert.equal(w.m.used(), 0, "staff wrote 6 minutes ago: Majed stays out"); assert.equal(a.log.decision, "waiting");
+  // the race: the model is answering when the cashier writes ⇒ Majed's reply is dropped
+  const store = memStore(); let wref = null;
+  const model = async () => { wref.clock.advanceSec(3); await wref.cashier("أبشر، معك الكاشير", BFTO(32)); return mSay("عندنا بيتزا بأنواع كثيرة. أي نوع تحب؟"); };
+  const r0 = world({ bundles: LIVE.bundles, links: ALL_LINKS, waBot: { mode: "test", testPhones: [`0${BF(32)}`], footerMode: "smart", assist: { mode: "test", forceSuggestion: false, typing: false, orderWordsStrong: true, ...LEGACY_ASSIST } }, assistModel: model, assistStore: store });
+  wref = r0;
+  const r = await r0.say("ابي بيتزا", { from: BFTO(32) });
+  assert.deepEqual(msgs(r), []); assert.equal(r.log.reason, "staff_replied_during_turn");
+}));
+
+test("BF1 J …0448 «Hello» / …3466 نص إعلان «راسلنا» الجاهز ⇒ الرد بالعربي (القواعد وماجد)", withEnv(CONFIGURED, async () => {
+  assert.equal(R.classify({ phone: BF(33), text: "Hello", type: "text" }).lang, "ar");
+  assert.equal(R.classify({ phone: BF(33), text: "Hello! Can I get more info on this?", type: "text" }).lang, "ar");
+  const w = bfA(33, [mSay("هلا والله 👋 وش تحب تطلب اليوم؟")]);
+  const r = await w.say("Hello! Can I get more info on this?", { from: BFTO(33) });
+  assert.equal(ctxOf(w.m.seen[0]).reply_language, "Arabic"); assert.equal(r.log.lang, "ar");
+}));
+
+test("BF1 I …0639: رابط دعوة تيمو ⇒ سطر واحد «هذا الرقم لطلبات فريش كاتس فقط»، من غير ماجد ولا تحويل ولا «أنا معك»؛ التكرار ⇒ سكوت", withEnv(CONFIGURED, async () => {
+  const w = bfA(34, [], { waBot: { assist: { nudgeMin: 20 } } });
+  const r = await w.say("https://temu.to/k/eabc123 Join me on Temu and get free gifts!", { from: BFTO(34) });
+  assert.equal(r.log.reply_key, "spam"); assert.equal(bodyOf(msgs(r)[0]), "هذا الرقم لطلبات فريش كاتس فقط 🙏"); assert.equal(w.m.used(), 0); assert.equal(r.log.handoff, null);
+  w.clock.advance(2);
+  const again = await w.say("https://temu.to/k/eabc999", { from: BFTO(34) });
+  assert.deepEqual([again.log.decision, again.log.reason], ["silent", "spam_repeat"]);
+  assert.deepEqual((await w.tick(25)).filter((b) => b.type), []); assert.equal(w.db.jobs.filter((j) => /nudge|lead/.test(j.kind)).length, 0);
+}));
+
+test("BF1 A/D …0558: «انا جاي» / «٢ دقيقة وأكون عندكم» ⇒ «حيّاك الله، نستناك 🌟» مرة، مش «نفس الطلب السابق؟» للمرة التالتة", withEnv(CONFIGURED, async () => {
+  const w = bfA(35, []);
+  const a = await w.say("انا جاي", { from: BFTO(35) });
+  assert.equal(a.log.reply_key, "coming"); assert.equal(bodyOf(msgs(a)[0]).split("\n").pop(), "حيّاك الله، نستناك 🌟"); assert.equal(w.m.used(), 0);
+  w.clock.advance(1);
+  assert.equal((await w.say("٢ دقيقة وأكون عندكم", { from: BFTO(35) })).log.reply_key, "coming");
+}));
+
+test("BF1 E …7271: بعت لوكيشن ⇒ «ده الموقع مظبوط» = تأكيد، مش «📍 فرعنا في حي السلامة»؛ «ارسل موقع المحل» لسه عنوان الفرع + رابط الخريطة (K …6575)", withEnv(CONFIGURED, async () => {
+  const w = bfRules(36, { quote: { ok: true, deliverable: true, fee: 15, zone: "a", routeKm: 4 } });
+  await w.say(null, { from: BFTO(36), raw: { type: "location", location: { latitude: 21.55, longitude: 39.17 } } }); w.clock.advance(1);
+  const c = await w.say("ده الموقع مظبوط", { from: BFTO(36) });
+  assert.equal(c.log.reply_key, "loc_ok"); assert.match(bodyOf(msgs(c)[0]), /وصلنا موقعك/); assert.ok(!/فرعنا في حي السلامة/.test(bodyOf(msgs(c)[0])));
+  w.clock.advance(1);
+  const l = await w.say("ارسل موقع المحل", { from: BFTO(36) });
+  assert.equal(l.log.reply_key, "location"); assert.match(bodyOf(msgs(l)[0]), /https:\/\/maps\.google\.com\//);
+}));
+
+test("BF1 F …2488: «استاذ محمد حضرتك؟» ⇒ تحويل لموظف، مش «أنا ماجد… تبين أجهّز نفس طلبك السابق؟»", withEnv(CONFIGURED, async () => {
+  const w = bfA(37, [], { lastCart: SNAP() });
+  const r = await w.say("استاذ محمد حضرتك؟", { from: BFTO(37) });
+  assert.equal(r.log.handoff, "asked_human"); assert.equal(w.m.used(), 0); assert.ok(!/نفس طلبك/.test(JSON.stringify(msgs(r))));
+}));
+
+test("BF1 A/E …0356 + F: ماجد بيشوف طلب الكاشير / الموقع اللي لسه دافعه (existing_order بالأصناف) ومابيعرضش «نفس طلبك»؛ والشكوى المفتوحة ⇒ complaint_open ومفيش بيع", withEnv(CONFIGURED, async () => {
+  const P = BF(38);
+  const w = bfA(38, [mSay("طلبك وصل للفرع ✅ فيه مشكل مخصوص نصف كيلو، والمشكل يجي مع السلطة والطحينة والخبز.")], { lastCart: SNAP(), orders: [order({ phone_norm: P, status: "paid", total: "130", created_at: new Date(Date.parse(OPEN_AT) - 4 * 60_000).toISOString(), items: [{ product_id: 103, name: "مشكل مخصوص بالوزن", variant_name: "نصف كيلو", quantity: 1 }] })] });
+  await w.say("الطلب جاي معاه رز أو سلطات؟", { from: BFTO(38) });
+  const ctx = ctxOf(w.m.seen[0]);
+  assert.ok(ctx.existing_order, JSON.stringify(ctx)); assert.equal(ctx.existing_order.items[0].name, "مشكل مخصوص بالوزن — نصف كيلو"); assert.equal(ctx.reorder_offer, undefined, "no «same order?» to someone who just paid");
+  const A = await import("./waassistrun.js");
+  assert.deepEqual(A.checkReply("الطلب أونلاين يكون من موقعنا. لكم شخص؟", { facts: [], lang: "ar", existingOrder: true }).problems.map((p) => p.type), ["sold_after_order"]);
+  assert.deepEqual(A.checkReply("ربي يسلمك 🌟 تبين أجهّز نفس طلبك السابق؟", { facts: [], lang: "ar", complaintOpen: true, turnText: "ربي يبارك فيكم" }).problems.map((p) => p.type), ["sold_during_complaint"]);
+  assert.ok(A.checkReply("أبشر، بيتزا مارجريتا بـ 20 ر.س. توصيل ولا استلام؟", { facts: ["20", "بيتزا مارجريتا"], lang: "ar", complaintOpen: true, turnText: "ابي بيتزا مارجريتا" }).problems.every((p) => p.type !== "sold_during_complaint"), "the customer asked to order himself ⇒ help");
+}));
+
+test("BF1 ب: دروس الأخطاء المعتمدة بتوصل لماجد ككتلة تعليمات لوحدها (آخر نسخة)، ومفتاح اللوحة بيقفلها", withEnv(CONFIGURED, async () => {
+  const LES = "# Lessons from real mistakes in our chats (approved by the owner; follow them exactly like the rules above)\n- Never: تقول «كتبت للمطبخ». Instead: «كتبتها ملاحظة في سلتك».";
+  const w = bfA(39, [mSay("هلا والله 👋 وش تحب تطلب اليوم؟")]); await w.bot.ready; w.db.lessons = [{ version: 4, text: LES }]; w.clock.advance(2);      // آخر نسخة (الكاش دقيقة)
+  await w.say("السلام عليكم", { from: BFTO(39) });
+  assert.equal(w.m.lessons[0], LES);
+  const off = bfA(39, [mSay("هلا والله 👋 وش تحب تطلب اليوم؟")], { waBot: { lessonsEnabled: false } }); await off.bot.ready; off.db.lessons = [{ version: 4, text: LES }]; off.clock.advance(2);
+  await off.say("السلام عليكم", { from: BFTO(39) });
+  assert.equal(off.m.lessons[0], null);
+}));
+
+test("BF1 د: إحصائيات البوت فيها عدّ الأخطاء في اليوم حسب النوع، ومسارات سجل الأخطاء والفحص الليلي متسجّلة", withEnv(CONFIGURED, async () => {
+  const w = bfRules(40);
+  const st = await w.call("GET", "/api/cms/wabot/stats");
+  assert.equal(st.body.ok, true); assert.ok(st.body.mistakes && Array.isArray(st.body.mistakes.byDay));
+  const m = await w.call("GET", "/api/cms/wabot/mistakes");
+  assert.equal(m.body.ok, true); assert.ok(m.body.columns.some((c) => c.key === "guard")); assert.ok(m.body.types.some((t) => t.key === "broken_promise"));
+  assert.equal((await w.call("GET", "/api/cms/wabot/lessons")).body.ok, true);
+  assert.equal((await w.call("GET", "/api/cms/wabot/selfreview")).body.ok, true);
+  assert.equal((await w.call("PUT", "/api/cms/wabot/mistakes/:id", { status: "nope" })).status, 400, "only known fields and values");
+  const sch = R.schemaFor(R.botConfig({}));
+  for (const k of ["orderAwareHours", "promiseGuard", "goAheadCart", "campExpiredAlt", "staffStopsMajed", "claimSilentMin", "claimEscalate", "closedComplaintAtOpen", "spamQuiet", "lessonsEnabled", "lessonsMaxChars", "selfReview", "selfReviewHour", "selfReviewMinute", "selfReviewMax"]) {
+    const row = sch.find((x) => x.key === k); assert.ok(row, k); assert.equal(row.groupAr, "ماجد والبوت: الحرّاس والتعلّم من الأخطاء (BF1)");
+  }
+  assert.deepEqual([R.botConfig({}).orderAwareHours, R.botConfig({}).claimSilentMin, R.botConfig({}).selfReview], [3, 3, true], "safe defaults");
 }));
