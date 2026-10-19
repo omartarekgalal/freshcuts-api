@@ -173,6 +173,12 @@ const FRAMES_DEF = [
 const ASK_CLOSE_AR = "تبي نجهز لك الطلب هنا؟ اضغط الزر وكمّل معنا في المحادثة.";
 const ASK_CLOSE_EN = "Want us to prepare your order here? Tap a button and continue with us in this chat.";
 const ASK_FRAMES_DEF = [
+  /* FD2 (عمر ١٩/١٠ «الاولى بس صورة عامة بكود first»): «طبقك المفضل» بصورة عامة — نفس خانتين ask_text + هيدر صورة */
+  { name: "fc_frame_ask_img", header: { image: true }, purpose: "إطار صورة — الرد أولاً (من غير رابط)",
+    ar: `من فريش كاتس 🔥\n{{1}}: {{2}}.\n${ASK_CLOSE_AR}`, en: `From Fresh Cuts 🔥\n{{1}}: {{2}}.\n${ASK_CLOSE_EN}`,
+    vars: [V("offer.title", "العنوان", "بوكس فيه طبقك المفضل"), V("offer.line", "التفاصيل (سطر واحد)", "بوكس وجبة المشاوي الفردي بـ33 ر.س، والتوصيل مجاني بكود FIRST لو طلبك من 60 ر.س")],
+    varsEn: [V("offer.title", "Title", "A box with your favourite dish"), V("offer.line", "Details (one line)", "the solo grill box for 33 SAR, free delivery with code FIRST from 60 SAR")],
+    notes: "صورة عامة من مخزن الوسائط بتاعنا (jpg/png). مفيش زر رابط: العميل بيرد والمساعد يكمّل." },
   { name: "fc_frame_ask_video", header: { video: true }, purpose: "إطار فيديو — الرد أولاً (من غير رابط)",
     ar: `من فريش كاتس 🎬\n{{1}}: {{2}}.\n${ASK_CLOSE_AR}`, en: `From Fresh Cuts 🎬\n{{1}}: {{2}}.\n${ASK_CLOSE_EN}`,
     vars: [V("offer.title", "العنوان", "بوكس التشكيلة"), V("offer.line", "التفاصيل (سطر واحد — السعر وآخر يوم بيتكتبوا هنا لو موجودين)", "مشاوي على الفحم مع بيتزا وباستا وأصناف جانبية ومشروبات، بـ105 ر.س")],
@@ -872,7 +878,7 @@ export const SUBMIT_BATCHES = Object.freeze([
   // FR1 (١٣/١٠): إطارات العروض — النصي الأول (مافيهوش رفع)، وبعده الصور، وآخرهم الفيديو. كل اسم = عربي + إنجليزي
   ["fc_frame_news_text", "fc_frame_offer_img", "fc_frame_limited_img", "fc_frame_video"],
   // RF1 (١٤/١٠): إطارات «الرد أولاً» — النصي الأول (مافيهوش رفع) وبعده الفيديو. كل اسم = عربي + إنجليزي
-  ["fc_frame_ask_text", "fc_frame_ask_video"],
+  ["fc_frame_ask_text", "fc_frame_ask_video", "fc_frame_ask_img"],
   // ST1 (١٢/١٠): قوالب تواصل الفريق — التجديد أولاً (من غير متغيّرات)، وبعده سطر التنبيه. كل اسم = إنجليزي + عربي
   ["fc_staff_alerts_renew", "fc_staff_team_notice"],
   // SB4 (١٤/١٠): نسخ v2 بزر رد سريع يفتح نافذة ٢٤ ساعة — التوصيل والتقييم أولاً (الضغطة = رأيه)، بعدين التتبع، وآخرهم الاسترجاع
