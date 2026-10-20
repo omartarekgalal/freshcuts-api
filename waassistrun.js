@@ -18,7 +18,7 @@ import { salesCard, cardForModel, topicsOf, proactiveLine, lineAlreadySaid, plac
 import { peopleOf, isUpgrade } from "./wapersonal.js";      // S1
 import { providerOf, maskText } from "./wabotllm.js";
 import { chatHash } from "./waaicost.js";
-import { promiseProblems, PROMISE_HELP, isGoAhead, loneLatinGreeting, adPrefillEn } from "./waguard.js";      // BF1 (١٩/١٠): حارس الوعود + «جهّزه» = سلة في نفس الرد
+import { promiseProblems, PROMISE_HELP, isGoAhead, loneLatinGreeting, adPrefillEn, latinShort, complimentOnly } from "./waguard.js";      // BF1 (١٩/١٠): حارس الوعود + «جهّزه» = سلة في نفس الرد · BF3 (٢٠/١٠): كلمة إنجليزي لوحدها ⇒ عربي، والمدح ⇒ شكر
 
 /* ── الإعدادات ───────────────────────────────────────────────────────────── */
 /* off = بوت القواعد بس · test = أرقام التجربة بس · live = عملاء حقيقيين على مراحل (assist.liveAudience + سقف عملاء يومي + السقف المالي).
@@ -267,12 +267,12 @@ export const ASSIST_SCHEMA = Object.freeze({
    القواعد بتفضل ماسكة: إيقاف/اشتراك وأزرار الرجوع، سؤال الموافقة، الشكوى والمشكلة وتعديل الطلب، طلب موظف، الصور والصوت،
    حالة الطلب، «نفس طلبي السابق»، أسئلة الوصفات (سطر ثابت)، الحساسية الشديدة، المواعيد والموقع وطرق الدفع، الشكر، «القائمة»،
    وكل ضغطة زر أو صف قايمة. المساعد بياخد الباقي — وبس لو مفيش تحويل مفتوح ولا سكوت موظف ولا كتم ولا حارس حلقات. */
-const RULES_OWN = new Set(["coming", "spam", "camp_alt", "loc_ok", "review_ok", "review_note", "review_star", "review_reason", "stop", "start", "resume_all", "resume_updates", "optin_yes", "optin_no", "complaint", "problem", "change", "human", "media", "status", "reorder",
+const RULES_OWN = new Set(["praise", "coming", "spam", "camp_alt", "loc_ok", "review_ok", "review_note", "review_star", "review_reason", "stop", "start", "resume_all", "resume_updates", "optin_yes", "optin_no", "complaint", "problem", "change", "human", "media", "status", "reorder",
   "secret", "custom_offer", "hours", "hoursloc", "location", "payment", "thanks", "main", "other_city", "whoami", "weight",
   "rf_yes", "rf_no"]);      // FU1: «أبغى أطلب» (والسلة جاهزة) / «لا شكراً» على رسالة المتابعة — القواعد (السلة نفسها، وتسجيل «لا» لـ٧ أيام)
 const RULES_NOTICE = new Set(["rate", "rate_burst", "handoff_remind"]);
 /* جوّه محادثة المساعد الشغّالة، الأسئلة المعلوماتية دي بتفضل معاه (عطل تقييم ١٢/١٠: «استلام لما تفتحون» راحت لرد المواعيد وقطعت الطلب). */
-const IN_SESSION = new Set(["hours", "hoursloc", "location", "payment", "thanks", "weight"]);      // EX6: طلب بالوزن جوّه جلسة المساعد بيفضل معاه (السلة بتاعته)
+const IN_SESSION = new Set(["hours", "hoursloc", "location", "payment", "thanks", "praise", "weight"]);      // EX6: طلب بالوزن جوّه جلسة المساعد بيفضل معاه (السلة بتاعته) · BF3: المدح جوّه جلسة ماجد بيفضل معاه (customer_praise)
 /* «خلها بدون طحينة» / «بدون بصل» وهو بيجهّز السلة = ملاحظة على الصنف، مش «تعديل طلب». تعديل طلب **اتدفع** بيفضل للموظف: لو له طلب حديث، القواعد تمسكها. */
 const CART_EDIT = new Set(["special_request", "modify_order"]);
 const CART_EDIT_IN_SESSION = new Set(["cancel_order"]);      // PS5: «الغي البطاطس من الطلب» وهو بيجهّز السلة (مفيش طلب مدفوع) = تعديل سلة، مش إلغاء طلب
@@ -499,7 +499,7 @@ const EXTRA_RULES = [
   /* PS4 (تقييم ١٣/١٠: الموديل السريع كتب «وعليكم... لا، الرسالة ما فيها تحية. نبدأ: …» في الرسالة) — كلام الموديل لنفسه بالعربي */
   [/الرسال[ةه] (?:ما|لا|مو) (?:فيها|تحتوي)|(?:^|[.\n]\s*)(?:نبد[أا]|لنبد[أا]|الرد)\s*:|\.\.\.\s*لا،|العميل (?:ما|لم) (?:سل[ّ]?م|يسل[ّ]?م|حي[ّ]?ا)|(?:حسب|وفق|بحسب) (?:التعليمات|القواعد)/u, "self_talk"],
   [/(ما|لا|مافي|ما في) ?(عندنا|يوجد|فيه)? ?مكسرات (في |ب)(ال)?مطبخ|مطبخنا (ما|لا|خالي)|no nuts in (the|our) kitchen|nut[- ]free/i, "health_or_guarantee"],
-  [/anthropic|claude|openai|chatgpt|\bgpt\b|language model|نموذج لغوي|note_suggestion|preview_cart|list_boxes|list_packs|check_availability|get_offers|get_hours|what_we_know|ask_knowledge|manager_notes|came_from_ad|channel_invite|heard_from_voice_note|seen_in_a_picture|delivery_savers|remind_me|dish_photo|also_as|ask_which|reply_rule|pictures_the_customer_sent_earlier|note_names_a_product|order_for_later|first_order|most_ordered|lighter_option|before_the_choices|customer_is_postponing|introduce_yourself|customer_is_ordering|staff_handled|staff_told_customer|still_to_do|boxes_reaching|business_brief|menu_button|handover\(|<context|customer_message/i, "internal_leak"],
+  [/anthropic|claude|openai|chatgpt|\bgpt\b|language model|نموذج لغوي|note_suggestion|preview_cart|list_boxes|list_packs|check_availability|get_offers|get_hours|what_we_know|ask_knowledge|manager_notes|came_from_ad|channel_invite|heard_from_voice_note|seen_in_a_picture|delivery_savers|remind_me|dish_photo|also_as|ask_which|reply_rule|pictures_the_customer_sent_earlier|note_names_a_product|order_for_later|first_order|most_ordered|lighter_option|before_the_choices|customer_is_postponing|introduce_yourself|customer_is_ordering|customer_praise|english_button_text|staff_handled|staff_told_customer|still_to_do|boxes_reaching|business_brief|menu_button|handover\(|<context|customer_message/i, "internal_leak"],
 ];
 /* جمل الرفض الأمين (بتتشال قبل قواعد الكلمات). كل نمط = نفي + فعل مشاركة/وجود + الكلمة الحساسة في نفس الجملة القصيرة.
    الرفض بيقف عند أول فاصلة أو نقطة أو «لكن / بس / but»: «ما أقدر أشارك طريقة التحضير» بتتشال، وأي كلام بعدها («لكن نتبلها بـ…») بيتراجع عادي. */
@@ -827,11 +827,13 @@ export function pickModel(acfg, session, text) {
 
 /* لغة الدور: عربي لو فيه حروف عربية؛ فرانكو (عربي بحروف لاتينية) = عربي؛ إنجليزي لو لاتيني واضح؛ غير كده لغة الدور اللي قبله («Pickup» / «👍» / رقم). */
 const FRANCO = /\b(abi|abgha|abga|aby|ayez|3ayez|awez|3awez|mumkin|momken|shukran|shokran|salam|kam|wain|wen|fein|feen|tawseel|tawsil|ya3ni|law sama7t|lw sm7t|ya|mafi|mafe|keef|kif|aish|esh|eih|bikam|bkam|3ndkm|3andkom|andkom|abgha|tamam|khalas|yalla)\b|[a-z][2357][a-z]|\b[2357][a-z]{2,}/i;
-export function turnLang(text, prev = null, fallback = "ar") {
+/* BF3 (٢٠/١٠ …4268: «Online» ثم «Offers» ⇒ «I'm Majed…» و«Here's what we have right now: … Crepe Solo Box — SAR 29»): كلمة أو كلمتين لاتيني أو نص زر/إعلان قصير
+   مش لغة العميل ⇒ عربي، إلا لو المحادثة نفسها إنجليزي من جملة حقيقية قبلها. opts.shortAr = false (مفتاح اللوحة مقفول) ⇒ الحكم القديم. */
+export function turnLang(text, prev = null, fallback = "ar", opts = {}) {
   const t = String(text || "").replace(/https?:\/\/\S+|www\.\S+|\[[^\]]*\]/gi, " ");      // MJ1 #٣ (هشام ١٦/١٠: رابط فيسبوك ⇒ رد إنجليزي): رابط لوحده مش «إنجليزي» — لغة المحادثة، وإلا عربي
   if (/[؀-ۿ]/.test(t)) return "ar";
   /* BF1 J (…0448 «Hello» لوحدها، …3466 نص إعلان «راسلنا» الجاهز بالإنجليزي): مش كلام العميل بلغته — عميلنا في جدة ⇒ عربي، إلا لو المحادثة نفسها إنجليزي */
-  if (loneLatinGreeting(text) || adPrefillEn(text)) return prev === "en" ? "en" : "ar";
+  if (loneLatinGreeting(text) || adPrefillEn(text) || (opts.shortAr !== false && latinShort(t))) return prev === "en" ? "en" : "ar";
   const words = t.match(/[A-Za-z]{2,}/g) || [];
   if (!words.length && /\p{L}{2,}/u.test(t)) return "en";      // خط تاني (هندي، بنغالي…): الرد إنجليزي قصير
   if (!words.length) return prev || fallback;
@@ -917,6 +919,8 @@ export function planReminder({ now, day = "today", time = "", lastInMs = null, q
 export const CTX_RULES = Object.freeze({
   /* WO1 (١٩/١٠): الوعد «تكملها وقت ما نفتح» بقى له آلية (waopenfu.js) — المساعد يقول إننا هنبعتله سلته أول ما نفتح، بس لما الرسالة دي هتتبعت فعلاً */
   closedFollow: "we are closed now: say so in this reply with the opening time, and offer to prepare the cart now; our system sends them ONE message with this cart right when we open (unless they order or write before), so you may tell them you will send it to them when we open («أول ما نفتح أرسل لك سلتك»). Never promise any other time and never promise more than that one message.",
+  shortEnglish: "The customer's message is a single English word or a button / ad text (like Online, Offers, Menu, Hi), not an English sentence. Our customers are Saudi: reply in Arabic, as reply_language says. Names and prices stay exactly as the tools give them.",
+  praise: "The customer is complimenting us (the food, today's grill, the service). It is not a question and never a handover. Reply with ONE warm short thank-you line in white Saudi dialect that names what they praised, like «تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً». No selling, no question, no offer.",
   channel: "You may add its \"say\" text, exactly as it is and with its link, as a separate last line of your message, in ONE of these moments only: the customer thanks you or says goodbye after you helped, or right under the cart summary after build_cart. Never in any other message, never when the customer is unhappy or asked about an allergy.",
   voice: "The customer's message is our system's transcript of a voice note and may contain mishearings. If it is a simple question, answer it. If it names things to order, say back what you understood in one short line («سمعت إنك تبي … صح؟») and wait for the customer's yes before preview_cart or build_cart; never build a cart in the same turn as a voice note. If the transcript makes no sense, say you could not catch the voice note well and ask them to type it or send it again. Never say you \"listened\"; say «سمعت» / «وصلتني رسالتك الصوتية».",
   picture: "The customer's message is our system's short description of a picture they sent (a menu item, an offer or an ad), not their own words. Answer about what it shows, with names and prices from the tools only (a price in the description is what the picture said, not our price: check it with the tools). If it is not clear what they want from the picture, ask in one line. Do not claim details of the picture that the description does not state. When the message describes several pictures, they are usually ONE order: say back in one message what you understood as dishes and quantities (names and prices from the tools), and ask one question; if one picture is not clear, say which and ask about it. A screenshot of an item's page names the exact item the customer means (its name, its section, the weight if one is selected): it wins over a loose match on their words. If their words and the picture point to different items (a meal and the by-weight dish, for example), ask which one.",
@@ -1517,6 +1521,8 @@ export function makeAssistLoop(deps) {
       case "handover": {
         const reason = ["allergy_severe", "complaint", "problem", "order_change", "custom_offer", "needs_staff"].includes(a.reason) ? a.reason : "needs_staff";
         /* PS3 (وقعت ٢ من ٥ تشغيلات تقييم): «عزيمة لـ٢٥ شخص» اتحوّلت لموظف في نفس الدور اللي اتقرت فيه الباقات، فالعميل ماشافش ولا باقة. العرض المخصص بيتحوّل بعد ما الباقات تتعرض في رسالة سابقة. */
+        /* BF3 (…5082 ٢٠/١٠): مدح الأكل مش سؤال للفريق ⇒ التحويل مرفوض والموديل يكتب الشكر (المدح اللي فيه شكوى مابيتعدّش مدح أصلاً) */
+        if (T.praise && reason === "needs_staff") return { ok: false, error: "compliment_not_handover", rule: CTX_RULES.praise };
         if (reason === "custom_offer" && !st.packs) return { ok: false, error: "show_packs_first", rule: "Not handed over. First show the gathering packs from list_packs in this message (names and prices) and ask whether one fits or they want a tailored offer. Hand over with custom_offer only in a later turn, after the customer has seen the packs." };
         T.handover = { reason, note: String(a.note || "").replace(/\s+/g, " ").trim().slice(0, 200) };
         return { ok: true, sent: "a fixed handover message is being sent to the customer" };
@@ -1633,7 +1639,7 @@ export function makeAssistLoop(deps) {
     const pm = pickModel(acfg, session, text);
     const trace = { tools: [], verdicts: [], calls: [], suggestions: [], unanswered: [], ms: 0, model: pm.model, tier: pm.tier, costSar: 0, in: 0, out: 0, cached: 0, sent: null, ...(session.compacted && session.compacted !== (session0.compacted || 0) ? { compacted: true } : {}) };
     const T = { phone, lang, session, trace, cart: null, handover: null, profile, acfg, factSay: [], kbSay: [], location: false, reminder: null, buttons: null, feeSay: null, photoItem: null, previewNow: false, askWhich: null, menuBtn: false, sgNow: null, weightsNow: null, cartNow: null, blocks: [], sales: null,
-      ctxIn: context, tap: tap || tapCtx || null, complaint: false, noOfferWhy: null, sgBlockedWhy: null };
+      ctxIn: context, tap: tap || tapCtx || null, complaint: false, noOfferWhy: null, sgBlockedWhy: null, praise: Boolean(guards && guards.praise !== false) && complimentOnly(text) };
     const fail = (reason) => { trace.ms = Date.now() - t0; return { ok: false, reason, session: session0, trace }; };
     const masked = cleanCustomer(maskText(text));
     trace.sent = masked;
@@ -1645,11 +1651,15 @@ export function makeAssistLoop(deps) {
       ...(acfg.remindersEnabled && POSTPONE_RE.test(normalize(String(text || ""))) ? { customer_is_postponing: { rule: CTX_RULES.postpone } } : {}),
       /* BF1 H: العميل وافق («جهّزه / أبغى أطلب / اعتمد») ⇒ السلة في الدور ده، والاقتراح زر تحتها (مش سؤال قبلها) */
       ...(guards && guards.goAhead !== false && isGoAhead(text, tap || tapCtx) ? { customer_agreed: { rule: "The customer agreed. Call build_cart in this turn (option delivery unless they said pickup) and send the cart; do not ask a suggestion or any other question first: our system attaches the suggestion as a button under the cart. Never say you prepared, added or sent anything that a tool did not do in this turn." } } : {}),
+      /* BF3 (…5082 ٢٠/١٠ «الشوي انهارده احسن من امبارح» ⇒ «سؤالك يحتاج واحد من الفريق»): مدح = شكر دافي قصير، مش تحويل.
+         والقواعد بتتبعت مع مفتاح السياق بس (البرومبت الثابت تحت حده) */
+      ...(guards && guards.praise !== false && complimentOnly(text) ? { customer_praise: { rule: CTX_RULES.praise } } : {}),
       ...(ORDER_RE.test(normalize(String(text || ""))) && !(context && context.heard_from_voice_note) ? { customer_is_ordering: "find what they named, then call preview_cart BEFORE you answer: it gives the real price and the one suggestion to offer" } : {}) };
     /* دعوة القناة (لو السياق سمح بيها في الدور ده): النص المعتمد بالرابط، والرابط نفسه للمراجِع. */
     const chSay = context && context.channel_invite && context.channel_invite.say ? String(context.channel_invite.say) : null;
     const chUrl = chSay ? (/https:\/\/\S+$/.exec(chSay) || [null])[0] : null;
-    lang = turnLang(text, st.lang || null, lang); st.lang = lang; T.lang = lang; trace.lang = lang; ctx.reply_language = lang === "en" ? "English" : "Arabic";
+    lang = turnLang(text, st.lang || null, lang, { shortAr: !guards || guards.shortAr !== false }); st.lang = lang; T.lang = lang; trace.lang = lang; ctx.reply_language = lang === "en" ? "English" : "Arabic";
+    if (lang === "ar" && (!guards || guards.shortAr !== false) && latinShort(String(text || "").replace(/https?:\/\/\S+|www\.\S+|\[[^\]]*\]/gi, " "))) ctx.english_button_text = { rule: CTX_RULES.shortEnglish };      // BF3 …4268
     if (acfg.salesBrain) { try { await salesPre(T, ctx, text, context); } catch (e) { (deps.log || console.error)("[assist] sales:", e.message); } }      // SB1
     /* SB4: سأل يكفي كام شخص (الرسالة دي أو اللي قبلها) والإعداد asked ⇒ التقريب من ملف المعرفة يتقال، بأرقامه هو بس. الجملة بتتراجع في المراجِع. */
     T.servingAsked = acfg.servingGuidance === "asked" && [String(text || ""), ...st.customerTexts.slice(-1)].some((x) => servingAsked(x));

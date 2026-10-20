@@ -34,7 +34,7 @@
      (ومع خريطة «إعلان ⇒ رابط» اختيارية). رابط التتبع /track/<رقم الطلب> ورابط الخريطة من الإعدادات.
 ═══════════════════════════════════════════════════════════════════════════ */
 
-import { matchIntent, detectLang, normalize, msgText, msgButtons, msgCta, msgList, LIMITS, openState, openingText, hoursLines, fmtTime, ORDER_NO_RE, indexMenu, closingToday, findItems } from "./wabot.js";
+import { matchIntent, detectLang, latinShort, normalize, msgText, msgButtons, msgCta, msgList, LIMITS, openState, openingText, hoursLines, fmtTime, ORDER_NO_RE, indexMenu, closingToday, findItems } from "./wabot.js";
 import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL, ORDER_BUTTON, ORDER_BUTTON_EN } from "./watemplates.js";
@@ -72,7 +72,7 @@ import { FREE_STAGES } from "./waswitches.js";      // RT2 مراجعة (١٧/١
 import { JOURNEY_GROUP, JOURNEY_GROUP_AR, JOURNEY_DEFAULTS, JOURNEY_NUMS, JOURNEY_BOOLS, JOURNEY_SCHEMA, journeyCfg, holdUntil, deferDecision, PROACTIVE_KEYS, PROACTIVE_JOB_KINDS, PAID_CONFIRM_SQL } from "./wajourney.js";      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض
 import { OF_KIND, OF_GROUP, OF_GROUP_AR, OF_DEFAULTS, OF_NUMS, OF_BOOLS, OF_SCHEMA, OF_DDL, ofConfig, openingPlan, cartSnapshotOf, makeOpenFollowUp } from "./waopenfu.js";      // WO1 (١٩/١٠): «نكمّل لما نفتح»
 import { LEARN_GROUP, LEARN_GROUP_AR, LEARN_DEFAULTS, LEARN_NUMS, LEARN_BOOLS, LEARN_SCHEMA, learnConfig, makeLearn, registerLearnRoutes } from "./walearn.js";      // BF1 (١٩/١٠): الحرّاس + سجل الأخطاء + الدروس + الفحص الليلي
-import { promiseProblems, isGoAhead, spamKind, comingKind, loneLatinGreeting, adPrefill, locationConfirm, socialLink, asksStaffByName, partySizeOf, altBoxFor, praiseOnly } from "./waguard.js";      // BF1
+import { promiseProblems, isGoAhead, spamKind, comingKind, loneLatinGreeting, adPrefill, locationConfirm, socialLink, asksStaffByName, partySizeOf, altBoxFor, praiseOnly, complimentOnly, praiseWhat } from "./waguard.js";      // BF1
 import { ordersSince, recentOrdersOf, existingOrderBrief, POS_ITEMS_SQL } from "./waorders.js";      // BF1 A: طلب من أي قناة (موقع / كاشير / صالة)
 import { COURIER_JOB_DEFAULTS, COURIER_JOB_SCHEMA, COURIER_JOB_SCHEMA_GROUP, courierJobConfig, courierJobFromBody } from "./courierwa-cfg.js";      // CW1
 import { UTILITY_FIRST_DEFAULTS, UTILITY_FIRST_SCHEMA, UTILITY_FIRST_SCHEMA_GROUP, utilityFirstConfig, utilityFirstFromBody } from "./wautility-cfg.js";      // UT1
@@ -573,6 +573,7 @@ export const TEXTS = Object.freeze({
   st_courier_arranging: t("حالة: نرتّب مندوب", "نرتّب مندوب لطلبك وفريقنا يتابعه.", "we are arranging a courier and our team is on it.", [], [], 160),
   /* BF1 (مراجعة ١٩/١٠) */
   coming: t("العميل قال «أنا جاي / دقيقتين وأكون عندكم»", "حيّاك الله، نستناك 🌟", "You're welcome, see you soon 🌟", [], [], 200),
+  praise: t("العميل مدح الأكل / الخدمة من غير سؤال ولا شكوى (BF3)", "تسلم، يسعدنا إن {what} عجبك 🙏 ننتظرك دايماً", "Thank you! So glad you enjoyed {what} 🙏 See you again soon", [], ["what"], 200),
   loc_ok: t("العميل أكّد الموقع اللي بعته («ده الموقع مظبوط»)", "تمام 👍 وصلنا موقعك.", "Got it 👍 we have your location.", [], [], 200),
   spam_line: t("سبام / رابط دعوة (مرة في اليوم، من غير تحويل ولا متابعة)", "هذا الرقم لطلبات فريش كاتس فقط 🙏", "This number is for Fresh Cuts orders only 🙏", [], [], 200),
   camp_alt_body: t("الحملة اللي العميل رد عليها عرضها انتهى ⇒ أقرب بوكس لنفس العدد", "عرض «{offer}» انتهى 🙏 ولنفس العدد عندنا *{name}* بـ {price} ر.س.\n{desc}\nتقدر تطلبه من الزر 👇", "The «{offer}» offer has ended 🙏 For the same group we have *{name}* for SAR {price}.\n{desc}\nOrder it from the button 👇", ["offer", "name", "price"], ["desc"], 600),
@@ -1553,6 +1554,7 @@ export function buildReply(key, c) {
     case "whoami": { const m = buildReply("main", c); return { ...m, body: personaOn(cfg) ? honestText(cfg, "whoami_persona", lang) : F("whoami", { who: disclosureLine(cfg, lang, data.settings) }) }; }
     case "cancel_what": return { body: T("cancel_what"), buttons: [{ id: "cw:order", title: T("btn_cancel_order") }, { id: "cw:stop", title: T("btn_stop_msgs") }] };
     case "thanks": case "start": return { body: T(key) };
+    case "praise": { const w = c.arg && typeof c.arg === "object" ? c.arg : {}; return { body: F("praise", { what: (lang === "en" ? w.en : w.ar) || (lang === "en" ? "the food" : "الأكل") }) }; }      // BF3 …5082
     /* SB2 — الرد على رسالة التقييم: «تمام» ⇒ رابط صفحة التقييم بتاعة الطلب (نفس التوجيه المعروف)، «ملاحظة» ⇒ المدير برقم الطلب */
     case "review_ok": { const code = c.arg && c.arg.code, extra = c.arg && c.arg.extra ? `\n${c.arg.extra}` : "";      // SB4: سطر الولاء (مرة في النافذة) في نفس الرسالة
       if (!/^[a-z0-9]{4,16}$/i.test(String(code || ""))) return { body: `${T("rv_ok_nolink")}${extra}` };
@@ -2045,7 +2047,9 @@ export function pauseState({ cfg, now, open, lastEchoAt, hours }) {
   const until = t + cfg.humanPauseMin * 60_000;
   return { paused: until > now.getTime(), until, kind: "staff_pause" };
 }
-const FACTUAL_KEYS = new Set(["coming", "loc_ok", "spam", "other_city", "whoami", "delivery_time", "hours", "hoursloc", "location", "status", "thanks", "stop", "stop_updates", "cancel_what", "start", "optin_yes", "optin_no", "resume_all", "resume_updates", "rf_no",
+/* BF3: المدح بيتعرف بس من التصنيفات «الطرية» (مش حالة طلب / شكوى / إيقاف…): «الشوي…» ممكن تتصنّف صنف أو قسم، و«تسلم» شكر */
+const PRAISE_FROM = new Set(["unknown", "thanks", "ack", "item", "items", "cat", "cats", "best", "notmenu", "main", "spicy"]);
+const FACTUAL_KEYS = new Set(["praise", "coming", "loc_ok", "spam", "other_city", "whoami", "delivery_time", "hours", "hoursloc", "location", "status", "thanks", "stop", "stop_updates", "cancel_what", "start", "optin_yes", "optin_no", "resume_all", "resume_updates", "rf_no",
   "review_reason"]);      // RV1: سبب التقييم الواطي = رد على سؤالنا وهو عند المدير ⇒ «وصلت ملاحظتك» (مش «محادثتك عند الموظف»)
 /* أسئلة المنيو والأسعار والتوصيل: معلومات. بتتجاوب حتى والمحادثة عند الموظف — إلا لو التحويل شكوى/مشكلة (SERIOUS). */
 const MENU_KEYS = new Set(["camp_alt", "main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area", "faq", "dishfact", "rf_yes"]);
@@ -2712,6 +2716,12 @@ export function register(app, ctx, deps = {}) {
                  ON CONFLICT (phone_norm) DO UPDATE SET referral=COALESCE(wa_bot_chats.referral, $2), referral_at=COALESCE(wa_bot_chats.referral_at, NOW()), updated_at=NOW()`, [phone, jb({ source_type: "unsupported_opener", guess: true, headline: null })]);
       }
     }
+    /* BF3 (…4268 ٢٠/١٠ «Online» / «Offers»): كلمة إنجليزي لوحدها أو نص زر ⇒ عربي (detectLang). المفتاح مقفول ⇒ الحكم القديم.
+       مفتوح والمحادثة كانت إنجليزي بجملة حقيقية (آخر رسالة للرقم في ٦ ساعات اتسجّلت en) ⇒ يفضل إنجليزي. */
+    if (!ev.interactiveId && String(ev.type || "text") === "text" && latinShort(ev.text)) {
+      if (!learnConfig(settings.waBot || {}).shortEnglishArabic) cls = { ...cls, lang: detectLang(ev.text, { shortAr: false }) };
+      else if (cls.lang === "ar") { const pl = await q(`/*bf3:prevlang*/ SELECT lang FROM wa_bot_log WHERE phone_norm=$1 AND id <> $2 AND at > NOW() - INTERVAL '6 hours' AND lang IS NOT NULL ORDER BY at DESC, id DESC LIMIT 1`, [phone, logId]); if (pl && pl[0] && pl[0].lang === "en") cls = { ...cls, lang: "en" }; }
+    }
     /* ١٤/١٠: الرسالة الجاهزة من زر «تابع طلبك» ⇒ المحادثة «متابعة طلب» (follow_order/follow_at) — للتقرير والمتابعة. رسالته نفسها فتحت النافذة. */
     if (!afterWait && cls.rawIntent === "follow_link" && /^5\d{8}$/.test(phone) && cls.entities && cls.entities.orderNo)
       await q("INSERT INTO wa_bot_chats(phone_norm, follow_order, follow_at) VALUES ($1,$2,NOW()) ON CONFLICT (phone_norm) DO UPDATE SET follow_order=$2, follow_at=NOW(), updated_at=NOW()", [phone, String(cls.entities.orderNo).slice(0, 30)]);
@@ -2950,7 +2960,7 @@ export function register(app, ctx, deps = {}) {
       }
       /* هجين (اختياري، من اللوحة): الرسالة اللي القواعد مافهمتهاش تتصنّف بموديل — **تصنيف بس**: بيرجّع اسم نية من قايمتنا
          (+ صنف/قسم/بوكس من البيانات) بدرجة ثقة، والرد نفسه نص ثابت بيتعبّى من البيانات الحيّة زي أي رد. فشل/تأخر/ثقة قليلة ⇒ «غير مفهوم». */
-      if (cls.key === "unknown" && cfg.llm.enabled && llm && !afterWait && String(ev.text || "").trim().length >= 2) {
+      if (cls.key === "unknown" && cfg.llm.enabled && llm && !afterWait && String(ev.text || "").trim().length >= 2 && !(learnConfig(settings.waBot || {}).praiseThanks && complimentOnly(ev.text))) {      // BF3: المدح بيتعرف من غير موديل
         /* السقف أولاً: مصروف اليوم/الشهر وصل الحد (أو مانعرفش نعدّه) ⇒ مفيش نداء، والبوت يكمل بالقواعد. SMS واحد أول مرة. */
         const sc0 = staffConfig(settings);
         const stop = await aicost.gate({ purpose: "classify", budget: cfg.llm, phones: cfg.llm.alertPhones.length ? cfg.llm.alertPhones : (cfg.alertPhones.length ? cfg.alertPhones : sc0.alertPhones), lang: sc0.lang, alert: cfg.mode !== "dry" });
@@ -3024,6 +3034,7 @@ export function register(app, ctx, deps = {}) {
         } else if (tx && soft && comingKind(tx)) cls = { ...cls, key: "coming", arg: null, rawIntent: "coming" };      // …0558
         else if (tx && ["location", "hoursloc", "unknown", "ack", "area"].includes(String(cls.key)) && locationConfirm(tx) && chat.last_loc && now.getTime() - Date.parse(chat.last_loc.at || 0) < 60 * 60_000) cls = { ...cls, key: "loc_ok", arg: null, rawIntent: "location_confirm" };      // E …7271
         else if (tx && asksStaffByName(tx) && !["stop", "start", "complaint", "problem", "change", "stop_updates"].includes(String(cls.key))) cls = { ...cls, key: "human", arg: null, rawIntent: "asks_staff_by_name" };      // F …2488
+        else if (tx && lc.praiseThanks && PRAISE_FROM.has(String(cls.key)) && complimentOnly(tx)) cls = { ...cls, key: "praise", arg: praiseWhat(tx), rawIntent: "compliment" };      // BF3 …5082 «الشوي انهارده احسن من امبارح» ⇒ شكر، مش تحويل
         else if (tx && cls.key === "unknown" && praiseOnly(tx)) { const ro = await recentOrdersOf(q, phone, now, lc.orderAwareHours); if (ro && ro.length) cls = { ...cls, key: "thanks", arg: null, rawIntent: "praise_after_order" }; }      // …3214 (٠٫٢٢ ر.س لكل «شكراً»)
         /* H (…1526 «إيه، جهّزه ✅» على «نفس الطلب؟» من ماجد): مفيش سلة اتسعّرت في الجلسة وآخر كلام ماجد كان «نفس الطلب» ⇒ سلة نفس الطلب الأخير على طول.
            G (…9156 / …4333): ضغطة «أبغى أطلب» من غير حملة شغّالة ⇒ سلة نفس الطلب الأخير لو بيتجهّز (وإلا الرد العادي). */
@@ -3163,7 +3174,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
          تحويل شكوى/ملاحظة اتفتح من ثواني (handoverBurstSec) ⇒ الصورة أو النص أو «عندي ملاحظة» اللي بعده = نفس الشكوى: بتوصل للموظف في المحادثة من غير رد تاني ولا تنبيه تاني،
          والمساعد مابيشوفهاش. الحقايق (حالة الطلب / المواعيد / إيقاف) ونجوم التقييم بيتردّ عليهم عادي. */
       if (ok && !afterWait && cfg.handoverBurstSec > 0 && chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoverBurstSec * 1000 && BURST_REASONS.has(String(chat.handoff_reason || ""))
-        && !FACTUAL_KEYS.has(cls.key) && !["review_star", "review_reason", "review_ok", "gq_yes", "gq_no"].includes(cls.key) && d.act !== "silent") {      // RV6: إجابة سؤال جوجل بتتردّ عليها عادي
+        && (!FACTUAL_KEYS.has(cls.key) || cls.key === "praise") && !["review_star", "review_reason", "review_ok", "gq_yes", "gq_no"].includes(cls.key) && d.act !== "silent") {      // RV6: إجابة سؤال جوجل بتتردّ عليها عادي
         await finish({ decision: "silent", reason: "handover_burst", key: cls.key, detail: `${chat.handoff_reason} ${Math.round((now.getTime() - Date.parse(chat.handoff_at)) / 1000)}s ago — same complaint, staff see it in the chat` });
         return;
       }
@@ -4464,7 +4475,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     } catch (e) { console.error("[assist] earlier pictures:", e.message); earlierPictures = null; } }
     const loop = makeAssistLoop(assistDeps(cfg, settings, logId));
     const text = cls.key === "area" ? "📍" : String(ev.text || "");      // الموقع نفسه مابيتبعتش للموديل: علامة بس، والسياق بيقول إنه شارك موقعه
-    const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile, earlierPictures, personal: cx.personal, mem: cx.mem, tap: ev.interactiveId || null, guards: { goAhead: lcfg.goAheadCart, promise: lcfg.promiseGuard }, lessons: (await learnApi.lessonsNow(lcfg)).text || null });      // BF1: الحرّاس + دروس الأخطاء · S1: السجل الشخصي + ذاكرة الرفض (أول دور) + معرّف الزر
+    const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile, earlierPictures, personal: cx.personal, mem: cx.mem, tap: ev.interactiveId || null, guards: { goAhead: lcfg.goAheadCart, promise: lcfg.promiseGuard, praise: lcfg.praiseThanks, shortAr: lcfg.shortEnglishArabic }, lessons: (await learnApi.lessonsNow(lcfg)).text || null });      // BF1: الحرّاس + دروس الأخطاء · S1: السجل الشخصي + ذاكرة الرفض (أول دور) + معرّف الزر
     if (!r.ok) { if (fresh) session = null; if (/^model_http_400/.test(r.reason)) { await assistStore.dropSession(phone); session = null; } return fallback(r.reason, r.trace); }
     const tr = r.trace, nowMs = now.getTime(), L = tr.lang === "en" ? "en" : tr.lang === "ar" ? "ar" : lang;
     await noteGuards(tr, phone);      // BF1: المراجِع مسك وعد/بيع غلط واتكتب تاني ⇒ سطر للفحص الليلي

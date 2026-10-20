@@ -87,7 +87,7 @@ test("B decide: a message older than maxAgeMinutes goes to staff only when TYPED
 test("أ registry seed: every finding of the 19/10 review is a confirmed row with a known type, a masked phone, the wrong reply, the correct behaviour and the guard", () => {
   assert.ok(L.REVIEW_SEED.length >= 31);
   for (const r of L.REVIEW_SEED) {
-    assert.ok(L.MISTAKE_TYPES[r.type], r.mkey); assert.match(r.mkey, /^rev1910:[A-L]:/); assert.match(r.phone_masked, /^…\d{4}$/);
+    assert.ok(L.MISTAKE_TYPES[r.type], r.mkey); assert.match(r.mkey, /^rev1910:[A-L]:|^rev2010:[JP]:/);      /* BF3: + مراجعة ٢٠/١٠ */ assert.match(r.phone_masked, /^…\d{4}$/);
     assert.ok(r.example && r.correct && r.guard, r.mkey); assert.doesNotMatch(`${r.example} ${r.wrong_reply || ""}`, /05\d{8}|9665\d{8}|\b5\d{8}\b/, `${r.mkey}: no full phone`);
   }
   for (const letter of "ABCDEFGHIJKL") assert.ok(L.REVIEW_SEED.some((r) => r.mkey.startsWith(`rev1910:${letter}:`)), `finding ${letter} is in the registry`);

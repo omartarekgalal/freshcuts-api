@@ -194,6 +194,7 @@ function world({ handovers = null, waBot = {}, notifications = { whatsappEnabled
       if (failDb && failDb.test(s)) throw new Error("db down");
       { const om = /^\/\*of:([a-z_]+)\*\//.exec(s); if (om) return ofFake(om[1], p); }
       { const bm = /^\/\*bf1:([a-z_]+)\*\//.exec(s); if (bm) return bf1Fake(bm[1], p); }      // BF1
+      if (/^\/\*bf3:prevlang\*\//.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.id !== p[1] && l.lang).slice(-1).map((l) => ({ lang: l.lang })) };      // BF3: لغة آخر رسالة للرقم
       if (/^INSERT INTO wa_bot_guard_hits/i.test(s)) { (db.guardHits ||= []).push({ phone: p[0], guard: p[1], kind: p[2], value: p[3], text: p[4] }); return { rows: [] }; }      // BF1
       if (/^SELECT version, text FROM wa_bot_lessons ORDER BY version DESC LIMIT 1/i.test(s)) return { rows: (db.lessons || []).slice(-1) };      // BF1
       if (/^SELECT 1 FROM wa_bot_log WHERE phone_norm=\$1 AND reply_key='spam' AND decision IN \('replied','dry'\) AND at > NOW\(\) - INTERVAL '24 hours'/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.reply_key === 'spam' && ['replied', 'dry'].includes(l.decision) && nowMs - Date.parse(l.at) < 86400_000).slice(0, 1).map(() => ({})) };      // BF1 I
@@ -6890,4 +6891,72 @@ test("BF1 د: إحصائيات البوت فيها عدّ الأخطاء في ا
     const row = sch.find((x) => x.key === k); assert.ok(row, k); assert.equal(row.groupAr, "ماجد والبوت: الحرّاس والتعلّم من الأخطاء (BF1)");
   }
   assert.deepEqual([R.botConfig({}).orderAwareHours, R.botConfig({}).claimSilentMin, R.botConfig({}).selfReview], [3, 3, true], "safe defaults");
+}));
+
+/* ══ BF3 (٢٠/١٠): نبرة ماجد — «Online» / «Offers» بالإنجليزي (…4268) والمدح اتحوّل لموظف (…5082) ═════════════════════════════
+   الحادثتين بالنص من wa_assist_turns يوم ٢٠/١٠ (قراية بس)، الأرقام مقنّعة 5000000xx. الوحدات في bf3-majed-tone.test.mjs. */
+const lastCtxOf = (seenCall) => { const t = seenCall.messages.map((m) => (Array.isArray(m.content) ? m.content.map((b) => b.text || "").join("\n") : String(m.content || ""))).join("\n"); const all = [...t.matchAll(/<context [^>]*>([\s\S]*?)<\/context>/g)]; return all.length ? JSON.parse(all.at(-1)[1]) : null; };      // سياق آخر دور (ctxOf بيقرا الأول)
+test("BF3 …4268 (٢٠/١٠ 20:45/20:46): «Online» ثم «Offers» ⇒ ماجد بيرد بالعربي (reply_language Arabic في الدورين)، مش «I'm Majed…» / «Here's what we have right now»", withEnv(CONFIGURED, async () => {
+  const w = bfA(61, [mSay("هلا والله 👋 قل لي وش تحب وأجهّز لك السلة بأسعارها."), mSay("أبشر 🙏 كم شخص أنتم؟ وأرشّح لك العرض المناسب.")]);
+  const a = await w.say("Online", { from: BFTO(61) });
+  assert.equal(a.log.reply_key, "assist"); assert.equal(a.log.lang, "ar");
+  assert.equal(ctxOf(w.m.seen[0]).reply_language, "Arabic", "«Online» is not the customer's language");
+  assert.deepEqual(ctxOf(w.m.seen[0]).english_button_text, { rule: AST.CTX_RULES.shortEnglish }, "…and the context says why");
+  w.clock.advance(1);
+  const b = await w.say("Offers", { from: BFTO(61) });
+  assert.equal(b.log.reply_key, "assist"); assert.equal(w.m.used(), 2); assert.equal(bodyOf(msgs(b)[0]), "أبشر 🙏 كم شخص أنتم؟ وأرشّح لك العرض المناسب.");
+  assert.equal(b.log.lang, "ar"); assert.equal(lastCtxOf(w.m.seen.at(-1)).reply_language, "Arabic", "the chat stays Arabic: «Online» did not make it English");
+  assert.ok(w.store.turns.every((t) => t.lang === "ar"), "assistant turns logged in Arabic");
+  for (const t of ["Online", "Offers", "Menu", "Hi", "Order", "Order now"]) assert.equal(R.classify({ phone: BF(61), text: t, type: "text" }).lang, "ar", `rules bot: ${t}`);
+}));
+
+test("BF3: عميل كتب جملة إنجليزي حقيقية ⇒ إنجليزي، و«Offers» بعدها يفضل إنجليزي (ماجد + القواعد)؛ المفتاح مقفول ⇒ الحكم القديم", withEnv(CONFIGURED, async () => {
+  const w = bfA(63, [mSay("Yes! We have family boxes. How many people are you?"), mSay("Sure 🙂 how many people are you? I will suggest the best offer.")]);
+  await w.say("Do you have a family box for 5 people?", { from: BFTO(63) });
+  assert.equal(ctxOf(w.m.seen[0]).reply_language, "English");
+  w.clock.advance(1); const o = await w.say("Offers", { from: BFTO(63) });
+  assert.equal(lastCtxOf(w.m.seen.at(-1)).reply_language, "English", "an English chat keeps English on a short word");
+  assert.doesNotMatch(bodyOf(msgs(o)[0]), /[؀-ۿ]{3,} [؀-ۿ]{3,}/, "…and the reply is English");
+  /* القواعد بس: جملة إنجليزي ثم «Menu» ⇒ رد المنيو بالإنجليزي؛ «Menu» لوحدها من رقم جديد ⇒ بالعربي */
+  const r = bfRules(64);
+  await r.say("Can I see the menu please", { from: BFTO(64) }); r.clock.advance(1);
+  const m = await r.say("Menu", { from: BFTO(64) });
+  assert.doesNotMatch(bodyOf(msgs(m)[0]), /[؀-ۿ]{3,} [؀-ۿ]{3,}/, "English chat ⇒ English menu reply");
+  const r2 = bfRules(65);
+  const m2 = await r2.say("Menu", { from: BFTO(65) });
+  assert.match(bodyOf(msgs(m2)[0]), /[؀-ۿ]{3,} [؀-ۿ]{3,}/, "a lone «Menu» ⇒ Arabic menu reply");
+  /* المفتاح مقفول ⇒ «Online» = إنجليزي زي قبل BF3 */
+  const off = bfA(66, [mSay("Hi! What would you like to order?")], { waBot: { shortEnglishArabic: false } });
+  await off.say("Online", { from: BFTO(66) });
+  assert.equal(ctxOf(off.m.seen[0]).reply_language, "English");
+}));
+
+test("BF3 …5082 (٢٠/١٠ 18:18): «الشوي انهارده احسن من امبارح» ⇒ «تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً» من القواعد — مفيش تحويل ولا ماجد ولا موديل", withEnv(CONFIGURED, async () => {
+  const w = bfA(62, []);
+  const r = await w.say("الشوي انهارده احسن من امبارح", { from: BFTO(62) });
+  assert.equal(r.log.reply_key, "praise"); assert.equal(r.log.handoff, null); assert.equal(w.m.used(), 0, "no model call");
+  assert.equal(bodyOf(msgs(r)[0]).split("\n")[0], "تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً");
+  assert.ok(!/سؤالك يحتاج واحد من الفريق/.test(JSON.stringify(msgs(r))));
+  w.clock.advance(2);
+  const f = await w.say("الاكل انهارده احسن من امبارح", { from: BFTO(62) });
+  assert.equal(f.log.reply_key, "praise"); assert.equal(bodyOf(msgs(f)[0]).split("\n")[0], "تسلم، يسعدنا إن الأكل عجبك 🙏 ننتظرك دايماً");
+  /* كلام سلبي ⇒ مش مدح (الشكوى / المساعد زي ما هم) */
+  const n = bfA(67, [mSay("نعتذر منك 🙏 وش اللي صار بالظبط؟")]);
+  const neg = await n.say("الشوي احسن من امبارح بس بارد", { from: BFTO(67) });
+  assert.notEqual(neg.log.reply_key, "praise");
+  const n2 = bfA(68, [mSay("نعتذر 🙏")]);
+  assert.notEqual((await n2.say("بس مجاش سبايسي", { from: BFTO(68) })).log.reply_key, "praise");
+  /* المفتاح مقفول ⇒ زي قبل BF3 (مش رد praise) */
+  const off = bfA(69, [mSay("تسلم 🙏")], { waBot: { praiseThanks: false } });
+  assert.notEqual((await off.say("الشوي انهارده احسن من امبارح", { from: BFTO(69) })).log.reply_key, "praise");
+}));
+
+test("BF3 …5082 جوّه محادثة ماجد: المدح بيفضل معاه (customer_praise)، وhandover(needs_staff) على المدح مرفوض ⇒ الشكر، مش «سؤالك يحتاج واحد من الفريق»", withEnv(CONFIGURED, async () => {
+  const w = bfA(70, [mSay("هلا والله 👋 وش تحب تطلب اليوم؟"), mUse(tUse("handover", { reason: "needs_staff", note: "compliment" })), mSay("تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً")]);
+  await w.say("هلا", { from: BFTO(70) }); assert.equal(w.m.used(), 1); w.clock.advance(1);
+  const r = await w.say("الشوي انهارده احسن من امبارح", { from: BFTO(70) });
+  assert.equal(r.log.reply_key, "assist"); assert.equal(r.log.handoff, null);
+  assert.ok(lastCtxOf(w.m.seen[1]).customer_praise, "the context tells Majed it is a compliment");
+  assert.equal(bodyOf(msgs(r)[0]), "تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً");
+  const tr = JSON.stringify(w.m.seen[2].messages); assert.match(tr, /compliment_not_handover/, "the handover tool answered «not handed over»");
 }));

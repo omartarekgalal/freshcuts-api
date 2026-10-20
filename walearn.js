@@ -14,7 +14,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 import { normalize } from "./wabot.js";
 import { maskText } from "./wabotllm.js";
-import { promiseProblems } from "./waguard.js";
+import { promiseProblems, latinShort, complimentOnly } from "./waguard.js";
 import { isRestaurantOpenAt } from "./sendhours.js";
 
 export const LEARN_GROUP = "botLearn";
@@ -29,6 +29,8 @@ export const LEARN_DEFAULTS = Object.freeze({
   claimEscalate: true,         // …والتصعيد للمدير
   closedComplaintAtOpen: true, // C: تقييم واطي/شكوى العميل ردّ عليها والمطعم مقفول ⇒ للمدير أول ما نفتح
   spamQuiet: true,             // I: سبام (رابط دعوة / تيمو…) ⇒ سطر واحد، ولا «أنا معك» ولا تنبيه
+  shortEnglishArabic: true,    // BF3 (…4268 ٢٠/١٠): «Online» / «Offers» / «Menu» لوحدها أو نص زر ⇒ الرد بالعربي (البوت وماجد)
+  praiseThanks: true,          // BF3 (…5082 ٢٠/١٠): مدح الأكل ⇒ شكر قصير، مش تحويل لموظف
   lessonsEnabled: true,        // ب: الدروس بتتبعت لماجد
   lessonsMaxChars: 1500,       // …بحد أقصى
   selfReview: true,            // ج: الفحص الليلي
@@ -36,7 +38,7 @@ export const LEARN_DEFAULTS = Object.freeze({
   selfReviewMax: 60,           // …أقصى عدد صفوف «مشتبه» في الليلة
 });
 export const LEARN_NUMS = Object.freeze({ orderAwareHours: [1, 24], claimSilentMin: [0, 30], lessonsMaxChars: [300, 4000], selfReviewHour: [0, 11], selfReviewMinute: [0, 59], selfReviewMax: [5, 300] });
-export const LEARN_BOOLS = Object.freeze(["promiseGuard", "goAheadCart", "campExpiredAlt", "staffStopsMajed", "claimEscalate", "closedComplaintAtOpen", "spamQuiet", "lessonsEnabled", "selfReview"]);
+export const LEARN_BOOLS = Object.freeze(["promiseGuard", "goAheadCart", "campExpiredAlt", "staffStopsMajed", "claimEscalate", "closedComplaintAtOpen", "spamQuiet", "shortEnglishArabic", "praiseThanks", "lessonsEnabled", "selfReview"]);
 const clamp = (v, [lo, hi], d) => { const n = Number(v); return Number.isFinite(n) && v !== "" && v !== null ? Math.min(hi, Math.max(lo, n)) : d; };
 export function learnConfig(x = {}) {
   const src = x && typeof x === "object" ? x : {};
@@ -57,6 +59,8 @@ export const LEARN_SCHEMA = Object.freeze({
   claimEscalate: S("boolean", "…ويتصعّد للمدير", "مع التنبيه التاني: كارت تصعيد على أجهزة المدير (نفس سلّم التحويلات)."),
   closedComplaintAtOpen: S("boolean", "شكوى / تقييم واطي اتردّ عليه والمطعم مقفول ⇒ للمدير أول ما نفتح", "العميل رد على تقييمه الواطي أو شكوته بعد القفل ⇒ أول ما نفتح، لو محدش كتب له، تنبيه عاجل للمدير وكارت على البورتال."),
   spamQuiet: S("boolean", "سبام ⇒ سطر واحد وبس", "رابط دعوة / تيمو / شي إن / «اربح» ⇒ سطر «الرقم ده لطلبات فريش كاتس» مرة، ومفيش «أنا معك» ولا تحويل ولا تنبيه للفريق."),
+  shortEnglishArabic: S("boolean", "كلمة إنجليزي لوحدها أو نص زر ⇒ الرد بالعربي", "«Online» أو «Offers» أو «Menu» أو «Hi» أو نص زر إعلان قصير مش لغة العميل (عميلنا سعودي) ⇒ البوت وماجد يردّوا بالعربي. الإنجليزي بس لما العميل يكتب جملة إنجليزي حقيقية (٣ كلمات أو أكتر)، أو لو المحادثة كانت إنجليزي قبلها. مقفول ⇒ الحكم القديم (كلمة زي «Menu» ⇒ إنجليزي)."),
+  praiseThanks: S("boolean", "مدح الأكل ⇒ شكر قصير، مش تحويل لموظف", "«الشوي انهارده أحسن من امبارح» أو «تحفة» أو «ما شاء الله» ⇒ سطر شكر دافي («تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً») من غير بيع ولا تحويل. أي كلمة سلبية («بس»، «بارد»، «مجاش»…) ⇒ مش مدح ويمشي في مسار الشكوى زي ما هو. نص الشكر في نصوص البوت (praise)."),
   lessonsEnabled: S("boolean", "دروس الأخطاء بتتبعت لماجد", "الأخطاء المتأكدة اللي ليها «ماتعملش / اعمل» ومفتاح الدرس شغّال ⇒ كتلة قصيرة في تعليمات ماجد. كل تغيير نسخة في السجل."),
   lessonsMaxChars: NS("lessonsMaxChars", "دروس الأخطاء: الحجم الأقصى", "اللي يزيد بيتقص (الأحدث تأكيداً أولاً).", "حرف"),
   selfReview: S("boolean", "الفحص الليلي لردود البوت وماجد", "كل ليلة بعد القفل: فحوص ثابتة على ردود اليوم (قراية بس، من غير موديل) ⇒ صفوف «مشتبه» في سجل الأخطاء للمالك يأكدها أو يشيلها."),
@@ -110,6 +114,7 @@ const riyadhDay = (d) => new Date((d instanceof Date ? d.getTime() : Number(d)) 
 
 /* ── أ) مراجعة ١٩/١٠ متزرّعة (٣١ ملاحظة في ١٧ محادثة) — status confirmed، و«ماتعملش / اعمل» لماجد في الغلطات اللي عن كلامه ── */
 const R = (key, type, phone, example, wrong, correct, guard, lessonDont = null, lessonDo = null) => ({ mkey: `rev1910:${key}`, type, phone_masked: phone, example, wrong_reply: wrong, correct, guard, lesson_dont: lessonDont, lesson_do: lessonDo, day: "2026-10-18" });
+const R2 = (key, type, phone, example, wrong, correct, guard, lessonDont = null, lessonDo = null) => ({ ...R(key, type, phone, example, wrong, correct, guard, lessonDont, lessonDo), mkey: `rev2010:${key}`, day: "2026-10-20" });      // BF3
 export const REVIEW_SEED = Object.freeze([
   R("A:1149", "apology_after_order", "…1149", "«عاوز اعمل اوردر» ⇒ موظف ⇒ العميل اتصل وطلب (كاشير ٢٥ ر.س 17:58)", "18:27 «وصلتنا رسالتك وما قدرنا نخدمك وقتها، نعتذر… وش تحب تطلب؟»", "مفيش اعتذار ولا بيع: العميل اتخدم", "waorders.ordersSince في lead_followup (موقع + كاشير، orderAwareHours) + طلب موظف/تحويل بيمنع المتابعة"),
   R("A:0448", "apology_after_order", "…0448", "«Hello» ⇒ الكاشير بعت الروابط ⇒ دفعت موقع ٤٨ ر.س 01:30", "01:53 «ما قدرنا نخدمك وقتها، نعتذر… وش تحب تطلب؟»", "مفيش اعتذار: دفعت قبلها بـ٢٣ دقيقة", "lead_followup بيشوف طلبات الموقع والكاشير في آخر orderAwareHours"),
@@ -144,6 +149,12 @@ export const REVIEW_SEED = Object.freeze([
   R("L:5430", "double_reply", "…5430", "«عاوزة أطلب أون لاين»", "ماجد والكاشير ردّوا في نفس الدقيقة", "موظف كتب ⇒ ماجد يسكت", "staffStopsMajed + فحص قبل الإرسال"),
   R("L:0448", "double_reply", "…0448", "«Hello»", "ماجد + الكاشير", "موظف كتب ⇒ ماجد يسكت", "staffStopsMajed"),
   R("L:9572", "double_reply", "…9572", "الكاشير كتب «عليكم السلام… مع حضرتك» وماجد شغال", "الاتنين ردّوا", "ماجد يسكت أول ما الموظف يكتب", "staffStopsMajed + فحص قبل الإرسال"),
+  /* BF3 (٢٠/١٠، من wa_assist_turns قراية بس): دول بس اللي من النوعين دول في ردود اليوم كله (…5960 «تخفه» اتردّ عليها صح) */
+  R2("J:4268a", "wrong_language", "…4268", "«Online» (أول رسالة، كلمة إنجليزي لوحدها — غالباً نص زر من إعلان)", "«I'm Majed, Fresh Cuts' digital assistant. Ordering is simple: tell me what you'd like…»", "الرد بالعربي: معك ماجد… وش تحب تطلب؟", "latinShort ⇒ عربي (turnLang لماجد + detectLang للقواعد) — shortEnglishArabic",
+    "ترد بالإنجليزي على كلمة إنجليزي لوحدها أو نص زر («Online» · «Offers» · «Menu» · «Hi»)", "ترد بالعربي؛ الإنجليزي بس لجملة إنجليزي حقيقية"),
+  R2("J:4268b", "wrong_language", "…4268", "«Offers» بعد دقيقة", "«Here's what we have right now: 🔥 Our offers now: • Crepe Solo Box — SAR 29 …» (العروض كلها بالإنجليزي)", "نفس العروض بأسعارها بالعربي («بوكس الكريب الفردي 29 ر.س»…)", "latinShort ⇒ عربي، ولغة المحادثة ماتتسجّلش إنجليزي من كلمة واحدة"),
+  R2("P:5082", "misunderstood", "…5082", "«الشوي انهارده احسن من امبارح» (مدح، بعد ملاحظة على طلبه)", "«سؤالك يحتاج واحد من الفريق 🙏 حوّلته لهم.» + تحويل needs_staff", "«تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً» — مفيش تحويل", "complimentOnly ⇒ رد praise (القواعد) + customer_praise لماجد + handover(needs_staff) مرفوض على المدح — praiseThanks",
+    "تحوّل مدح الأكل («الشوي انهارده احسن من امبارح») لموظف", "سطر شكر دافي («تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً»)، والشكوى بس تتحوّل"),
 ].map((x) => ({ ...x, lesson_on: Boolean(x.lesson_dont || x.lesson_do) })));
 
 /* ── ب) كتلة الدروس ────────────────────────────────────────────────────────── */
@@ -239,6 +250,8 @@ export function replyTexts(replies) {
   const arr = Array.isArray(replies) ? replies : (() => { try { return JSON.parse(replies || "[]"); } catch { return []; } })();
   return arr.map((p) => String((p && (p.text?.body || p.interactive?.body?.text)) || "")).filter(Boolean).join("\n");
 }
+/* BF3: رد «إنجليزي» = ٥ كلمات لاتيني ورا بعض ومفيش ٥ كلمات عربي ورا بعض؛ رد التحويل لموظف */
+const EN_REPLY_RE = /(?:[A-Za-z][A-Za-z'’-]*[\s,.;:!?()-]+){5,}/, AR_REPLY_RE = /[؀-ۿ]{2,}(?:\s+[؀-ۿ]{2,}){4,}/, HANDOVER_SAY_RE = /يحتاج واحد من الفريق|حوّلته لهم|حولته لهم|حوّلت محادثتك|حولت محادثتك/;
 const SALES_KEYS = ["lead_followup", "lead_nudge", "assist_followup", "reply_followup", "window_keep", "open_followup", "assist_reminder"];
 const PROACTIVE = ["lead_followup", "lead_nudge", "assist_followup", "reply_followup", "window_keep", "open_followup", "paid_note"];
 
@@ -329,7 +342,7 @@ export function makeLearn({ q, ddl = null, jb, now = () => new Date(), menuIndex
         ORDER BY h.at LIMIT 100`, A)) || [])
       add({ mkey: key("handover_unanswered", h.phone_norm, h.id), type: "handover_unanswered", phone_masked: maskPhone(h.phone_norm), example: `تحويل: ${h.reason}`, wrong_reply: "محدش رد في ٣٠ دقيقة", correct: "رد من الفريق", guard: "handover_check + claim_silent", detail: { handover: Number(h.id) } });
     /* ٦–٩) نص ردود البوت وماجد في اليوم: سعر، لهجة، وصفات، برا الساعات، وعود */
-    const rows = (await q(`/*sr:replies*/ SELECT id, phone_norm, at, reply_key, replies FROM wa_bot_log WHERE at >= $1 AND at < $2 AND decision = 'replied' AND replies IS NOT NULL ORDER BY at LIMIT 2000`, A)) || [];
+    const rows = (await q(`/*sr:replies*/ SELECT id, phone_norm, at, reply_key, replies, text, lang, handoff FROM wa_bot_log WHERE at >= $1 AND at < $2 AND decision = 'replied' AND replies IS NOT NULL ORDER BY at LIMIT 2000`, A)) || [];
     /* BF2: دليل السلة لكل رد من ردود ماجد (سجل الأدوار) — «أضفت» بعد preview_cart ناجح مش وعد مكسور */
     const turnsBy = new Map();
     const assistIds = rows.filter((r) => r.reply_key === "assist").map((r) => Number(r.id)).filter(Number.isFinite);
@@ -338,8 +351,15 @@ export function makeLearn({ q, ddl = null, jb, now = () => new Date(), menuIndex
     let menu = null, boxes = [];
     try { menu = menuIndex ? await menuIndex() : null; boxes = bundles ? (await bundles()) || [] : []; } catch { menu = null; }
     let settings = null; try { settings = getSettings ? await getSettings() : null; } catch { settings = null; }
+    const realEn = new Set(rows.filter((r) => r.lang === "en" && r.text && !latinShort(r.text)).map((r) => String(r.phone_norm)));      // BF3: الرقم كتب جملة إنجليزي حقيقية في اليوم
     for (const r of rows) {
       const txt = replyTexts(r.replies); if (!txt) continue;
+      /* BF3 (…4268): رد إنجليزي على كلمة إنجليزي لوحدها / نص زر، والعميل ماكتبش جملة إنجليزي حقيقية في اليوم */
+      if (r.text && latinShort(r.text) && !realEn.has(String(r.phone_norm)) && EN_REPLY_RE.test(txt) && !AR_REPLY_RE.test(txt))
+        add({ mkey: key("wrong_language", r.phone_norm, r.id), type: "wrong_language", phone_masked: maskPhone(r.phone_norm), example: `«${String(r.text).slice(0, 60)}»`, wrong_reply: txt, correct: "الرد بالعربي (كلمة إنجليزي لوحدها مش لغة العميل)", guard: "latinShort ⇒ عربي (shortEnglishArabic)", detail: { log: Number(r.id) } });
+      /* BF3 (…5082): مدح اتحوّل لموظف */
+      if (r.text && complimentOnly(r.text) && (r.handoff || HANDOVER_SAY_RE.test(txt)))
+        add({ mkey: key("misunderstood", r.phone_norm, `p${r.id}`), type: "misunderstood", phone_masked: maskPhone(r.phone_norm), example: `مدح: «${String(r.text).slice(0, 80)}»`, wrong_reply: txt, correct: "شكر قصير («تسلم، يسعدنا إن … عجبك 🙏») من غير تحويل", guard: "complimentOnly ⇒ praise (praiseThanks)", detail: { log: Number(r.id) } });
       for (const pm of priceMismatches(txt, { menu, boxes })) add({ mkey: key("wrong_price", r.phone_norm, `${r.id}:${pm.item}`), type: "wrong_price", phone_masked: maskPhone(r.phone_norm), example: `${pm.item}: قال ${pm.said}، المنيو الحي ${pm.live.join(" / ")}`, wrong_reply: txt, correct: "السعر من المنيو الحي", guard: "validator أسعار المساعد", detail: { log: Number(r.id), ...pm } });
       const eg = DIALECT_EG_RE.exec(txt); if (eg) add({ mkey: key("dialect_egyptian", r.phone_norm, r.id), type: "dialect_egyptian", phone_masked: maskPhone(r.phone_norm), example: eg[0], wrong_reply: txt, correct: "أبيض / فصحى بسيطة", guard: "dialect_egyptian (المساعد) + نصوص اللوحة", detail: { log: Number(r.id), key: r.reply_key } });
       const rc = RECIPE_SAY_RE.exec(txt); if (rc) add({ mkey: key("recipe_disclosure", r.phone_norm, r.id), type: "recipe_disclosure", phone_masked: maskPhone(r.phone_norm), example: rc[0], wrong_reply: txt, correct: "سطر الاعتذار المهني من غير تفاصيل", guard: "secret + recipe_disclosure", detail: { log: Number(r.id) } });
@@ -386,7 +406,7 @@ export const MISTAKE_COLUMNS = Object.freeze([
   { key: "wrong_reply", label: "الرد الغلط", type: "text" }, { key: "correct", label: "الصح", type: "text" }, { key: "guard", label: "الحارس / القاعدة", type: "text" },
   { key: "lesson", label: "درس ماجد", type: "text" }, { key: "hits", label: "تكرار", type: "number" }, { key: "source_ar", label: "المصدر", type: "text" },
 ]);
-const SOURCE_AR = { review: "مراجعة ١٩/١٠", selfreview: "الفحص الليلي", owner: "المالك" };
+const SOURCE_AR = { review: "مراجعة يدوية (١٩/١٠ + ٢٠/١٠)", selfreview: "الفحص الليلي", owner: "المالك" };
 export const mistakeRow = (r) => ({ id: Number(r.id), day: r.day ? String(r.day).slice(0, 10) : null, type: r.type, type_ar: MISTAKE_TYPES[r.type] || r.type, status: r.status, status_ar: MISTAKE_STATUSES[r.status] || r.status,
   phone_masked: r.phone_masked || null, example: r.example || null, wrong_reply: r.wrong_reply || null, correct: r.correct || null, guard: r.guard || null,
   lesson_dont: r.lesson_dont || null, lesson_do: r.lesson_do || null, lesson_on: r.lesson_on === true, lesson: [r.lesson_dont ? `ماتعملش: ${r.lesson_dont}` : "", r.lesson_do ? `اعمل: ${r.lesson_do}` : ""].filter(Boolean).join(" · ") || null,

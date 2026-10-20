@@ -77,9 +77,23 @@ export function normalize(s) {
 }
 const hasArabic = (s) => /[؀-ۿ]/.test(String(s || ""));
 /* إنجليزي = حروف لاتينية وكلمات إنجليزية معروفة، مو فرانكو (فيه أرقام داخل الكلمة) */
-export function detectLang(text) {
+/* BF3 (٢٠/١٠ …4268: «Online» ثم «Offers» ⇒ ماجد رد إنجليزي كامل): كلمة أو كلمتين بحروف لاتيني، أو نص زر / إعلان قصير
+   («Order now» · «See menu» · «Get offer» · «Send message» · «More info»)، مش لغة العميل — عميلنا سعودي ⇒ الرد بالعربي.
+   الإنجليزي بس لجملة إنجليزي حقيقية (٣ كلمات أو أكتر مش من نصوص الأزرار). */
+const LATIN_CTA_RE = /^(?:(?:order|shop|book|buy)(?: online)? now|order online|see (?:the |our )?menu|view (?:the |our )?menu|show (?:me )?(?:the |your )?(?:menu|offers?)|get (?:the |this |an? )?(?:offer|deal|quote|discount)|send (?:a |us a )?message|learn more(?: about (?:this|it))?|more info(?:rmation)?(?: please| pls)?|(?:menu|offers?|price|prices) (?:please|pls)|i(?:m| am) interested)$/;
+export function latinShort(text) {
+  const t = String(text || "").replace(/https?:\/\/\S+|www\.\S+/gi, " ");
+  if (hasArabic(t)) return false;
+  const words = t.match(/[A-Za-z]+/g) || [];
+  if (!words.length) return false;
+  if (words.length <= 2) return true;
+  return LATIN_CTA_RE.test(normalize(t).replace(/\s+/g, " ").trim());
+}
+/* opts.shortAr = false ⇒ الحكم قبل BF3 (مفتاح «كلمة إنجليزي لوحدها ⇒ عربي» في اللوحة مقفول) */
+export function detectLang(text, opts = {}) {
   const t = String(text || "").replace(/https?:\/\/\S+|www\.\S+/gi, " ");      // MJ1 #٣: رابط لوحده (أو رابط + إيموجي) = عربي، مش إنجليزي
   if (!t.trim() || hasArabic(t)) return "ar";
+  if (opts.shortAr !== false && latinShort(t)) return "ar";      // BF3
   const n = normalize(t);
   /* BF1 J (مراجعة ١٩/١٠): «Hello / Hi» لوحدها أو نص إعلان «راسلنا» الجاهز («Can I get more info on this?») = مش لغة العميل — الترحيب بالعربي */
   if (/^(?:hi+|hello|helo|hey|heya|hai|hallo|good (?:morning|evening|afternoon))(?: there)?$/.test(n) || /^(?:hello |hi |hey )?(?:can i get|could i get|i want|tell me) (?:more )?(?:info|information|details)(?: (?:on|about) (?:this|it))?$/.test(n)) return "ar";

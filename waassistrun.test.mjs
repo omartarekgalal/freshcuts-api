@@ -117,12 +117,13 @@ test("the extra validator: language, dialect, links, promises, apps, calories, n
 
 test("language of a turn: Arabic script, Franco-Arabic, English, another script, and a one-word answer keeps the conversation's language", () => {
   const L = AR.turnLang;
-  assert.deepEqual([L("ابي pizza"), L("abi box crepe"), L("3ayez akl"), L("kam el burger"), L("Hi I want pizza"), L("delivery please")], ["ar", "ar", "ar", "ar", "en", "en"]);
+  assert.deepEqual([L("ابي pizza"), L("abi box crepe"), L("3ayez akl"), L("kam el burger"), L("Hi I want pizza"), L("delivery please")], ["ar", "ar", "ar", "ar", "en", "ar"]);      // BF3 (…4268 «Online» / «Offers»): كلمتين إنجليزي مش جملة ⇒ عربي
+  assert.deepEqual([L("delivery please", "en"), L("Do you deliver to Obhur?")], ["en", "en"], "BF3: an English chat keeps English; a real sentence is English");
   assert.deepEqual([L("Pickup", "en"), L("Pickup", "ar"), L("ok", "ar"), L("👍", "en"), L("📍", "ar"), L("2", "en")], ["en", "ar", "ar", "en", "ar", "en"]);
   assert.equal(L("नमस्ते, मुझे खाना चाहिए"), "en", "another script: a short English reply");
   /* MJ1 #٣ (هشام ١٦/١٠: رابط فيسبوك لوحده ⇒ «Hi Hisham! I'm Majed…»): رابط / إيموجي / رقم / ملصق لوحدهم = لغة المحادثة، وإلا عربي — عمره ما إنجليزي */
   assert.deepEqual([L("https://www.facebook.com/reel/1234567890/"), L("https://fb.watch/abc?mibextid=x", "en"), L("https://fb.watch/abc", "ar"), L("شوف https://www.facebook.com/share/v/1/"), L("https://x.y/z 👍", null), L("[sticker]", null), L("Hi https://fb.watch/abc")],
-    ["ar", "en", "ar", "ar", "ar", "ar", "en"]);
+    ["ar", "en", "ar", "ar", "ar", "ar", "ar"]);      // BF3: «Hi» + رابط = كلمة لوحدها ⇒ عربي
 });
 
 test("MJ1 — the context tells the model about an order in progress (no reorder, no selling), and the rule is in CTX_RULES", () => {
