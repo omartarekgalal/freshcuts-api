@@ -61,8 +61,8 @@ export const LEARN_SCHEMA = Object.freeze({
   lessonsMaxChars: NS("lessonsMaxChars", "دروس الأخطاء: الحجم الأقصى", "اللي يزيد بيتقص (الأحدث تأكيداً أولاً).", "حرف"),
   selfReview: S("boolean", "الفحص الليلي لردود البوت وماجد", "كل ليلة بعد القفل: فحوص ثابتة على ردود اليوم (قراية بس، من غير موديل) ⇒ صفوف «مشتبه» في سجل الأخطاء للمالك يأكدها أو يشيلها."),
   selfReviewHour: NS("selfReviewHour", "الفحص الليلي: الساعة", "بتوقيت الرياض، بعد القفل.", "ساعة"),
-  selfReviewMinute: NS("selfReviewMinute", "الفحص الليلي: الدقيقة", "", "دقيقة"),
-  selfReviewMax: NS("selfReviewMax", "الفحص الليلي: أقصى عدد صفوف في الليلة", "", "صف"),
+  selfReviewMinute: NS("selfReviewMinute", "الفحص الليلي: الدقيقة", "الدقيقة اللي بيبدأ فيها الفحص بعد الساعة اللي فوق (مثلاً ٤ و٣٠ = ٤:٣٠ الفجر بتوقيت الرياض).", "دقيقة"),
+  selfReviewMax: NS("selfReviewMax", "الفحص الليلي: أقصى عدد صفوف في الليلة", "أقصى عدد صفوف «مشتبه» جديدة بيضيفها الفحص في الليلة الواحدة، عشان السجل مايتمليش لو فيه مشكلة متكررة. اللي يزيد عن الحد مايتسجّلش الليلة دي.", "صف"),
 });
 
 export const MISTAKE_TYPES = Object.freeze({
@@ -167,25 +167,72 @@ export function lessonsText(rows, maxChars = LEARN_DEFAULTS.lessonsMaxChars) {
 /* ── ج) الفحوص الثابتة على النص (صافية) ───────────────────────────────────── */
 export const DIALECT_EG_RE = /(?<![\p{L}])(عايز|عاوز|عايزه|دلوقتي|ازاي|إزاي|كده|كدا|بتاع|بتاعت|بتاعك|أوي|اوي|علشان|عشان كده|مفيش|حضرتك|يا فندم|يافندم|ايوه يا)(?![\p{L}])/u;
 export const RECIPE_SAY_RE = /(?:نتبل(?:ه|ها)? ب|التتبيل[ةه] في(?:ها)?|متبل ب|بنحط (?:عليه|فيه)|مقادير|\d+ ?(?:جرام|غرام|جم)\b|موردنا|المورد (?:حقنا|عندنا|هو)|نشتري (?:اللحم|الدجاج)? ?من|we (?:marinate|season) (?:it )?with|our supplier is)/u;
-/* أسعار غلط: سطر فيه اسم صنف واحد من المنيو الحي ورقم واحد «… ر.س» مش سعره ولا سعر أي وزن له ولا سعر بوكس اسمه في نفس السطر (محافظ: الشك ⇒ مش غلطة) */
+/* أسعار غلط (BF2 ٢٠/١٠: أول فحص ليلي قرا «المجموع 58 ر.س» كسعر البطاطس): بنقارن **بس** الرقم اللي لازق في اسم الصنف —
+   «*X* بـ N ر.س» · «X (N ر.س)» · «X: N ر.س» · «X N ر.س» (وزن زي «نصف كيلو» بينهم مسموح). أي رقم بعد المجموع / الإجمالي / total / التوصيل / الرسوم /
+   الحد الأدنى / «من» / «فوق» / الكوبون، أو مفصول عن الاسم بكلمة أو علامة (✅ . + =)، مش سعر الصنف ومابيتقارنش. الكمية («2 ×» / «×2» / «2 كيلو») ⇒ السعر × الكمية مقبول.
+   الاسم جوّه اسم بوكس ⇒ مايتفحصش. سطر خصم / عرض / بدل ⇒ مايتفحصش. محافظ: الشك ⇒ مش غلطة. */
+const fold = (s) => String(s || "").replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660)).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x6f0)).toLowerCase().replace(/[ً-ٰٟـ]/g, "")      // الأرقام الأول: مدى التشكيل ده بيشمل ٠-٩
+  .replace(/[أإآٱ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي").replace(/ؤ/g, "و").replace(/ئ/g, "ي")
+  .replace(/\s+/g, " ");
+const CUR = String.raw`(?:ر\.?\s?س|ريال|sar)(?![\p{L}])`;
+const WEIGHT = String.raw`(?:(?:ثلث|ربع|نصف|نص)\s*(?:ال)?كيلو|(\d+(?:\.\d+)?)\s*كيلو|كيلو(?:ين)?)`;
+/* بعد الاسم مباشرة: نجمة البولد، كمية «×2»، رابط واحد (: - – ( بـ بسعر)، وزن، الرقم والعملة */
+const ATTACH_RE = new RegExp(String.raw`^\*{0,2}\s*(?:[×x]\s*(\d+)\s*)?(?:[(:\-–]\s*)?(?:(?:بسعر|ب)\s*)?(?:${WEIGHT}\s*[:\-–]?\s*)?(\d+(?:\.\d+)?)\s*${CUR}`, "u");
+const QTY_BEFORE_RE = /(?:^|[\s(])(\d+)\s*(?:[×x]\s*|كيلو\s*)?\*{0,2}\s*$/u;      // «2 ×» · «2 كيلو» قبل الاسم
+const CLAUSE_SKIP_RE = /(?:^|[^\p{L}])(?:ال)?(?:مجموع|اجمالي|الكل|total|subtotal|توصيل|رسوم|حد ادني|الحد الادني|اقل طلب|minimum|fee|delivery|من|فوق|اكثر|باقي|يصير|كوبون|كود)(?![\p{L}])/u;
+const LINE_SKIP_RE = /خصم|كوبون|بدل|عرض|وفر|توفير|%|off\b/u;
 export function priceMismatches(text, { menu = null, boxes = [] } = {}) {
-  const items = (menu && Array.isArray(menu.items) ? menu.items : []).filter((i) => i && i.name && String(i.name).length >= 4);
+  const items = (menu && Array.isArray(menu.items) ? menu.items : []).filter((i) => i && i.name && fold(i.name).trim().length >= 4);
   if (!items.length) return [];
+  const names = [...items.map((it) => ({ it, n: fold(it.name).trim() })), ...(boxes || []).filter((b) => b && b.name && fold(b.name).trim().length >= 4).map((b) => ({ box: b, n: fold(b.name).trim() }))]
+    .sort((a, b) => b.n.length - a.n.length);
   const out = [];
   for (const line0 of String(text || "").split("\n")) {
-    const line = line0.replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660)), nl = normalize(line);
-    const nums = [...line.matchAll(/(\d+(?:\.\d+)?)\s*(?:ر\.?\s?س|ريال|SAR)/gi)].map((m) => Number(m[1]));
-    if (nums.length !== 1) continue;
-    const hits = items.filter((i) => nl.includes(normalize(i.name)));
-    const longest = hits.sort((a, b) => normalize(b.name).length - normalize(a.name).length).filter((i, _, arr) => !arr.some((o) => o !== i && normalize(o.name).includes(normalize(i.name))));
-    if (longest.length !== 1) continue;
-    const it = longest[0], v = Math.round(nums[0] * 100) / 100;
-    const ok = new Set([Number(it.price), ...((it.weights || []).map((w) => Number(w.price)))].filter((x) => Number.isFinite(x)).map((x) => Math.round(x * 100) / 100));
-    for (const b of boxes || []) if (b && b.name && nl.includes(normalize(b.name))) ok.add(Math.round(Number(b.price) * 100) / 100);
-    if (!ok.size || ok.has(v)) continue;
-    out.push({ item: it.name, said: v, live: [...ok].slice(0, 3) });
+    const line = fold(line0);
+    if (!/\d/.test(line) || LINE_SKIP_RE.test(line)) continue;
+    const taken = [];
+    for (const c of names) {
+      let from = 0, at;
+      while ((at = line.indexOf(c.n, from)) >= 0) {
+        from = at + 1;
+        const end = at + c.n.length;
+        if (/\p{L}/u.test(line[at - 1] || "") || /\p{L}/u.test(line[end] || "")) continue;      // جزء من كلمة تانية
+        if (taken.some(([a, b]) => at < b && end > a)) continue;                                // جوّه اسم أطول (صنف أو بوكس)
+        taken.push([at, end, c]);
+      }
+    }
+    for (const [at, end, c] of taken.sort((a, b) => a[0] - b[0])) {
+      if (c.box) continue;
+      const m = ATTACH_RE.exec(line.slice(end)); if (!m) continue;
+      const head = line.slice(0, at), clause = head.split(/[.،,؛;!?؟+=\n]/).pop();
+      if (CLAUSE_SKIP_RE.test(clause.replace(/\*/g, " "))) continue;                            // «المجموع مع X …» / «التوصيل من …»
+      const qb = QTY_BEFORE_RE.exec(clause);
+      const qty = [Number(m[1]) || 1, Number(m[2]) || 1, qb ? Number(qb[1]) || 1 : 1].reduce((a, b) => a * b, 1);
+      const it = c.it, v = Math.round(Number(m[3]) * 100) / 100;
+      const base = [Number(it.price), ...((it.weights || []).map((w) => Number(w.price)))].filter((x) => Number.isFinite(x) && x > 0);
+      if (!base.length) continue;
+      const ok = new Set(); for (const x of base) for (const k of new Set([1, qty])) ok.add(Math.round(x * k * 100) / 100);
+      if (ok.has(v)) continue;
+      out.push({ item: it.name, said: v, live: base.map((x) => Math.round(x * 100) / 100).slice(0, 3) });
+    }
   }
   return out.slice(0, 3);
+}
+/* دليل السلة في الدور (نفس إشارة حارس الوعود الحي: build_cart ⇒ cartBuilt، preview_cart أو build_cart ⇒ cartTouched) من سجل أدوار المساعد
+   wa_assist_turns (tool_calls / cart_code)، ومعاه رابط سلة «/c/…» في الرد نفسه. بيشتغل كمان على ردود قبل ما الحارس يتنشر. */
+export function cartEvidence(turns = [], replies = null) {
+  let cartBuilt = /\/c\/[a-z0-9]{6,16}/i.test(JSON.stringify(replies || "")), cartTouched = false;
+  for (const t of turns || []) {
+    if (t && t.cart_code) cartBuilt = true;
+    const tools = Array.isArray(t && t.tool_calls) ? t.tool_calls : (() => { try { return JSON.parse((t && t.tool_calls) || "[]"); } catch { return []; } })();
+    for (const x of tools || []) {
+      const okRes = x && x.result && typeof x.result === "object" ? x.result.ok !== false && !x.result.error : Boolean(x && x.result);
+      if (!okRes) continue;
+      if (x.name === "build_cart") cartBuilt = true;
+      if (x.name === "preview_cart") cartTouched = true;
+    }
+  }
+  return { cartBuilt, cartTouched: cartBuilt || cartTouched };
 }
 /* نصوص الردود اللي طلعت من صف السجل (replies = payloads) */
 export function replyTexts(replies) {
@@ -283,6 +330,11 @@ export function makeLearn({ q, ddl = null, jb, now = () => new Date(), menuIndex
       add({ mkey: key("handover_unanswered", h.phone_norm, h.id), type: "handover_unanswered", phone_masked: maskPhone(h.phone_norm), example: `تحويل: ${h.reason}`, wrong_reply: "محدش رد في ٣٠ دقيقة", correct: "رد من الفريق", guard: "handover_check + claim_silent", detail: { handover: Number(h.id) } });
     /* ٦–٩) نص ردود البوت وماجد في اليوم: سعر، لهجة، وصفات، برا الساعات، وعود */
     const rows = (await q(`/*sr:replies*/ SELECT id, phone_norm, at, reply_key, replies FROM wa_bot_log WHERE at >= $1 AND at < $2 AND decision = 'replied' AND replies IS NOT NULL ORDER BY at LIMIT 2000`, A)) || [];
+    /* BF2: دليل السلة لكل رد من ردود ماجد (سجل الأدوار) — «أضفت» بعد preview_cart ناجح مش وعد مكسور */
+    const turnsBy = new Map();
+    const assistIds = rows.filter((r) => r.reply_key === "assist").map((r) => Number(r.id)).filter(Number.isFinite);
+    if (assistIds.length) for (const t of (await q(`/*sr:turns*/ SELECT log_id, cart_code, tool_calls FROM wa_assist_turns WHERE log_id = ANY($1::bigint[])`, [assistIds])) || []) {
+      const k = String(t.log_id); if (!turnsBy.has(k)) turnsBy.set(k, []); turnsBy.get(k).push(t); }
     let menu = null, boxes = [];
     try { menu = menuIndex ? await menuIndex() : null; boxes = bundles ? (await bundles()) || [] : []; } catch { menu = null; }
     let settings = null; try { settings = getSettings ? await getSettings() : null; } catch { settings = null; }
@@ -291,7 +343,7 @@ export function makeLearn({ q, ddl = null, jb, now = () => new Date(), menuIndex
       for (const pm of priceMismatches(txt, { menu, boxes })) add({ mkey: key("wrong_price", r.phone_norm, `${r.id}:${pm.item}`), type: "wrong_price", phone_masked: maskPhone(r.phone_norm), example: `${pm.item}: قال ${pm.said}، المنيو الحي ${pm.live.join(" / ")}`, wrong_reply: txt, correct: "السعر من المنيو الحي", guard: "validator أسعار المساعد", detail: { log: Number(r.id), ...pm } });
       const eg = DIALECT_EG_RE.exec(txt); if (eg) add({ mkey: key("dialect_egyptian", r.phone_norm, r.id), type: "dialect_egyptian", phone_masked: maskPhone(r.phone_norm), example: eg[0], wrong_reply: txt, correct: "أبيض / فصحى بسيطة", guard: "dialect_egyptian (المساعد) + نصوص اللوحة", detail: { log: Number(r.id), key: r.reply_key } });
       const rc = RECIPE_SAY_RE.exec(txt); if (rc) add({ mkey: key("recipe_disclosure", r.phone_norm, r.id), type: "recipe_disclosure", phone_masked: maskPhone(r.phone_norm), example: rc[0], wrong_reply: txt, correct: "سطر الاعتذار المهني من غير تفاصيل", guard: "secret + recipe_disclosure", detail: { log: Number(r.id) } });
-      if (r.reply_key === "assist") { const pp = promiseProblems(txt, { cartBuilt: /\/c\/[a-z0-9]{6,16}/.test(JSON.stringify(r.replies || "")), cartTouched: false }); if (pp.length) add({ mkey: key("broken_promise", r.phone_norm, r.id), type: "broken_promise", phone_masked: maskPhone(r.phone_norm), example: pp.map((x) => x.value).join(" · "), wrong_reply: txt, correct: "مايتقالش إلا لو حصل", guard: "promiseProblems", detail: { log: Number(r.id) } }); }
+      if (r.reply_key === "assist") { const pp = promiseProblems(txt, cartEvidence(turnsBy.get(String(r.id)) || [], r.replies)); if (pp.length) add({ mkey: key("broken_promise", r.phone_norm, r.id), type: "broken_promise", phone_masked: maskPhone(r.phone_norm), example: pp.map((x) => x.value).join(" · "), wrong_reply: txt, correct: "مايتقالش إلا لو حصل", guard: "promiseProblems", detail: { log: Number(r.id) } }); }
       if (PROACTIVE.includes(String(r.reply_key)) && settings && isRestaurantOpenAt(new Date(r.at), settings) === false) add({ mkey: key("out_of_hours_send", r.phone_norm, r.id), type: "out_of_hours_send", phone_masked: maskPhone(r.phone_norm), example: `${r.reply_key} ${new Date(r.at).toISOString()}`, wrong_reply: txt, correct: "الرسايل المبادِرة بمواعيد المطعم بس", guard: "sendhours.isRestaurantOpenAt", detail: { log: Number(r.id) } });
     }
     /* ١٠) ماجد والموظف ردّوا مع بعض: رد ماجد خلال دقيقة من رسالة موظف (قبلها أو بعدها) لنفس العميل */
