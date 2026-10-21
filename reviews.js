@@ -33,6 +33,7 @@ import { reviewDueAt } from "./prepstatus.js";
 import { reviewFlowConfig, dueFor, nextAllowed, inQuiet, kindOfInvite, posKindOf, kindOn, KIND_AR, PAGE_LABEL, VISIT_KINDS, APP_METHODS, reviewsDaily, bizDayWindow,
   GOOGLE_RATED_DDL, googleRatedState, markGoogleRated, googleRatedStats } from "./wareviews.js";      // RV6 (عمر ١٧/١٠): «قيّم على جوجل ✅» — مانطلبش جوجل تاني
 import { KNOWN_WA_NUMBER } from "./wapolicy.js";
+import { reviewPhoneOf } from "./appreview.js";
 /* RV1 (عمر ١٥/١٠): «عملاء المحل صالة وتيك أواي موافقين مسبقاً وقت الدفع عند الكاشير» ⇒ صف إثبات pos_payment لكل فاتورة (طلب التقييم بس) */
 import { recordPosReviewConsent, POS_REVIEW_CONSENT } from "./waconsent.js";
 import { isPlaceholderPhone, placeholderWhy, FAKE_PHONE_RE } from "./phonecheck.js";
@@ -73,7 +74,7 @@ export function reviewSkipPhones(settings = {}) {
   const out = new Set(teamPhoneSet(s));
   for (const raw of [
     ...list(bot.testPhones), ...list(bot.neverReplyPhones), ...list(bot.alertPhones), ...list(bot.llm && bot.llm.alertPhones),
-    KNOWN_WA_NUMBER, bot.publicPhone || "",
+    KNOWN_WA_NUMBER, bot.publicPhone || "", reviewPhoneOf(s) || "",      // AR1: رقم مراجع Apple/Google
     ...list(s.waHealth && s.waHealth.phones), ...list(s.adsReport && s.adsReport.phones), ...list(s.revenuePulse && s.revenuePulse.phones),
     ...(Array.isArray(s.portal && s.portal.staff) ? s.portal.staff : []).map((x) => (x && (x.phone || x.mobile)) || ""),
   ]) { const p = normLocal(raw); if (p) out.add(p); }

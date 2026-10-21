@@ -56,6 +56,7 @@ import * as ljRecon from "./leajlakrecon.js";
 import * as shop from "./shop.js";
 import * as recs from "./recs.js";
 import * as accounts from "./accounts.js";
+import * as appreview from "./appreview.js";      // 🍏 AR1 (٢١/١٠): دخول مراجع Apple/Google برمز ثابت من اللوحة
 import * as tspartner from "./tspartner.js";
 import * as modifiers from "./modifiers.js";
 import * as posnames from "./posnames.js";
@@ -3409,6 +3410,7 @@ waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, 
 /* 📇 SX1 (١٥/١٠): قايمتين أرقام بسبب لكل رقم — «موظفين / فريق» (البوت ساكت) و«مستثنين من الإعلانات بس» (البوت بيرد) + ترحيل excludePhones
    القديمة مرة واحدة + الفحص اليومي. البوت والتسويق بيقروا القوايم من الإعدادات (phonelists.js) مش من الموديول ده. */
 const phoneListsApi = phonelists.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
+appreview.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });      // 🍏 AR1: GET/PUT /api/cms/app-review (قسم «الإعدادات») — الرقم ده مابيستلمش SMS ورمزه ثابت
 waTeamApi = wateam.register(app, moduleCtx, { wa: waApi, sendSms: accounts.sendSms, requirePortal: portalApi.requirePortal, flow: () => waFlowApi , presence: () => waHandoverApi, phoneLists: () => phoneListsApi, broadcast: portalApi.broadcast, broadcastTo: portalApi.broadcastTo, push: () => portalApi.push });
 waFlowApi = waflow.register(app, moduleCtx, { team: () => waTeamApi, staff: () => waStaffApi, bot: () => wabotApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast , handover: () => waHandoverApi });
 ackescalate.register(app, moduleCtx, { push: () => portalApi.push, team: () => waTeamApi, sendSms: accounts.sendSms });      // 🔔 RG2: إشعار تاني ⇒ واتساب الكاشير/المدير ⇒ SMS الإدارة لما طلب مدفوع محدش يشوفه/يقبله + GET /api/cms/ack-escalations

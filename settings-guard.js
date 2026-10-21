@@ -79,7 +79,11 @@ export const SERVER_OWNED_PATHS = [
   "portals",                    // portalsessions.js (جلسات البوابات — POST /api/portals/settings، المالك)
   "staffKpi",                   // staffkpi.js (KP1: أهداف أداء الفريق — POST /api/cms/staff-kpis/settings، المالك)
   "insights",                   // poslink.js (PC1: إيقاع سحب نقطة البيع وربط العميل بالطلب — POST /api/insights/link-settings، المالك)
+  "appReview",                  // appreview.js (AR1: دخول مراجع Apple/Google برمز ثابت — PUT /api/cms/app-review)
 ];
+
+/* مسارات بتتشال كلها من GET لغير المالك (فيها رمز دخول مش اسمه «secret»). */
+export const VIEWER_HIDDEN_PATHS = ["appReview"];
 
 /* مسارات ليها كاتبين: شاشة PUT كاملة + السيرفر (catalog.hiddenIds: شاشة
    «شكل المتجر» + /api/cms/products + fc-unhide). بنقبل قيمة الشاشة بس لو
@@ -163,6 +167,7 @@ export function redactForViewer(data) {
   const d = isObj(data) ? clone(data) : {};
   for (const p of findKeys(d, SECRET_KEY_RE)) delAt(d, p);
   for (const p of findKeys(d, PHONE_KEY_RE)) delAt(d, p);
+  for (const p of VIEWER_HIDDEN_PATHS) delAt(d, p);
   return d;
 }
 

@@ -44,6 +44,7 @@ import crypto from "node:crypto";
 import { customerId } from "./customer-id.js";
 import { metaTouch, metaOrganicName } from "./metatouch.js";
 import { teamPhones } from "./phonelists.js";
+import { reviewPhoneOf } from "./appreview.js";
 
 /* ═══ pure lib (متجرّب في journey.test.mjs) ═════════════════════════════ */
 
@@ -718,7 +719,7 @@ export function register(app, ctx, deps = {}) {
     try {
       const d = getSettingsData ? await getSettingsData() : {};
       // SX1: + الفريق (دليل الفريق + قايمة «موظفين / فريق») — مش المستثنين من الإعلانات (دول عملاء)
-      const lists = [d?.cms?.staffPhones, d?.delivery?.alertPhones, d?.delivery?.newOrderPhones, d?.journey?.staffPhones, [...teamPhones(d || {})]];
+      const lists = [d?.cms?.staffPhones, d?.delivery?.alertPhones, d?.delivery?.newOrderPhones, d?.journey?.staffPhones, [...teamPhones(d || {})], [reviewPhoneOf(d || {}) || ""]];      // AR1: + رقم مراجع Apple/Google
       for (const l of lists) for (const p of (Array.isArray(l) ? l : String(l || "").split(/[,\s]+/))) {
         const n = normPhone ? normPhone(typeof p === "object" && p ? p.phone : p) : String(p);
         if (n) set.add(n);

@@ -106,6 +106,8 @@ export const normPhone = (p) => {
   const d = String(p == null ? "" : typeof p === "object" ? p.phone || p.mobile || "" : p).replace(/\D/g, "").replace(/^00/, "").replace(/^966/, "").replace(/^0/, "");
   return /^5\d{8}$/.test(d) ? d : null;
 };
+import { reviewPhoneOf } from "./appreview.js";      // AR1: رقم مراجع Apple/Google برا التسويق
+
 const listOfRaw = (v) => (Array.isArray(v) ? v : String(v || "").split(/[,\s،;]+/));
 const clip = (v, n) => String(v == null ? "" : v).replace(/\s+/g, " ").trim().slice(0, n);
 const iso = (v) => { if (!v) return null; const d = new Date(v); return Number.isFinite(d.getTime()) ? d.toISOString() : null; };
@@ -195,6 +197,7 @@ export function noMarketingPhones(settings = {}) {
   const out = teamPhones(settings);
   for (const p of noAdsPhones(settings)) out.add(p);
   for (const e of listsOf(settings || {}).review) out.add(e.phone);      // مستني قرار المالك: برا التسويق زي ما كان لحد القرار
+  const rv = reviewPhoneOf(settings || {}); if (rv) out.add(rv);          // AR1: رقم مراجع المتجر — حتى بعد قفل الميزة
   return out;
 }
 /* البوت ساكت بسبب القايمة: phone ⇒ "staff_list" — قايمة «موظفين / فريق» بس. المستنيين قرار المالك والمستثنين من الإعلانات البوت بيرد عليهم.

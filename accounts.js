@@ -29,6 +29,7 @@ import { logSms } from "./smslog.js";
 import { customerId } from "./customer-id.js";
 import { couponQueries, firstEligibility } from "./couponrules.js";
 import { parseTermsVersion, recordTermsAcceptance } from "./waconsent.js";
+import { reviewCodeFor, reviewPhoneOf } from "./appreview.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 
@@ -518,6 +519,24 @@ export function register(app, ctx, deps = {}) {
     const phoneNorm = normPhone(b.phone);
     if (!/^5\d{8}$/.test(phoneNorm)) return c.json({ ok: false, error: "invalid_phone" }, 400);
 
+    /* 🍏 AR1: رقم مراجع المتجر (Apple/Google) والميزة شغّالة ⇒ رمز ثابت من اللوحة، من غير
+       أي SMS/واتساب ومن غير ما يتحسب من سقف الساعة. نفس شكل رد الإرسال الحقيقي عشان
+       الواجهة ماتتغيّرش. مهلة إعادة الإرسال والحد اليومي متشالين للرقم ده بس؛ حد المحاولات
+       (٥) بيفضل: المحاولات الغلط مابتتصفّرش بطلب رمز جديد لحد ما الرمز الحالي يخلص. */
+    const reviewCode = reviewCodeFor(await getSettingsData(), phoneNorm);
+    if (reviewCode) {
+      await pool.query(
+        `INSERT INTO acct_otp(phone_norm, code_hash, attempts, expires_at, created_at, day_count, day_start)
+         VALUES ($1,$2,0,NOW() + INTERVAL '${OTP_TTL_MIN} minutes',NOW(),0,NOW())
+         ON CONFLICT (phone_norm) DO UPDATE
+           SET code_hash=$2, created_at=NOW(),
+               attempts   = CASE WHEN acct_otp.expires_at > NOW() THEN acct_otp.attempts ELSE 0 END,
+               expires_at = CASE WHEN acct_otp.expires_at > NOW() THEN acct_otp.expires_at
+                                 ELSE NOW() + INTERVAL '${OTP_TTL_MIN} minutes' END`,
+        [phoneNorm, hashOtp(phoneNorm, reviewCode)]);
+      return c.json({ ok: true, sent: "sms" });
+    }
+
     const prev = await pool.query(
       "SELECT created_at, day_count, day_start FROM acct_otp WHERE phone_norm=$1", [phoneNorm]);
     if (prev.rowCount && Date.now() - new Date(prev.rows[0].created_at).getTime() < OTP_RESEND_SECONDS * 1000) {
@@ -621,7 +640,9 @@ export function register(app, ctx, deps = {}) {
 
     // TabSense directory, Omar's rule: link if known, create only if new —
     // and never let a POS hiccup block a login.
-    linkOrCreateTsCustomer(phoneNorm).catch((e) =>
+    // 🍏 AR1: رقم مراجع المتجر مايدخلش دفتر عملاء نقطة البيع.
+    const isReviewer = await getSettingsData().then((s) => reviewPhoneOf(s) === phoneNorm).catch(() => false);
+    if (!isReviewer) linkOrCreateTsCustomer(phoneNorm).catch((e) =>
       console.error("[accounts] ts link failed:", e.message));
 
     return c.json({ ok: true, token, phone: phoneNorm, name });
