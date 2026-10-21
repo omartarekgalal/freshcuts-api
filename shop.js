@@ -1447,6 +1447,58 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, paymentUrl: res.PaymentURL || res.InvoiceURL || null, invoiceId: res.InvoiceId });
   });
 
+  /* ── APP1-N (٢١/١٠): الدفع «native» من التطبيق — Apple Pay (PassKit) / Google Pay ─────────────
+     عمر: «انا عايز اكون زي هنجرستيشن والتطبيقات التانية في الدفع». التطبيق بيعرض شيت Apple Pay بتاع النظام
+     بمعرّف التاجر بتاعنا، وبيبعت التوكن هنا. إحنا: UpdateSession (التوكن على جلسة الطلب) ← ExecutePayment
+     بالجلسة اللي رجعت ← confirmOrder (GetPaymentStatus — نفس الباب الوحيد لـ«مدفوع»). مفيش مفتاح ماي فاتورة
+     في التطبيق. **مقفول افتراضياً**: settings.shop.nativeWalletPay === true (لحد شهادة Apple Pay من ماي فاتورة
+     وتفعيل Google Pay على الحساب). الحماية من الدفع مرتين: pending_payment بس + قفل لكل طلب + الجلسة نفسها
+     لدفعة واحدة عند ماي فاتورة + انتقال confirmOrder الذري. */
+  const walletBusy = new Set();
+  app.post("/api/shop/wallet-pay", async (c) => {
+    const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "?";
+    if (rateLimited(ip)) return c.json({ ok: false, error: "rate_limited" }, 429);
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const shopCfg = ((await getSettingsData()) || {}).shop || {};
+    if (shopCfg.nativeWalletPay !== true) return c.json({ ok: false, error: "wallet_disabled" }, 403);
+    const tokenType = b.tokenType === "applepay" || b.tokenType === "googlepay" ? b.tokenType : null;
+    if (!tokenType) return c.json({ ok: false, error: "bad_token_type" }, 400);
+    const token = typeof b.token === "string" ? b.token : (b.token && typeof b.token === "object" ? JSON.stringify(b.token) : "");
+    if (!token || token.length > 20000) return c.json({ ok: false, error: "bad_token" }, 400);
+    const row = await getOrderRow(b.orderNo);
+    if (!row) return c.json({ ok: false, error: "order_not_found" }, 404);
+    if (row.status !== "pending_payment") return c.json({ ok: true, already: true, status: row.status }, 200);
+    if (!row.mf_session_id) return c.json({ ok: false, error: "no_session" }, 409);
+    if (walletBusy.has(row.order_no)) return c.json({ ok: false, error: "in_progress" }, 409);
+    walletBusy.add(row.order_no);
+    try {
+      let upd;
+      try { upd = await pay.updateSession({ sessionId: row.mf_session_id, token, tokenType }); }
+      catch (e) { return c.json({ ok: false, error: "wallet_token_refused", detail: e.message }, 402); }
+      const publicUrl = env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa");
+      let res;
+      try {
+        res = await pay.executePayment({
+          sessionId: (upd && upd.SessionId) || row.mf_session_id,
+          amount: Number(row.total), orderNo: row.order_no,
+          customerName: row.customer?.name, customerMobile: row.customer?.phone,
+          callbackUrl: `${publicUrl}/pay/success?on=${row.order_no}`,
+          errorUrl: `${publicUrl}/pay/error?on=${row.order_no}`,
+        });
+      } catch (e) { return c.json({ ok: false, error: "execute_failed", detail: e.message }, 502); }
+      await pool.query("UPDATE shop_orders SET mf_invoice_id=$2, updated_at=NOW() WHERE order_no=$1",
+        [row.order_no, res.InvoiceId != null ? String(res.InvoiceId) : null]);
+      let st = null;
+      try { st = await confirmOrder({ orderNo: row.order_no, invoiceId: res.InvoiceId, via: `wallet_${tokenType}` }); }
+      catch { st = null; }
+      if (st && st.ok) return c.json({ ok: true, status: st.status, orderNo: row.order_no, posOrderId: st.posOrderId || null });
+      // ماي فاتورة طلبت خطوة كمان (نادر مع المحافظ) ⇒ التطبيق يفتح الرابط في ورقة المتصفح (APP1 v1) ويكمّل
+      const url = res.PaymentURL || null;
+      return c.json({ ok: false, error: url ? "needs_redirect" : "not_paid", paymentUrl: url, invoiceStatus: st?.invoiceStatus || null }, 402);
+    } finally { walletBusy.delete(row.order_no); }
+  });
+
   /* ── confirmOrder — the one door to "paid" (webhook / browser / sweep) ── */
   async function confirmOrder({ orderNo, invoiceId, via = null }) {
     let row = orderNo ? await getOrderRow(orderNo) : null;

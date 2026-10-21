@@ -85,6 +85,14 @@ export async function executePayment({ sessionId, amount, orderNo, customerName,
   });
 }
 
+/* APP1-N (٢١/١٠): Apple Pay / Google Pay «native» — التوكن اللي PassKit (iOS) أو Google Pay API (أندرويد)
+   رجّعه جوّه التطبيق بيتحط على الجلسة، وبعدها ExecutePayment بالجلسة اللي UpdateSession رجّعها.
+   docs.myfatoorah.com/docs/apple-pay-native · /docs/google-pay-native. التوكن بيتبعت زي ما هو (نص JSON). */
+export async function updateSession({ sessionId, token, tokenType }) {
+  const tok = typeof token === "string" ? token : JSON.stringify(token || {});
+  return mf("UpdateSession", { SessionId: sessionId, Token: tok, TokenType: tokenType });
+}
+
 export async function paymentStatus({ key, keyType = "InvoiceId" }) {
   const d = await mf("GetPaymentStatus", { Key: String(key), KeyType: keyType });
   const txs = d.InvoiceTransactions || [];
@@ -205,5 +213,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, events: rows });
   });
 
-  return { initiateSession, executePayment, paymentStatus, makeRefund, configured };
+  return { initiateSession, executePayment, updateSession, paymentStatus, makeRefund, configured };
 }
