@@ -51,6 +51,7 @@
        اتحفظ وقت الهبوط، ولو المتصفح مابعتهوش بناخده من attribution الطلب.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import { isAppClient } from "./uploadgate.js";
 import crypto from "node:crypto";
 import { hashEmail, hashPhoneDigits, hashPhonePlus, phoneDigits, httpJson } from "./ads.js";
 import { scaleOf } from "./money.js";
@@ -645,6 +646,9 @@ export function register(app, ctx, deps = {}) {
     if (!order) return { ok: false, skipped: "not_found" };
     if (!order.pos_order_id) return { ok: false, skipped: "no_pos_order" };
     if (order.is_test === true) return { ok: false, skipped: "test_order" };
+    // APP1 (٢١/١٠): طلب من تطبيق فريش كاتس مابيتبعتش لأي منصة إعلان (Meta/TikTok/Snap/Google) —
+    // كده «Used for tracking = No» في App Store صحيحة من غير شاشة ATT. (uploadgate.js بيشيل الرقم من القوايم كمان)
+    if (isAppClient(order.client)) return { ok: false, skipped: "app_order" };
     if (NO_PURCHASE_STATUS.test(String(order.status || ""))) return { ok: false, skipped: `status:${order.status}` };
     if (!(Number(order.total) > 0)) return { ok: false, skipped: "zero_total" };
 

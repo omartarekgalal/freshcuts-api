@@ -241,6 +241,17 @@ test("serverPurchase: طلبات مش مؤهلة بتتخطّى من غير أي
   assert.equal(db.funnel.length, 0);
 });
 
+test("APP1: a paid order placed in the Fresh Cuts app (client ios/android) is never sent to an ad platform", async () => {
+  const { db, calls, api } = setup({
+    ipBase: 5,
+    shopOrders: [paidOrder({ order_no: "WIOS", client: "ios" }), paidOrder({ order_no: "WAND", client: "android" })],
+  });
+  assert.equal((await api.serverPurchase({ orderNo: "WIOS" })).skipped, "app_order");
+  assert.equal((await api.serverPurchase({ orderNo: "WAND" })).skipped, "app_order");
+  assert.equal(calls.length, 0);
+  assert.equal(db.funnel.length, 0);
+});
+
 /* ── POST /api/funnel/event dedup ─────────────────────────────────────── */
 
 test("route: Purchase بنفس orderId مرتين خلال ٢٤ ساعة → التاني duplicate وصف واحد بس", async () => {

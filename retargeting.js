@@ -69,7 +69,7 @@ import {
   byId, hashPhoneDigits, hashPhonePlus, httpJson, redact,
   classifyRefusal, closeWriteGate, openWriteGate, readGate,
 } from "./ads.js";
-import { uploadPolicy } from "./uploadgate.js";
+import { uploadPolicy, appPhones } from "./uploadgate.js";
 
 const env = (k) => (process.env[k] || "").trim();
 // Marketing API token (reports/campaigns/dmp/catalog): DB (dashboard-connected) → env — ttconnect.js. Events token (event/track) stays TIKTOK_ACCESS_TOKEN.
@@ -1194,7 +1194,10 @@ export function register(app, ctx, deps = {}) {
     await pool.query(`INSERT INTO rt_runs (id, trigger, status) VALUES ($1,$2,'running')`,
       [runId, trigger]).catch(() => {});
     try {
-      const rows = await ladder();
+      /* APP1 (٢١/١٠): عملاء التطبيق مايترفعوش لأي منصة (تعريف أبل للتتبّع). فشل القراية ⇒ تجربة جافة. */
+      const appSet = await appPhones(pool);
+      if (!appSet) dry = true;
+      const rows = (await ladder()).filter((x) => !appSet || !appSet.has(String(x.pn)));
       const buckets = summarise(rows);
 
       /* الأذرع بتتكتب مرة واحدة وبعدها ما بتتغيّرش. `DO NOTHING` هنا هي
