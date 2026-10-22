@@ -363,7 +363,7 @@ function botFlowStatus(on, x, label = "") {
   if (b === "test") return { state: "test", why: "البوت في وضع التجربة ⇒ لأرقام التجربة بس" };
   return { state: "on", why: "شغّال للعملاء" };
 }
-const quietSms = (x) => `ساعات الهدوء ${hh(x.camp.quietStart)}–${hh(x.camp.quietEnd)} (مصدر واحد: قواعد الحملات)`;
+const quietSms = (x) => `ساعات الهدوء: من ${hh(x.camp.quietStart)} لـ${hh(x.camp.quietEnd)} (مصدر واحد: قواعد الحملات)`;
 const waHoursTxt = (x) => (x.sendHours.active ? `مواعيد المطعم (يقف قبل القفل بـ${ar(x.sendHours.stopBeforeCloseMin)} د)` : "الساعات القديمة للمسار");
 const windowDaily = (from, to, label) => ({ kind: "window", from, to, label });
 const sumObj = (o) => Object.values(o || {}).reduce((a, b) => a + (Number(b) || 0), 0);
@@ -518,7 +518,7 @@ export const CATALOG = [
       node("cap", "guard", `${ar(v["waBot.windowKeeperDailyCap"])} في اليوم · ${ar(v["waBot.windowKeeperWeekly"])} للعميل في الأسبوع`, "", { paths: ["waBot.windowKeeperDailyCap", "waBot.windowKeeperWeekly", "waBot.windowKeeperQuietStart", "waBot.windowKeeperQuietEnd"] }),
     ],
     caps: (v) => [["في اليوم", ar(v["waBot.windowKeeperDailyCap"])], ["للعميل/أسبوع", ar(v["waBot.windowKeeperWeekly"])]],
-    quiet: (v, x) => (x.sendHours.active ? waHoursTxt(x) : `هدوء ${hh(v["waBot.windowKeeperQuietStart"])}–${hh(v["waBot.windowKeeperQuietEnd"])}`),
+    quiet: (v, x) => (x.sendHours.active ? waHoursTxt(x) : `هدوء من ${hh(v["waBot.windowKeeperQuietStart"])} لـ${hh(v["waBot.windowKeeperQuietEnd"])}`),
     when: (v) => [windowDaily(hh(v["waBot.windowKeeperQuietEnd"]), hh(v["waBot.windowKeeperQuietStart"]), "خارج الهدوء")],
     status: (v, x) => botFlowStatus(v["waBot.windowKeeper"] && Number(v["waBot.windowKeeperDailyCap"]) > 0, x),
     health: (v, x) => (waBlock(x) ? [{ level: "warn", text: waBlock(x) }] : []),
@@ -532,14 +532,14 @@ export const CATALOG = [
       "waBot.replyFollowUpDailyCap", "waBot.replyFollowUpDeclineDays", "waBot.replyFollowUpIgnoredMax", "waBot.replyFollowUpIgnoredDays", "waBot.replyFollowUpBrakePct"],
     nodes: (v) => [
       node("t", "trigger", "رد/ضغط وسكت", "حملة أو زر منيو/صنف/بوكس", { paths: ["waBot.replyFollowUp", "waBot.replyFollowUpOffer", "waBot.replyFollowUpLooked", "waBot.replyFollowUpFav"] }),
-      node("w", "wait", `سكوت ${mins(v["waBot.replyFollowUpMin"])}`, `في الساعات ${ar(v["waBot.replyFollowUpFromHour"])}–${ar(v["waBot.replyFollowUpToHour"])}`, { paths: ["waBot.replyFollowUpMin", "waBot.replyFollowUpFromHour", "waBot.replyFollowUpToHour"] }),
+      node("w", "wait", `سكوت ${mins(v["waBot.replyFollowUpMin"])}`, `في الساعات من ${ar(v["waBot.replyFollowUpFromHour"])} لـ${ar(v["waBot.replyFollowUpToHour"])}`, { paths: ["waBot.replyFollowUpMin", "waBot.replyFollowUpFromHour", "waBot.replyFollowUpToHour"] }),
       node("b", "branch", "طلب / قال لا / اشتكى؟", "نعم ⇒ مفيش متابعة", { paths: ["waBot.replyFollowUpDeclineDays", "waBot.replyFollowUpIgnoredMax", "waBot.replyFollowUpIgnoredDays"] }),
       node("s", "send", "رسالة حرة + زرّين", "«أبغى أطلب» / «لا شكراً»", { channel: "wa" }),
       node("g", "goal", "الهدف: طلب خلال ٢٤ ساعة", ""),
       node("cap", "guard", `${ar(v["waBot.replyFollowUpDailyCap"])} في اليوم · فرملة ${ar(v["waBot.replyFollowUpBrakePct"])}٪ إيقاف`, "", { paths: ["waBot.replyFollowUpDailyCap", "waBot.replyFollowUpBrakePct"] }),
     ],
     caps: (v) => [["في اليوم", ar(v["waBot.replyFollowUpDailyCap"])], ["فرملة", `${ar(v["waBot.replyFollowUpBrakePct"])}٪ إيقافات`]],
-    quiet: (v, x) => (x.sendHours.active ? waHoursTxt(x) : `${ar(v["waBot.replyFollowUpFromHour"])}:٠٠–${ar(v["waBot.replyFollowUpToHour"])}:٣٠`),
+    quiet: (v, x) => (x.sendHours.active ? waHoursTxt(x) : `من ${ar(v["waBot.replyFollowUpFromHour"])}:٠٠ لـ${ar(v["waBot.replyFollowUpToHour"])}:٣٠`),
     when: (v) => [windowDaily(hh(v["waBot.replyFollowUpFromHour"]), hh(v["waBot.replyFollowUpToHour"]), "الساعات المسموحة")],
     status: (v, x) => botFlowStatus(v["waBot.replyFollowUp"], x),
     sources: ["/api/cms/wabot/followups"],
@@ -631,11 +631,11 @@ export const CATALOG = [
     trigger: { type: "rule", label: "قبل أي SMS أو إشعار تسويقي" }, channels: ["sms", "push"], switch: "cms.campaigns.smsEnabled",
     fields: ["cms.campaigns.smsEnabled", "cms.campaigns.dailySmsCap", "cms.campaigns.quietStart", "cms.campaigns.quietEnd", "cms.campaigns.flowGapDays", "cms.campaigns.pushGapDays", "cms.campaigns.maxPerWeek", "cms.campaigns.maxPerMonth", "cms.campaigns.budgetSar"],
     nodes: (v, x) => [node("t", "trigger", "رسالة تسويقية جاية", "حملة · أتمتة · سلة · ولاء"),
-      node("q", "guard", `هدوء ${hh(v["cms.campaigns.quietStart"])}–${hh(v["cms.campaigns.quietEnd"])}`, "", { paths: ["cms.campaigns.quietStart", "cms.campaigns.quietEnd"] }),
+      node("q", "guard", `هدوء من ${hh(v["cms.campaigns.quietStart"])} لـ${hh(v["cms.campaigns.quietEnd"])}`, "", { paths: ["cms.campaigns.quietStart", "cms.campaigns.quietEnd"] }),
       node("g", "guard", `فاصل ${ar(v["cms.campaigns.flowGapDays"])} يوم للأتمتة`, `بالكتير ${ar(v["cms.campaigns.maxPerWeek"])}/أسبوع · ${ar(v["cms.campaigns.maxPerMonth"])}/شهر`, { paths: ["cms.campaigns.flowGapDays", "cms.campaigns.pushGapDays", "cms.campaigns.maxPerWeek", "cms.campaigns.maxPerMonth"] }),
       node("c", "guard", `السقف اليومي ${ar(v["cms.campaigns.dailySmsCap"])} جزء`, Number(v["cms.campaigns.budgetSar"]) ? `ميزانية ${ar(v["cms.campaigns.budgetSar"])} ر.س` : "من غير ميزانية", { paths: ["cms.campaigns.dailySmsCap", "cms.campaigns.budgetSar", "cms.campaigns.smsEnabled"] }),
       node("b", "guard", x.camp.brake ? "🛑 الفرملة مشدودة" : "فرملة ٥٪ إيقافات", "≥٢٠ رسالة و٥٪ وقّفوا خلال ٣٠ د ⇒ كله يقف")],
-    caps: (v) => [["يومي", `${ar(v["cms.campaigns.dailySmsCap"])} جزء`], ["العميل/أسبوع", ar(v["cms.campaigns.maxPerWeek"])]], quiet: (v) => `${hh(v["cms.campaigns.quietStart"])}–${hh(v["cms.campaigns.quietEnd"])}`,
+    caps: (v) => [["يومي", `${ar(v["cms.campaigns.dailySmsCap"])} جزء`], ["العميل/أسبوع", ar(v["cms.campaigns.maxPerWeek"])]], quiet: (v) => `من ${hh(v["cms.campaigns.quietStart"])} لـ${hh(v["cms.campaigns.quietEnd"])}`,
     when: (v) => [windowDaily(hh(v["cms.campaigns.quietEnd"]), hh(v["cms.campaigns.quietStart"]), "مسموح SMS وإشعارات")],
     status: (v, x) => (x.camp.brake ? { state: "error", why: "فرملة الإيقاف مشدودة — كل SMS تسويقي واقف" } : v["cms.campaigns.smsEnabled"] ? { state: "on", why: "SMS التسويقي شغّال" } : { state: "off", why: "SMS التسويقي مقفول (الإشعارات شغّالة)" }),
     health: (v, x) => [...(x.camp.brake ? [{ level: "error", text: `فرملة الإيقاف اتشدّت ${x.camp.brake.at ? `(${String(x.camp.brake.at).slice(0, 16).replace("T", " ")})` : ""} — فكّها من «الحملات» بعد ما تشوف السبب`, link: "#store/grow/campaigns" }] : [])],
@@ -989,7 +989,7 @@ export function buildContext(s, d = {}, now = new Date()) {
 export function globalsOf(x) {
   return {
     botMode: x.bot.mode, waMaster: x.master, smsMarketing: x.camp.smsEnabled, brake: x.camp.brake || null,
-    quiet: { start: x.camp.quietStart, end: x.camp.quietEnd, text: `${hh(x.camp.quietStart)}–${hh(x.camp.quietEnd)}` },
+    quiet: { start: x.camp.quietStart, end: x.camp.quietEnd, text: `من ${hh(x.camp.quietStart)} لـ${hh(x.camp.quietEnd)}` },
     sendHours: { active: x.sendHours.active, stopBeforeCloseMin: x.sendHours.stopBeforeCloseMin, openNow: safe(() => isRestaurantOpenAt(x.now, x.s), null),
       nextOpen: safe(() => { const t = nextSendOpenAt(x.now, x.s); return t ? t.toISOString() : null; }, null) },
     openings: openingsNext(x.s, x.now),
