@@ -1518,14 +1518,18 @@ export function register(app, ctx, deps = {}) {
 
   function cloudText(input, x, slug, code) {
     try { return campaignParams(input.cloudTemplate, { vars: x.vars, name: x.name, link_code: code, coupon: null },
-      { link_slug: slug, image_url: input.imageUrl, video_url: input.videoUrl, cloud_vars: input.cloudVars }).text || null; } catch { return null; }
+      { link_slug: slug, image_url: input.imageUrl, video_url: input.videoUrl, cloud_vars: input.cloudVars, offer: input.offer || null }).text || null; } catch { return null; }
   }
   function cloudSample(input, x, slug, couponEx) {
     try {
-      const { text } = campaignParams(input.cloudTemplate, { vars: x.vars, name: x.name, link_code: "xxxxxx", coupon: couponEx || "W…" },
-        { link_slug: slug, image_url: input.imageUrl, cloud_vars: input.cloudVars });
+      const cpn = couponEx || "W…";
+      const { text, params } = campaignParams(input.cloudTemplate, { vars: x.vars, name: x.name, link_code: "xxxxxx", coupon: cpn },
+        { link_slug: slug, image_url: input.imageUrl, cloud_vars: input.cloudVars, offer: input.offer || null });
+      /* CC1: زر «نسخ الكود» مالوش نص عندنا (ميتا بتكتبه) ⇒ المعاينة بتعرضه بالكود اللي هيتنسخ، والرابط بيتعرض بلاحقته */
+      const btns = TEMPLATES[input.cloudTemplate].components.find((c) => c.type === "BUTTONS")?.buttons || [];
       return { template: input.cloudTemplate, text, footer: TEMPLATES[input.cloudTemplate].components.find((c) => c.type === "FOOTER")?.text || "",
-        buttons: (TEMPLATES[input.cloudTemplate].components.find((c) => c.type === "BUTTONS")?.buttons || []).map((b) => b.text) };
+        buttons: btns.map((b) => (b.type === "COPY_CODE" ? `نسخ الكود: ${cpn}` : b.text)),
+        ...(btns.some((b) => b.type === "COPY_CODE") ? { copyCode: cpn, header: params && params.header ? params.header : null } : {}) };
     } catch { return null; }
   }
 
@@ -2277,7 +2281,7 @@ export function register(app, ctx, deps = {}) {
     if (input.profileVars) tvars = { cloud: { values: exampleProfileValues((input.cloudVars && input.cloudVars.values) || {}) } };
     let built;
     try { built = campaignParams(input.cloudTemplate, { name: String(b.testName || "تجربة").slice(0, 30), vars: tvars, link_code: "", coupon },
-      { link_slug: slug, image_url: input.imageUrl, video_url: input.videoUrl, cloud_vars: input.cloudVars }); }
+      { link_slug: slug, image_url: input.imageUrl, video_url: input.videoUrl, cloud_vars: input.cloudVars, offer: input.offer || null }); }      // CC1: الحد الأدنى من الكوبون
     catch { return bad(c, "bad_template", "القالب مش معروف", 422); }
     const r = await wa.sendTemplate({ phoneNorm: pn, template: input.cloudTemplate, params: built.params, source: "campaign", body: built.text, test: true });
     if (r.ok) return c.json({ ok: true, wamid: r.wamid, to: `0${pn}`, template: input.cloudTemplate, text: built.text, by: await whoOf(c) });

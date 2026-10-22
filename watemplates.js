@@ -58,6 +58,10 @@ export const GROUPS = {
 const url = (text, base, v) => ({ kind: "url", text, base, var: v || null });
 const link = (text, u) => ({ kind: "url", text, base: u, var: null });
 const qr = (text) => ({ kind: "qr", text });
+/* CC1 (٢٣/١٠ — عمر: «الكود يكون bold ويكون قابل للنسخ بسهولة»): زر ميتا «نسخ الكود» (COPY_CODE — قوالب التسويق بس، زر واحد في القالب).
+   نصه ثابت من ميتا (مابيتكتبش)، والقيمة اللي بتتنسخ بتتبعت وقت الإرسال (sub_type copy_code + coupon_code). ex = مثال التقديم (≤١٥، حروف وأرقام). */
+const copy = (path, ex) => ({ kind: "copy", path, ex });
+export const COPY_CODE_RE = /^[A-Za-z0-9]{1,15}$/;
 
 function T(def) {
   const { name, category, language = "ar", group, header, body, vars = [], footer, buttons = [], meta = {} } = def;
@@ -83,6 +87,7 @@ function T(def) {
         type: "BUTTONS",
         buttons: buttons.map((x) => {
           if (x.kind === "qr") return { type: "QUICK_REPLY", text: x.text };
+          if (x.kind === "copy") return { type: "COPY_CODE", example: String(x.ex) };      // CC1
           if (x.var) return { type: "URL", text: x.text, url: `${x.base}{{1}}`, example: [`${x.base}${x.var.ex}`] };
           return { type: "URL", text: x.text, url: x.base };
         }),
@@ -95,6 +100,7 @@ function T(def) {
       group,
       vars: vars.map((v, i) => ({ n: i + 1, path: v.path, label: v.label || v.path, example: String(v.ex), fmt: v.fmt || null })),
       buttonVars: buttons.filter((x) => x.var).map((x) => ({ button: x.text, path: x.var.path, example: String(x.var.ex), base: x.base })),
+      ...(buttons.some((x) => x.kind === "copy") ? { copyVar: (({ path, ex }) => ({ path, example: String(ex) }))(buttons.find((x) => x.kind === "copy")) } : {}),      // CC1
       needsUpload: Boolean(header?.image || header?.video),
       ...meta,
     },
@@ -568,6 +574,21 @@ export const TEMPLATES = [
     buttons: [TRACKED("اطلب بالكود", "wa-vip-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "VIP غايب", trigger: "أعلى ١٠٪ إنفاق (customer360) وآخر طلب قبل ≥٣٠ يوم", send: "manual", fallbackSms: null } }),
 
+  /* CC1 (٢٣/١٠ — عمر: «اتاكد ان الرابط بيتبعه والصور والتصميم بيتبعت، والكود يكون bold ويكون قابل للنسخ بسهولة»):
+     كوبون الحملة الشخصي (W<رقم الحملة><٥ حروف> — wasender.newCouponCode) في سطر لوحده بين نجمتين (*…* = عريض في واتساب)
+     + زر ميتا «نسخ الكود» بنفس الكود + زر الرابط المتتبّع ‎/l/<slug>-<code> (الكود بيركب لوحده في السلة) + صورة.
+     الحد الأدنى والصلاحية متغيّرات من الحملة نفسها (offer.minTotal / النص اللي المالك بيكتبه) — مفيش وعد مكتوب في النص الثابت.
+     من غير زر «إيقاف» (قرار TS1 للإطارات: الإيقاف بالكتابة، والفوتر باقي) ⇒ زرّين بس، فالرسالة بتتعرض كمان على واتساب الكمبيوتر. */
+  T({ name: "fc_offer_code_copy", category: "MARKETING", group: "marketing", ...MKT, header: { image: true },
+    body: "يا هلا {{1}} 👋\n{{2}}.\nكود الخصم الخاص فيك: *{{3}}*\nصالح لين {{4}} على طلبك من موقع فريش كاتس للطلبات من {{5}} ر.س. انسخ الكود بضغطة من الزر، أو اطلب من الرابط وينضاف الكود تلقائياً.",
+    vars: [FIRST_NAME, { path: "offer.line", label: "العرض (سطر واحد — النسبة أو الميزة)", ex: "اشتقنا لك، وجهّزنا لك توصيل مجاني على طلبك الجاي" },
+      { path: "coupon.code", label: "كود شخصي لمرة وحدة", ex: "W712K7Q9M" }, { path: "coupon.expiresText", label: "آخر يوم للكود", ex: "الخميس 29 أكتوبر" },
+      { path: "coupon.minTotal", label: "الحد الأدنى للطلب", ex: "60", fmt: "money" }],
+    buttons: [copy("coupon.code", "W712K7Q9M"), TRACKED("اطلب بالكود", "wa-code-ab12cd")],
+    meta: { purpose: "كود خصم شخصي بصورة — الكود عريض + زر نسخ + رابط متتبّع", trigger: "حملة واتساب بكوبون مرة واحدة لكل عميل (offer.oneTime)",
+      send: "manual", fallbackSms: null, stopButton: false,
+      notes: "CC1: الكود لازم حروف وأرقام ≤١٥ (شرط زر النسخ عند ميتا). الصلاحية = يوم الإرسال + offer.validDays (activateCoupon) — اكتب آخر يوم صح في «آخر يوم للكود»." } }),
+
   T({ name: "fc_fav_dish", category: "MARKETING", group: "marketing", ...MKT,
     body: "مشتهي {{1}} اليوم؟ 😋\nطلبته منّا قبل، وهو متوفر الحين بـ{{2}} ر.س في موقع فريش كاتس. اطلبه بضغطة ويوصلك حار.",
     vars: [{ path: "dish.name", label: "الطبق المفضّل (أكثر صنف طلبه — من المنيو الحي فقط)", ex: "وجبة ميكس جريل" },
@@ -884,6 +905,8 @@ export const SUBMIT_BATCHES = Object.freeze([
   // SB4 (١٤/١٠): نسخ v2 بزر رد سريع يفتح نافذة ٢٤ ساعة — التوصيل والتقييم أولاً (الضغطة = رأيه)، بعدين التتبع، وآخرهم الاسترجاع
   ["fc_order_on_the_way_courier"],      // SB5
   ["fc_courier_job_v1"],      // CW1 (١٦/١٠): أزرار المندوب الخارجي بره النافذة — بعد الاعتماد يتفتح «courierJob.useTemplate» من اللوحة
+  // CC1 (٢٣/١٠): كود الخصم عريض + زر «نسخ الكود» + رابط متتبّع، بصورة (sampleImageUrl) — عربي بس. اتقدّم ٢٢/١٠ ٢٢:٣٤ الرياض (id 1376985044511986)
+  ["fc_offer_code_copy"],
   ["fc_order_delivered_v2", "fc_review_request_v2", "fc_order_on_the_way_v2", "fc_order_preparing_v2", "fc_order_received_v2", "fc_order_refunded_v2", "fc_refund_in_progress_v2"],
   // UT1 (١٩/١٠): بدايل خدمية لقوالب الفريق اللي ميتا حوّلتها تسويق — البوابة الأول (أكتر واحد اتبعت)، والتجديد آخر واحد (أكتر واحد ممكن يتصنّف تسويق تاني)
   ["fc_staff_portal_offline", "fc_staff_chat_review", "fc_staff_inbox_summary", "fc_staff_task_notice", "fc_staff_alerts_paused"],
@@ -970,7 +993,14 @@ export function validateTemplate(t) {
   if (qrs.length > 3) e.push("ردود سريعة > 3");
   if (ctas.length > 2) e.push("أزرار CTA > 2");
   if (btns.filter((b) => b.type === "URL").length > 2) e.push("روابط > 2");
+  /* CC1: زر «نسخ الكود» — واحد بس، في قالب تسويق، ومثاله حروف وأرقام ≤١٥ (نصه من ميتا فمالوش text) */
+  const copies = btns.filter((b) => b.type === "COPY_CODE");
+  if (copies.length > 1) e.push("زر نسخ الكود: واحد بس في القالب");
+  if (copies.length && t.category !== "MARKETING") e.push("زر نسخ الكود: لقوالب التسويق بس");
+  if (copies.some((b) => !COPY_CODE_RE.test(String(b.example || "")))) e.push("زر نسخ الكود: المثال حروف وأرقام ≤15");
+  if (copies.length && !t.meta?.copyVar?.path) e.push("زر نسخ الكود: meta.copyVar مطلوب");
   for (const b of btns) {
+    if (b.type === "COPY_CODE") continue;
     if (!b.text || [...b.text].length > 25) e.push(`نص الزر «${b.text}» > 25`);
     { const p = b.text ? buttonTextProblem(b.text) : null; if (p) e.push(`نص الزر «${b.text}» فيه ${p} — ميتا بترفضه (2388060)`); }      // RV4
     if (b.type === "URL") {
@@ -1051,7 +1081,16 @@ export function bindTemplate(t, data = {}) {
     if (!s || !/^[A-Za-z0-9._~-]+$/.test(s)) missing.push(bv?.path || `button:${index}`);
     buttons.push({ index, sub_type: "url", text: s });
   });
-  return { body, buttons, missing };
+  /* CC1: زر «نسخ الكود» — القيمة اللي بتتنسخ (coupon_code). ناقصة أو مش حروف وأرقام ≤١٥ ⇒ missing (مانبعتش زر بينسخ كود غلط) */
+  let copyCode = null;
+  const ci = buttonsOf(t).findIndex((b) => b.type === "COPY_CODE");
+  if (ci >= 0) {
+    const p = t.meta?.copyVar?.path || "coupon.code";
+    const s = cleanParam(getPath(data, p), 40);
+    if (!COPY_CODE_RE.test(s)) missing.push(`copy:${p}`);
+    copyCode = { index: ci, code: s };
+  }
+  return { body, buttons, missing, ...(copyCode ? { copyCode } : {}) };
 }
 
 /* معاينة النص بقيم الأمثلة (أو بيانات حقيقية) */

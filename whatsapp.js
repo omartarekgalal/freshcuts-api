@@ -217,7 +217,7 @@ export function registerCatalog(mod, { override = false } = {}) {
       bind: (ctx) => {
         if (!bindFn) return { body: [], button: [], missing: ["bindTemplate"] };
         const r = bindFn(t, ctx || {});
-        return { body: r.body || [], button: (r.buttons || []).map((b) => b.text), missing: r.missing || [] };
+        return { body: r.body || [], button: (r.buttons || []).map((b) => b.text), missing: r.missing || [], ...(r.copyCode ? { copyCode: r.copyCode.code } : {}) };      // CC1
       },
     };
   }
@@ -294,6 +294,8 @@ export function paramProblem(name, params = {}, lang = null) {
   if (dyn && (button.length < dyn || button.slice(0, dyn).some(blank))) return "empty_button_param";
   if (dyn && !auth && button.slice(0, dyn).some((v) => !/^[A-Za-z0-9._~-]{1,200}$/.test(String(v)))) return "unsafe_button_param";
   if (comps.some((c) => c.type === "HEADER" && c.format === "IMAGE") && !params.header?.image) return "missing_header_image";
+  /* CC1: قالب فيه زر «نسخ الكود» ⇒ الكود لازم موجود وحروف وأرقام ≤١٥ (ميتا بترفض الرسالة من غيره، ومانبعتش زر بينسخ حاجة غلط) */
+  if (btns.some((b) => b.type === "COPY_CODE") && !/^[A-Za-z0-9]{1,15}$/.test(String(params.copyCode ?? ""))) return "missing_copy_code";
   return null;
 }
 
@@ -330,6 +332,12 @@ export function buildTemplatePayload(name, to, params = {}, lang = "ar") {
       const idxs = dyn.length ? dyn : [btns.findIndex((b) => b.type === "URL")].filter((i) => i >= 0);
       idxs.forEach((idx, k) => { if (params.button[k] == null && k > 0) return; components.push({ type: "button", sub_type: "url", index: String(idx), parameters: [{ type: "text", text: String(params.button[k] ?? "") }] }); });
     }
+  }
+  /* CC1: زر «نسخ الكود» (COPY_CODE) ⇒ { type:button, sub_type:copy_code, index, parameters:[{type:coupon_code, coupon_code}] } — index = مكانه في أزرار القالب */
+  if (params.copyCode != null && String(params.copyCode)) {
+    const comps = (t.variants && t.variants[lang]) || t.components;
+    const ci = (comps.find((c) => c.type === "BUTTONS")?.buttons || []).findIndex((b) => b.type === "COPY_CODE");
+    if (ci >= 0) components.push({ type: "button", sub_type: "copy_code", index: String(ci), parameters: [{ type: "coupon_code", coupon_code: String(params.copyCode) }] });
   }
   /* CW1: أزرار الرد السريع بـpayload خاص بكل رسالة (أزرار المندوب: رقم الرحلة + توقيع) ⇒ الضغطة بترجع بالـpayload ده في الويب هوك
      (interactiveId) بدل نص الزر. params.quickReplies[i] = payload الزر رقم i من أزرار الرد السريع بالترتيب. */

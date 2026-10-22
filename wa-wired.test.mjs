@@ -208,7 +208,14 @@ test("catalogue: variable i is filled from path i (no swap), in every language",
     for (const v of t.meta.vars) setPath(data, v.path, v.fmt === "money" ? 123.5 : sentinel(v.path));
     for (const b of t.meta.buttonVars) if (getPathOf(data, b.path) === undefined) setPath(data, b.path, "slug-abc123");
     const r = C.bindTemplate(t, data);
-    assert.deepEqual(r.missing, [], C.templateKey(t));
+    /* CC1: زر «نسخ الكود» بيقبل حروف وأرقام بس — الـsentinel فيه «_» فبيطلع missing؛ بنتأكد منه هنا وبعدين بكود سليم */
+    const cp = t.meta.copyVar ? `copy:${t.meta.copyVar.path}` : null;
+    if (cp) {
+      assert.ok(r.missing.includes(cp), C.templateKey(t));
+      const d3 = JSON.parse(JSON.stringify(data)); setPath(d3, t.meta.copyVar.path, "W712K7Q9M");
+      assert.deepEqual(C.bindTemplate(t, d3).missing, [], C.templateKey(t));
+    }
+    assert.deepEqual(r.missing.filter((m) => m !== cp), [], C.templateKey(t));
     t.meta.vars.forEach((v, i) => {
       const want = v.fmt === "money" ? "123.50" : v.fmt === "firstName" ? sentinel(v.path) : sentinel(v.path);
       assert.equal(r.body[i], want, `${C.templateKey(t)} {{${i + 1}}} ← ${v.path}`);
@@ -234,7 +241,7 @@ test("catalogue: the label of each variable matches the words around it in the t
       if (v.fmt === "money") assert.match(body, new RegExp(`${n.replace(/[{}]/g, "\\$&")} (ر\\.س|SAR)`), `${C.templateKey(t)}: ${n} is money`);
       if (/order_no$/.test(v.path)) assert.match(body, new RegExp(`(رقم|الطلب|جديد|order|Order|on order) ${n.replace(/[{}]/g, "\\$&")}`), `${C.templateKey(t)}: ${n} is the order number`);
       if (v.fmt === "firstName") assert.match(body, new RegExp(`(أهلاً|يا|مبروك|هلا|شكراً) ${n.replace(/[{}]/g, "\\$&")}`), `${C.templateKey(t)}: ${n} is a name`);
-      if (/coupon\.code$|referral\.code$/.test(v.path)) assert.match(body, new RegExp(`(كود|كودك|بكود|كودك الخاص|خاص فيك|لمرة وحدة) ${n.replace(/[{}]/g, "\\$&")}`), `${C.templateKey(t)}: ${n} is a code`);
+      if (/coupon\.code$|referral\.code$/.test(v.path)) assert.match(body, new RegExp(`(كود|كودك|بكود|كودك الخاص|خاص فيك|لمرة وحدة):? \\*?${n.replace(/[{}]/g, "\\$&")}`), `${C.templateKey(t)}: ${n} is a code`);
     });
   }
 });

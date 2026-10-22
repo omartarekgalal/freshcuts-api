@@ -359,7 +359,8 @@ export function mediaProblem(kind, { mime, bytes } = {}) {
 
 /* وصف قالب للحملة: الهيدر، الزر، والخانات اللي الحملة لازم تملاها. null = القالب ماينفعش لحملة.
    المتغيّرات «التلقائية»: الاسم الأول للعميل، كوبونه (لو الحملة بكوبون)، ورابطه المتتبّع ‎/l/<slug>-<code>. */
-const AUTO_VARS = { "customer.name": "name", "coupon.code": "coupon" };
+/* CC1: «coupon.minTotal» = الحد الأدنى من كوبون الحملة نفسه (offer.minTotal) — نفس الرقم اللي shop_coupons.min_total بيتعمل بيه، مش خانة بتتكتب بالإيد */
+const AUTO_VARS = { "customer.name": "name", "coupon.code": "coupon", "coupon.minTotal": "couponMin" };
 export function campaignSpec(name) {
   const t = TEMPLATES[name];
   if (!t || t.category !== "MARKETING") return null;
@@ -390,7 +391,8 @@ export function campaignSpec(name) {
     if (AUTO_VARS[v.path]) { auto.push(AUTO_VARS[v.path]); continue; }
     fields.push({ key: v.path, label: v.label || v.path, example: v.example || "", max: 200 });
   }
-  return { ...base, kind: "catalog", label: c.meta.purpose || name, needsCoupon: auto.includes("coupon") || button === "coupon", button, fields, auto,
+  return { ...base, kind: "catalog", label: c.meta.purpose || name, needsCoupon: auto.includes("coupon") || button === "coupon" || Boolean(c.meta.copyVar), button, fields, auto,
+    copyCode: Boolean(c.meta.copyVar),      // CC1: زر «نسخ الكود» بيتملي بكوبون المستلم
     held: Boolean(CAT.HOLD && CAT.HOLD[name]) };
 }
 export const campaignTemplateNames = () => Object.keys(TEMPLATES).filter((n) => campaignSpec(n)).sort();
@@ -420,6 +422,7 @@ export function campaignParams(template, row, job) {
     if (job.cloud_vars && (job.cloud_vars.perRecipient === true || profVars)) for (const [k, val] of Object.entries(campaignValues(v.cloud))) if (k !== "offer") setPath(data, k, val);
     setPath(data, "customer.name", first || "عميلنا");
     if (row.coupon) setPath(data, "coupon.code", row.coupon);
+    { const m = Number(job.offer && job.offer.minTotal); if (Number.isFinite(m) && m > 0) setPath(data, "coupon.minTotal", m); }      // CC1
     setPath(data, "link.suffix", linkSuffix);
     const b = t.bind(data);
     const params = { ...b, header: spec.header === "image" && job.image_url ? { image: job.image_url } : spec.header === "video" && job.video_url ? { video: job.video_url } : null };
@@ -446,6 +449,9 @@ export function cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, videoUrl, 
   if (spec.needsCoupon && !(offer && offer.oneTime) && !(link && link.coupon)) {
     return ["coupon_required", "القالب ده فيه كود — فعّل «كوبون مرة واحدة لكل عميل» أو حط كوبون ثابت"];
   }
+  /* CC1: زر «نسخ الكود» بيتملي بكوبون كل مستلم (الكود الثابت مش مضمون إنه حروف وأرقام ≤١٥)، والحد الأدنى بيتكتب من كوبون الحملة */
+  if (spec.copyCode && !(offer && offer.oneTime)) return ["coupon_required", "القالب ده فيه زر «نسخ الكود» — فعّل «كوبون مرة واحدة لكل عميل»"];
+  if ((spec.auto || []).includes("couponMin") && !(Number(offer && offer.minTotal) > 0)) return ["min_total_required", "القالب ده بيكتب الحد الأدنى للطلب — حدّده في الكوبون (offer.minTotal)"];
   const vals = campaignValues(cloudVars);
   /* FD1: القيم لكل مستلم (vars.cloud لكل صف) — مفيش قيم على مستوى الحملة تتراجع هنا؛ كل صف بيتراجع وقت الإرسال (bindTemplate) */
   if (cloudVars && cloudVars.perRecipient === true) return null;
@@ -521,7 +527,8 @@ export function brakeCheck(n, cc) {
 export function templateDiff(ours, theirs) {
   const norm = (v) => String(v ?? "").replace(/\r\n/g, "\n").trim();
   const part = (comps, type) => (Array.isArray(comps) ? comps : []).find((c) => String(c && c.type).toUpperCase() === type) || null;
-  const btns = (comps) => ((part(comps, "BUTTONS") || {}).buttons || []).map((b) => [String(b.type || "").toUpperCase(), norm(b.text), norm(b.url)].join("|"));
+  /* CC1: زر COPY_CODE نصه بتحطه ميتا («Copy offer code» / مترجم) ومثاله مش جزء من الرسالة ⇒ بنقارن النوع بس */
+  const btns = (comps) => ((part(comps, "BUTTONS") || {}).buttons || []).map((b) => (String(b.type || "").toUpperCase() === "COPY_CODE" ? "COPY_CODE" : [String(b.type || "").toUpperCase(), norm(b.text), norm(b.url)].join("|")));
   const out = [];
   const ha = part(ours, "HEADER"), hb = part(theirs, "HEADER");
   if (String((ha && ha.format) || "") !== String((hb && hb.format) || "")) out.push("header");
