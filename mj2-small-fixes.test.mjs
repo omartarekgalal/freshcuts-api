@@ -23,6 +23,7 @@ import { makeWorld } from "./eval/world.mjs";
 
 const W = await import("./whatsapp.js");
 const CAT = await import("./watemplates.js");
+const { templateDiff } = await import("./wacloud.js");      // TS1: نفس مقارنة «الكتالوج ⇄ ميتا» اللي الحملات بتستعملها
 W.registerCatalog(CAT);
 const { register: registerNotify } = await import("./notify.js");
 const { bus, CHANNEL } = await import("./order-events.js");
@@ -152,6 +153,7 @@ test("٤ WA_132018 (…9470 W1792684427899): the payload we send for fc_order_pi
     const t = CAT.findTemplate("fc_order_pickup_ready", live.language);
     assert.equal(CAT.bodyOf(t), live.components[0].text, `${live.language}: the catalogue body is the approved body, word for word`);
     assert.deepEqual(t.components.map((c) => c.type), live.components.map((c) => c.type));
+    assert.deepEqual(templateDiff(W.TEMPLATES.fc_order_pickup_ready.variants[live.language], live.components), [], `${live.language}: catalogue ⇄ Meta = same`);
     const params = W.TEMPLATES.fc_order_pickup_ready.bind({ order: { order_no: NO }, customer: { name: "" } });
     assert.deepEqual([params.body, params.button, params.missing], [[NO], [], []]);
     const payload = W.buildTemplatePayload("fc_order_pickup_ready", "966500000047", params, live.language);
@@ -161,6 +163,8 @@ test("٤ WA_132018 (…9470 W1792684427899): the payload we send for fc_order_pi
   // الحمولة القديمة (زر URL بمتغيّر) ⇒ نفس الفحص بيمسكها — ده كان سبب الرفض
   const old = { template: { components: [{ type: "body", parameters: [{ type: "text", text: NO }] }, { type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: NO }] }] } };
   assert.deepEqual(metaParamProblems(old, LIVE_META[0]), ["button 0 not in the approved template"]);
+  const before = [{ type: "BODY", text: "طلبك رقم {{1}} جاهز للاستلام من فريش كاتس 📍 تفضّل إلى الفرع واذكر رقم طلبك." }, { type: "BUTTONS", buttons: [{ type: "URL", text: "تفاصيل الطلب", url: "https://freshcuts.sa/track/{{1}}" }] }];
+  assert.deepEqual(templateDiff(before, LIVE_META[0].components), ["body", "buttons"], "the catalogue before MJ2 differed from Meta in body and buttons");
 });
 
 /* ٤ ب: الـSMS البديل — notify.orderReady بإعدادات ٢٢/١٠ الحيّة ووحدة واتساب بترجع خطأ ميتا */
