@@ -1028,6 +1028,15 @@ export function register(app, ctx, deps = {}) {
     try { return await Promise.race([run, to]); } catch (e) { return { status: 500, ok: false, json: { error: String(e?.message || e) } }; }
   }
 
+  /* ⚡ AUTO2 (٢٢/١٠، قرار عمر: «الاتمتة تفضل ظاهرة ليا انا بس»): كل مسارات /api/cms/automations* للمالك بس —
+     قراية وتعديل. requireAdmin الأول (تسجيل الدخول + قسم «العملاء» + سجل النشاط)، وبعده المالك وإلا 403 بالعربي. */
+  const OWNER_ONLY_MSG = "مركز الأتمتة للمالك بس";
+  async function requireOwner(c) {
+    const err = await requireAdmin(c); if (err) return err;
+    if (!(await isOwner(c))) return c.json({ ok: false, error: "owner_only", message: OWNER_ONLY_MSG }, 403);
+    return null;
+  }
+
   /* صلاحية التعديل لمسار إعداد: المالك كله؛ غيره حسب قسم مسار الحفظ الأصلي */
   async function accessOf(c) {
     const owner = Boolean(await isOwner(c));
@@ -1072,7 +1081,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   app.get("/api/cms/automations", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
+    const err = await requireOwner(c); if (err) return err;
     const v = await collect(c, { fresh: c.req.query("fresh") === "1" });
     const x = buildContext(v.s, v.d, now());
     const access = await accessOf(c);
@@ -1088,7 +1097,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   app.get("/api/cms/automations/:id", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
+    const err = await requireOwner(c); if (err) return err;
     const id = c.req.param("id");
     const base = CATALOG.find((f) => f.id === id);
     const { v, def } = await findDef(c, id, { fresh: c.req.query("fresh") === "1", extra: base?.detailSources || [] });
@@ -1158,7 +1167,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   app.patch("/api/cms/automations/:id", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
+    const err = await requireOwner(c); if (err) return err;
     let b; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad_json" }, 400); }
     if (!isObj(b?.changes) || !Object.keys(b.changes).length) return c.json({ ok: false, error: "invalid", message: "مفيش تغييرات" }, 400);
     if (Object.keys(b.changes).length > 30) return c.json({ ok: false, error: "invalid", message: "تغييرات كتير في طلب واحد" }, 400);
@@ -1175,10 +1184,10 @@ export function register(app, ctx, deps = {}) {
     const val = def.switchInverted ? !on : on;
     return applyChanges(c, def, { [def.switch]: val }, { confirm, v });
   }
-  app.post("/api/cms/automations/:id/pause", async (c) => { const err = await requireAdmin(c); if (err) return err; const b = await c.req.json().catch(() => ({})); const r = await toggle(c, c.req.param("id"), false, b?.confirm === true); return c.json(r.body, r.status); });
-  app.post("/api/cms/automations/:id/resume", async (c) => { const err = await requireAdmin(c); if (err) return err; const b = await c.req.json().catch(() => ({})); const r = await toggle(c, c.req.param("id"), true, b?.confirm === true); return c.json(r.body, r.status); });
+  app.post("/api/cms/automations/:id/pause", async (c) => { const err = await requireOwner(c); if (err) return err; const b = await c.req.json().catch(() => ({})); const r = await toggle(c, c.req.param("id"), false, b?.confirm === true); return c.json(r.body, r.status); });
+  app.post("/api/cms/automations/:id/resume", async (c) => { const err = await requireOwner(c); if (err) return err; const b = await c.req.json().catch(() => ({})); const r = await toggle(c, c.req.param("id"), true, b?.confirm === true); return c.json(r.body, r.status); });
   app.post("/api/cms/automations/bulk", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
+    const err = await requireOwner(c); if (err) return err;
     const b = await c.req.json().catch(() => ({}));
     const ids = Array.isArray(b?.ids) ? b.ids.slice(0, 40).map(String) : [];
     if (!ids.length || !["pause", "resume"].includes(b?.action)) return c.json({ ok: false, error: "invalid", message: "اختار فلوهات وإيقاف/تشغيل" }, 400);
@@ -1190,7 +1199,7 @@ export function register(app, ctx, deps = {}) {
 
   /* «جرّب على موبايلي»: أرقام الفريق والتجربة بس — مايدخلش حد في الفلو */
   app.post("/api/cms/automations/:id/test", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
+    const err = await requireOwner(c); if (err) return err;
     const b = await c.req.json().catch(() => ({}));
     const { v, def } = await findDef(c, c.req.param("id"));
     if (!def) return c.json({ ok: false, error: "not_found" }, 404);
@@ -1220,7 +1229,7 @@ export function register(app, ctx, deps = {}) {
   }
   const who = async (c) => { try { const u = await cms()?.whoami?.(c); return (u && (u.name || u.username)) || null; } catch { return null; } };
   app.post("/api/cms/automations/custom", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
+    const err = await requireOwner(c); if (err) return err;
     const b = await c.req.json().catch(() => ({}));
     const name = String(b?.name || "").trim().slice(0, 80);
     if (!name) return c.json({ ok: false, error: "invalid", message: "اكتب اسم للفلو" }, 400);
@@ -1232,7 +1241,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, id: `auto-${row.id}`, errors: val.errors });
   });
   app.put("/api/cms/automations/custom/:id", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
+    const err = await requireOwner(c); if (err) return err;
     const id = Number(String(c.req.param("id")).replace(/^auto-/, ""));
     const cur = await store.getFlow(id);
     if (!cur || cur.archived) return c.json({ ok: false, error: "not_found" }, 404);
@@ -1251,7 +1260,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, errors: val.errors });
   });
   app.delete("/api/cms/automations/custom/:id", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
+    const err = await requireOwner(c); if (err) return err;
     const id = Number(String(c.req.param("id")).replace(/^auto-/, ""));
     const cur = await store.getFlow(id);
     if (!cur) return c.json({ ok: false, error: "not_found" }, 404);
@@ -1262,7 +1271,7 @@ export function register(app, ctx, deps = {}) {
   });
   /* حجم الجمهور التقريبي قبل التشغيل (الشريحة دلوقتي) — قراية بس */
   app.post("/api/cms/automations/custom/preview", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
+    const err = await requireOwner(c); if (err) return err;
     const b = await c.req.json().catch(() => ({}));
     const val = await validateFor(c, b.def);
     let segmentSize = null;
@@ -1272,7 +1281,7 @@ export function register(app, ctx, deps = {}) {
       note: val.def.trigger.type === "segment_entry" ? "أول تشغيل = نقطة بداية: الموجودين في الشريحة دلوقتي مش هيتبعتلهم" : null });
   });
   app.post("/api/cms/automations/from-template", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
+    const err = await requireOwner(c); if (err) return err;
     const b = await c.req.json().catch(() => ({}));
     const g = GALLERY.find((x) => x.id === b?.template);
     if (!g) return c.json({ ok: false, error: "not_found", message: "القالب مش موجود" }, 404);

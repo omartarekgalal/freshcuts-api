@@ -31,7 +31,7 @@ function harness({ settings = SETTINGS(), cmsRows = [], innerOverride = {} } = {
   const token = (c) => String(c.req.header("Authorization") || "").replace(/^Bearer /, "");
   const ctx = {
     pool: { query: async (sql, p) => { sqls.push(String(sql)); if (/FROM cms_audit/.test(sql)) return { rows: [{ at: "2026-10-21T10:00:00Z", actor_name: "عمر", role: "owner", method: "PUT", path: "/api/carts/recovery", note: null }] }; return { rows: [], rowCount: 0 }; } },
-    requireAdmin: async (c) => (["owner", "mkt", "ops"].includes(token(c)) ? null : c.json({ error: "Unauthorized" }, 401)),
+    requireAdmin: async (c) => (["owner", "mkt", "ops", "mgr", "cashier"].includes(token(c)) ? null : c.json({ error: "Unauthorized" }, 401)),
     getSettingsData: async () => settings,
     isOwner: async (c) => token(c) === "owner",
     auditNote: async (c, n) => { notes.push(n); },
@@ -39,7 +39,7 @@ function harness({ settings = SETTINGS(), cmsRows = [], innerOverride = {} } = {
   const PERMS = { marketing: { home: "view", growth: "edit", orders: "view", products: "edit", customers: "edit", discounts: "edit", delivery: "none", analytics: "view", finance: "none", settings: "none" },
     operations: { home: "view", growth: "none", orders: "edit", products: "view", customers: "view", discounts: "view", delivery: "edit", analytics: "view", finance: "none", settings: "none" } };
   const cms = {
-    whoami: async (c) => ({ owner: { role: "owner", name: "المالك" }, mkt: { role: "marketing", name: "سارة" }, ops: { role: "operations", name: "أحمد" } }[token(c)] || null),
+    whoami: async (c) => ({ owner: { role: "owner", name: "المالك" }, mkt: { role: "marketing", name: "سارة" }, ops: { role: "operations", name: "أحمد" }, mgr: { role: "manager", name: "مدير الفرع" }, cashier: { role: "cashier", name: "الكاشير" } }[token(c)] || null),
     effectivePerms: async () => PERMS, sectionOf,
     segmentList: () => [{ id: "vip", label: "كبار العملاء" }, { id: "at_risk", label: "في خطر" }, { id: "dormant", label: "نايمين" }, { id: "lapsed_21", label: "غايب ٢١" }, { id: "second_nudge", label: "اطلب تاني" }],
     segmentPhones: async (id) => (id === "vip" ? ["500000011", "500000012", "500000013"] : []),
@@ -214,26 +214,55 @@ test("رد المسار الأصلي بيرجع زي ما هو: رفض بالع�
   assert.match(r.json.message, /«السلات المتروكة» رفض الحفظ: قيمة غلط من السيرفر/);
 });
 
-test("الصلاحيات: التسويق يعدّل السلات (نمو)، والبوت/الفريق/قواعد الحملات للمالك بس — من غير ما يوصل للمسار", async () => {
+/* ⚡ AUTO2 (٢٢/١٠): قرار عمر «الاتمتة تفضل ظاهرة ليا انا بس» — كل المسارات للمالك بس، قراية وتعديل */
+const ROUTES = [
+  ["GET", "/api/cms/automations"], ["GET", "/api/cms/automations/carts"],
+  ["PATCH", "/api/cms/automations/carts", { changes: { "abandonedCarts.minSubtotal": 20 } }],
+  ["POST", "/api/cms/automations/carts/pause", {}], ["POST", "/api/cms/automations/carts/resume", { confirm: true }],
+  ["POST", "/api/cms/automations/bulk", { ids: ["carts"], action: "pause" }],
+  ["POST", "/api/cms/automations/openwait/test", { phone: "0500000001" }],
+  ["POST", "/api/cms/automations/custom", { name: "x", def: { trigger: { type: "segment_entry", segment: "vip" }, steps: [] } }],
+  ["PUT", "/api/cms/automations/custom/auto-1", { name: "y" }], ["DELETE", "/api/cms/automations/custom/auto-1"],
+  ["POST", "/api/cms/automations/custom/preview", { def: { trigger: { type: "segment_entry", segment: "vip" }, steps: [] } }],
+  ["POST", "/api/cms/automations/from-template", { template: "vip-thursday" }],
+];
+
+for (const who of ["mkt", "ops", "mgr", "cashier"]) {
+  test(`AUTO2: مركز الأتمتة للمالك بس — «${who}» بياخد 403 بالعربي على كل مسار، ومن غير أي كتابة ولا قراية من الموديولات`, async () => {
+    const h = harness();
+    await h.store.createFlow({ name: "موجود", icon: "✨", def: { trigger: { type: "segment_entry", segment: "vip" }, steps: [] } });
+    for (const [m, p, body] of ROUTES) {
+      const r = await h.req(m, p, body, who);
+      assert.equal(r.status, 403, `${m} ${p}`);
+      assert.equal(r.json.ok, false);
+      assert.equal(r.json.error, "owner_only");
+      assert.equal(r.json.message, "مركز الأتمتة للمالك بس");
+    }
+    assert.equal(h.calls.length, 0, "مفيش ولا طلب وصل لأي مسار أصلي");
+    assert.equal(h.notes.length, 0, "مفيش سطر نشاط");
+    assert.equal(h.store._s.flows.length, 1, "مفيش فلو اتعمل");
+    assert.equal(h.store._s.flows[0].archived ?? false, false, "مفيش أرشفة");
+  });
+}
+
+test("AUTO2: من غير تسجيل دخول ⇒ 401 زي ما هو (requireAdmin الأول)", async () => {
   const h = harness();
-  const g = await h.req("GET", "/api/cms/automations", undefined, "mkt");
+  const r = await h.req("GET", "/api/cms/automations", undefined, "nobody");
+  assert.equal(r.status, 401);
+});
+
+test("AUTO2: المالك بيقرا ويعدّل عادي — وكل الحقول قابلة للتعديل وأرقام التجربة ظاهرة", async () => {
+  const h = harness();
+  const g = await h.req("GET", "/api/cms/automations");
   assert.equal(g.status, 200);
-  const carts = g.json.flows.find((f) => f.id === "carts");
-  assert.ok(carts.fields.every((f) => f.editable), "التسويق عنده تعديل «النمو»");
-  const of = g.json.flows.find((f) => f.id === "openfu");
-  assert.ok(of.fields.every((f) => !f.editable && f.lock === "للمالك بس"));
-  assert.equal(g.json.testPhones.length, 0, "أرقام التجربة للمالك بس");
-  const ack = g.json.flows.find((f) => f.id === "ackEscalation");
-  assert.ok(ack.fields.every((f) => !f.editable && f.lock === "مش ضمن صلاحية دورك"), "التوصيل مش ضمن التسويق");
-  const n0 = h.writes().length;
-  let r = await h.req("PATCH", "/api/cms/automations/openfu", { changes: { "waBot.openFollowUpDelayMin": 5 } }, "mkt");
-  assert.equal(r.status, 403);
-  assert.equal(h.writes().length, n0);
-  r = await h.req("PATCH", "/api/cms/automations/carts", { changes: { "abandonedCarts.minSubtotal": 20 } }, "mkt");
+  assert.equal(g.json.access.owner, true);
+  assert.ok(g.json.flows.find((f) => f.id === "carts").fields.every((f) => f.editable));
+  assert.ok(g.json.testPhones.length > 0);
+  const d = await h.req("GET", "/api/cms/automations/carts");
+  assert.equal(d.status, 200);
+  const r = await h.req("PATCH", "/api/cms/automations/carts", { changes: { "abandonedCarts.minSubtotal": 20 } });
   assert.equal(r.status, 200);
-  assert.equal(h.writes().at(-1).auth, "Bearer mkt", "نفس توكن اللي عدّل ⇒ السجل باسمه");
-  const o = await h.req("GET", "/api/cms/automations", undefined, "ops");
-  assert.ok(o.json.flows.find((f) => f.id === "ackEscalation").fields.every((f) => f.editable), "العمليات عندها «التوصيل»");
+  assert.equal(h.writes().at(-1).auth, "Bearer owner");
 });
 
 test("إيقاف/تشغيل وتجميعي: الإيقاف من غير تأكيد، التشغيل محتاج تأكيد، والحارس المعكوس (إيقاف كل الإعلانات)", async () => {
@@ -298,7 +327,7 @@ test("أتمتة الشرائح (cms_flows): الصفوف بتظهر بأرقا�
 
 test("الفلوهات الجديدة: من قالب ⇒ مقفول؛ التشغيل للمالك بتأكيد؛ المحرّك بيبعت بالمرسلين والحراس المزيفين بس", async () => {
   const h = harness();
-  let r = await h.req("POST", "/api/cms/automations/from-template", { template: "vip-thursday" }, "mkt");
+  let r = await h.req("POST", "/api/cms/automations/from-template", { template: "vip-thursday" });
   assert.equal(r.status, 200, JSON.stringify(r.json));
   const id = r.json.id;
   assert.equal(h.store._s.flows[0].active, false, "مقفول افتراضياً");

@@ -118,8 +118,8 @@ const PATH_SECTIONS = [
   // outreach = «واتساب يدوي»، sms/blocked = «حاجبين الإعلانات» (٢٦/٩) — كانوا
   // بيقعوا على «الإعدادات» فأي دور غير المالك كان بياخد 403 في شاشات العملاء.
   // wa-sender = «الإرسال الآلي» جوّه «واتساب يدوي» (wasender.js، ٢٦/٩)
-  /* ⚡ AUTO1: «مركز الأتمتة» — العرض لأي دور عنده «العملاء»، والتعديل بيعدّي على مسار كل فلو الأصلي بنفس التوكن
-     (فصلاحية قسمه ومالكه بتتطبّق هناك تاني — مفيش طريق جانبي) */
+  /* ⚡ AUTO1: «مركز الأتمتة» — قسم «العملاء» هنا بوابة أولى بس.
+     ⚡ AUTO2 (٢٢/١٠): المسارات نفسها للمالك بس (requireOwner في automations.js) — أي دور تاني 403 «مركز الأتمتة للمالك بس». */
   [/^\/api\/cms\/automations/, "customers"],
   [/^\/api\/cms\/(customers|segments|loyalty|campaigns|app-conversion|flows|reviews|sms-optout|outreach|wa-sender)/, "customers"],
   [/^\/api\/sms\/blocked/, "customers"],
