@@ -118,6 +118,9 @@ const PATH_SECTIONS = [
   // outreach = «واتساب يدوي»، sms/blocked = «حاجبين الإعلانات» (٢٦/٩) — كانوا
   // بيقعوا على «الإعدادات» فأي دور غير المالك كان بياخد 403 في شاشات العملاء.
   // wa-sender = «الإرسال الآلي» جوّه «واتساب يدوي» (wasender.js، ٢٦/٩)
+  /* ⚡ AUTO1: «مركز الأتمتة» — العرض لأي دور عنده «العملاء»، والتعديل بيعدّي على مسار كل فلو الأصلي بنفس التوكن
+     (فصلاحية قسمه ومالكه بتتطبّق هناك تاني — مفيش طريق جانبي) */
+  [/^\/api\/cms\/automations/, "customers"],
   [/^\/api\/cms\/(customers|segments|loyalty|campaigns|app-conversion|flows|reviews|sms-optout|outreach|wa-sender)/, "customers"],
   [/^\/api\/sms\/blocked/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],
@@ -4343,6 +4346,30 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     if (wt && wt.unref) wt.unref();
   }
 
+  /* ⚡ AUTO1 (٢٢/١٠) — «مركز الأتمتة» (automations.js / autoflows.js): الفلوهات الجديدة من اللوحة بتعدّي على
+     نفس حراس الأتمتة القديمة بالظبط (flowAudience: التجارب/الموظفين/الإيقاف/حاجبين الإعلانات/طلب أونلاين آخر ٣ أيام/
+     الفاصل والسقوف/فرملة SMS/السقف اليومي/الميزانية) — مفيش حارس موازي. holdout_pct صفر هنا (المحرّك بيعمل holdout بتاعه). */
+  async function autoGuard(channel, pns) {
+    const set = new Set((pns || []).map(String));
+    const rows = (await customerRows()).filter((x) => set.has(x.pn));
+    const skipped = {};
+    if (rows.length < set.size) skipped.not_customer = set.size - rows.length;
+    const plan = await flowAudience({ id: "auto", segment: null, channel: channel === "sms" ? "sms" : "push", holdout_pct: 0 }, await campaignCfg(), rows);
+    for (const [k, n] of Object.entries(plan.skipped || {})) skipped[k] = (skipped[k] || 0) + n;
+    return { ok: new Set(plan.list.map((x) => x.pn)), retry: new Set(plan.retry || []), skipped };
+  }
+  /* ملف مختصر للشروط والاسم: نفس صفوف الشرائح (customerRows، كاش ٥ دقايق) */
+  async function autoProfiles(pns) {
+    const set = new Set((pns || []).map(String));
+    const out = new Map();
+    for (const x of await customerRows()) if (set.has(x.pn)) out.set(x.pn, { name: x.name || "", orders: Number(x.orders) || 0, daysSinceLast: x.daysSince == null ? null : Number(x.daysSince), spent: Number(x.spend) || 0 });
+    return out;
+  }
+  /* رسالة اتبعتت من فلو جديد بتتحسب في الفاصل بين الرسايل (HISTORY_SQL بيقرا cms_flow_log) — رقم الفلو بالسالب عشان مايتلخبطش مع cms_flows */
+  async function autoLogSend(autoId, pn) {
+    await pool.query("INSERT INTO cms_flow_log(flow_id, phone_norm) VALUES ($1,$2)", [-Math.abs(Number(autoId) || 0), String(pn)]).catch(() => {});
+  }
+
   return { sectionOf, effectivePerms, sessionUser, whoami, expandBundle: expand, getBundle, offersPagePayload,
-    segmentList, segmentPhones, waFallbackSms };
+    segmentList, segmentPhones, waFallbackSms, autoGuard, autoProfiles, autoLogSend };
 }

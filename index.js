@@ -8,7 +8,7 @@ import * as ts from "./tabsense.js";
 import * as feedus from "./feedus.js";
 import * as portals from "./portals.js";
 import * as analytics from "./analytics.js";
-import { FIRST_ORDER_CTE } from "./identity.js";
+import { FIRST_ORDER_CTE, shopPaidSql } from "./identity.js";
 import * as ai from "./ai.js";
 import * as staff from "./staff.js";
 import * as customers from "./customers.js";
@@ -141,6 +141,7 @@ import * as consent from "./consent.js";
 import * as waconsent from "./waconsent.js";
 import * as settingsGuard from "./settings-guard.js";
 import { cashierPinOf } from "./portal-core.js";
+import * as automations from "./automations.js";   // ⚡ AUTO1 (٢٢/١٠): «مركز الأتمتة» — كل الفلوهات والقواعد في مكان واحد (قراية من موديولاتها + حفظ من مساراتها الأصلية) + فلوهات جديدة مقفولة افتراضياً
 import * as poslink from "./poslink.js";   // PC1 (عمر ١٧/١٠): ربط عميل نقطة البيع بالطلب لحظياً — إيقاع السحب/الربط من اللوحة + «⏳ بيتربط»
 
 const { Pool } = pg;
@@ -3412,6 +3413,8 @@ const phoneListsApi = phonelists.register(app, moduleCtx, { whoami: (c) => cmsAp
 waTeamApi = wateam.register(app, moduleCtx, { wa: waApi, sendSms: accounts.sendSms, requirePortal: portalApi.requirePortal, flow: () => waFlowApi , presence: () => waHandoverApi, phoneLists: () => phoneListsApi, broadcast: portalApi.broadcast, broadcastTo: portalApi.broadcastTo, push: () => portalApi.push });
 waFlowApi = waflow.register(app, moduleCtx, { team: () => waTeamApi, staff: () => waStaffApi, bot: () => wabotApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast , handover: () => waHandoverApi });
 ackescalate.register(app, moduleCtx, { push: () => portalApi.push, team: () => waTeamApi, sendSms: accounts.sendSms });      // 🔔 RG2: إشعار تاني ⇒ واتساب الكاشير/المدير ⇒ SMS الإدارة لما طلب مدفوع محدش يشوفه/يقبله + GET /api/cms/ack-escalations
+/* ⚡ AUTO1: «مركز الأتمتة» — GET/PATCH /api/cms/automations… (القسم «العملاء»؛ كل حفظ بيتحوّل لمسار شاشة الفلو الأصلية بنفس التوكن) + محرّك الفلوهات الجديدة (كل ١٠ دقايق، المشغّلة بس) */
+automations.register(app, moduleCtx, { cms: () => cmsApi, notify: () => notifyApi, wa: () => waApi, staff: () => portalAlertNotifier, paidSqlFn: shopPaidSql });
 /* 💬 CC1a (عمر ١٨/١٠: «contact center كامل… مش بس الواتساب»): إنستجرام رسايل+كومنتات وفيسبوك ماسنجر+كومنتات — /api/meta/webhook + /api/cms/cc/* + /api/portal/cc/*. الإرسال مقفول لحد settings.cc */
 ccmeta.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast });
 // 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة
