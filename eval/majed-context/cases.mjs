@@ -183,4 +183,45 @@ S("review-tap-untouched", "…0341 / …9601 (٢٠–٢١/١٠)", "ضغطة «م
   events: [{ button: "ممتاز" }],
   expect: { model: 0, at: { 0: { decision: "replied" } } } });
 
+
+/* ── MJ2 (٢٢/١٠ — …3177 17:46–17:51، قراية بس من wa_messages / wa_assist_turns / wa_bot_log) ──
+   «هل يوجد توصيل لحي المنار» ⇒ «نعم نوصل داخل جدة 👍» ⇒ الموقع طلع بره النطاق · «أسعاركم على التطبيقات مبالغ فيها» ⇒ «نعم، تجدنا على كيتا…» بالحرف ·
+   العميلة عدّلت رسالتها ⇒ «ما وصلتني رسالتك بعد التعديل» · رأي في الأسعار اتحوّل شكوى ⇒ «اكتب رقم الطلب (يبدأ بحرف W)» ومالهاش ولا طلب. */
+const APPS_LIVE = "نعم، تجدنا على كيتا وهنقرستيشن ونينجا.\nوالطلب من موقعنا freshcuts.sa بسعر المطعم نفسه، وأسعار الأصناف في التطبيقات أعلى.\nوأول طلب توصيل من الموقع توصيله مجاني للطلبات من 60 ر.س بكود FIRST.";
+const APPS_CMP = "الطلب من موقعنا freshcuts.sa بسعر المطعم نفسه، وأسعار الأصناف في التطبيقات أعلى.";
+const PIN_ASK = "عشان أتأكد إن التوصيل يوصل لموقعك ورسومه، شارك موقعك هنا في الواتساب (📎 ثم «الموقع»).";
+S("mj2-edit-3177", "…3177 ٢٢/١٠ 17:49:40", "العميلة عدّلت رسالتها (edit، ميتا بعتت «[edit]» من غير نص) ⇒ سكوت، ولا نداء للموديل (كان: «ما وصلتني رسالتك بعد التعديل. وش تحب تطلب؟»)", {
+  n: 41, majed: true, model: [],
+  events: [{ raw: { type: "edit" } }],
+  expect: { model: 0, at: { 0: { decision: "silent", reason: "ignored_type" } }, neverSent: ["ما وصلتني رسالتك", "بعد التعديل"] } });
+S("mj2-edit-text-3177", "…3177 (لو ميتا بعتت النص الجديد)", "edit فيه النص الجديد ⇒ برضه سكوت (العميلة هتبعت الكلام تاني أو الرد على الأصلية كفاية) — مفيش رد مكرر", {
+  n: 42, majed: true, model: [],
+  events: [{ raw: { type: "edit", edit: { original_message_id: "wamid.MJ2ORIG", message: { type: "text", text: { body: "لا أبغى توصيل\nلأن أسعاركم على تطبيقات التوصيل مبالغ فيها" } } } } }],
+  expect: { model: 0, at: { 0: { decision: "silent", reason: "ignored_type" } } } });
+S("mj2-deliver-pin-3177", "…3177 ٢٢/١٠ 17:46:25", "«و هل يوجد توصيل لحي المنار» من غير دبوس ⇒ ماجد قال «نعم نوصل داخل جدة 👍» ⇒ المراجِع بيرفضها (delivery_unconfirmed) والرد طلب الموقع بس", {
+  n: 43, majed: true,
+  model: ["نعم نوصل داخل جدة 👍 شارك موقعك هنا في الواتساب (📎 ثم «الموقع») وأتأكد لك من العنوان ورسوم التوصيل.", PIN_ASK],
+  events: [{ say: "و هل يوجد توصيل لحي المنار" }],
+  expect: { model: 2, at: { 0: { key: "assist", body: PIN_ASK, lacks: ["نعم نوصل", "نوصل داخل جدة"] } }, call: { 1: { msgHas: ["delivery_unconfirmed|their location has not been checked"] } } } });
+S("mj2-apps-opinion-3177", "…3177 ٢٢/١٠ 17:49:24", "«لا أبغى توصيل لأن أسعاركم على تطبيقات التواصل مبالغ فيها» ⇒ faq(apps) بيرجّع سطر المقارنة بس (من غير «نعم، تجدنا على كيتا…»)", {
+  n: 44, majed: true, waBot: { faq: { apps: { ar: APPS_LIVE } } },
+  model: [{ use: [["faq", { topic: "apps" }]] }, `معك حق، فرق السعر في التطبيقات واضح 🙏\n${APPS_CMP}`],
+  events: [{ say: "لا أبغى توصيل\nلأن أسعاركم على تطبيقات التواصل مبالغ فيها" }],
+  expect: { model: 2, at: { 0: { key: "assist", has: [APPS_CMP], lacks: ["نعم، تجدنا", "تجدنا على كيتا"] } }, call: { 1: { msgHas: ["did not ask whether we are on the apps"], msgLacks: ["تجدنا على كيتا"] } } } });
+S("mj2-apps-direct", "السؤال المباشر", "«أنتم على التطبيقات؟» ⇒ نص faq(apps) المعتمد كله زي ما هو (بـ«نعم»)", {
+  n: 45, majed: true, waBot: { faq: { apps: { ar: APPS_LIVE } } },
+  model: [{ use: [["faq", { topic: "apps" }]] }, APPS_LIVE],
+  events: [{ say: "أنتم على التطبيقات؟" }],
+  expect: { model: 2, at: { 0: { key: "assist", body: APPS_LIVE } }, call: { 1: { msgHas: ["send this text as it is"] } } } });
+S("mj2-complaint-noorder-3177", "…3177 ٢٢/١٠ 17:51:37", "رأي في أسعار التطبيقات ⇒ ماجد حوّل «complaint» ⇒ رسالة التحويل من غير «اكتب رقم الطلب (يبدأ بحرف W)» — الرقم مالوش ولا طلب من الموقع", {
+  n: 46, majed: true,
+  model: [{ use: [["handover", { reason: "complaint", note: "says app prices are exaggerated vs restaurant prices" }]] }],
+  events: [{ say: "اللي أعرفه تكون الأسعار زيادة طفيفة عن المطعم\n\nعكس ما هو مطبق ع مطعمكم" }],
+  expect: { model: 1, at: { 0: { handoff: "complaint", has: ["حوّلت محادثتك لمدير الفرع"], lacks: ["اكتب رقم الطلب", "يبدأ بحرف W"] } } } });
+S("mj2-complaint-order", "…3177 (لو عندها طلب)", "نفس التحويل من ماجد لعميل عنده طلب على الرقم ⇒ «طلبك رقم … قدّامنا» (ماجد كان بيطلب الرقم حتى لو الطلب معروف — بيانات الدور ماكانتش بتقرا الطلب)", {
+  n: 47, majed: true, orders: [{ order_no: "W1792684400047", status: "delivered", minAgo: 90 }],
+  model: [{ use: [["handover", { reason: "complaint", note: "says app prices are exaggerated vs restaurant prices" }]] }],
+  events: [{ say: "الأسعار على تطبيقات التوصيل لمطعمكم مبالغ فيها\n\nعلى عكس باقي المطاعم بتكون زيادة طفيفة" }],
+  expect: { model: 1, at: { 0: { handoff: "complaint", has: ["طلبك رقم W1792684400047 قدّامنا"], lacks: ["اكتب رقم الطلب"] } } } });
+
 export const CASES = Object.freeze(C);

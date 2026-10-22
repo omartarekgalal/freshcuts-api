@@ -120,6 +120,10 @@ export const MISTAKE_TYPES = Object.freeze({
   parallel_reply: "ردّين على نفس الكلام في نفس اللحظة (أدوار بالتوازي)",      // MJ1
   answered_staff_question: "رد على كلام العميل للموظف",      // MJ1
   contradiction: "رد ناقض رسالة اتبعتت للعميل",      // MJ1
+  delivery_unchecked: "أكّد إننا بنوصّل قبل ما الموقع يتفحص",      // MJ2
+  faq_off_point: "نص سؤال شائع اتبعت بالحرف على كلام مش سؤاله",      // MJ2
+  edited_reply: "رد على رسالة العميل عدّلها (edit)",      // MJ2
+  order_no_without_order: "طلب رقم طلب من عميل مالوش طلب",      // MJ2
   other: "غير ذلك",
 });
 export const MISTAKE_STATUSES = Object.freeze({ suspected: "مشتبه", confirmed: "متأكدة", fixed: "اتصلّحت", dismissed: "مش غلطة" });
@@ -144,7 +148,8 @@ const riyadhDay = (d) => new Date((d instanceof Date ? d.getTime() : Number(d)) 
 /* ── أ) مراجعة ١٩/١٠ متزرّعة (٣١ ملاحظة في ١٧ محادثة) — status confirmed، و«ماتعملش / اعمل» لماجد في الغلطات اللي عن كلامه ── */
 const R = (key, type, phone, example, wrong, correct, guard, lessonDont = null, lessonDo = null) => ({ mkey: `rev1910:${key}`, type, phone_masked: phone, example, wrong_reply: wrong, correct, guard, lesson_dont: lessonDont, lesson_do: lessonDo, day: "2026-10-18" });
 const R2 = (key, type, phone, example, wrong, correct, guard, lessonDont = null, lessonDo = null) => ({ ...R(key, type, phone, example, wrong, correct, guard, lessonDont, lessonDo), mkey: `rev2010:${key}`, day: "2026-10-20" });      // BF3
-const R3 = (day, key, type, phone, example, wrong, correct, guard, lessonDont = null, lessonDo = null) => ({ ...R(key, type, phone, example, wrong, correct, guard, lessonDont, lessonDo), mkey: `rev2210:${key}`, day });      // MJ1 (مراجعة ٢٢/١٠ لمحادثات ١٢–٢٢/١٠)
+const R3 = (day, key, type, phone, example, wrong, correct, guard, lessonDont = null, lessonDo = null) => ({ ...R(key, type, phone, example, wrong, correct, guard, lessonDont, lessonDo), mkey: `rev2210:${key}`, day });
+const R4 = (day, key, type, phone, example, wrong, correct, guard, lessonDont = null, lessonDo = null) => ({ ...R(key, type, phone, example, wrong, correct, guard, lessonDont, lessonDo), mkey: `mj2:${key}`, day });      // MJ2 (محادثة …3177 ٢٢/١٠)      // MJ1 (مراجعة ٢٢/١٠ لمحادثات ١٢–٢٢/١٠)
 export const REVIEW_SEED = Object.freeze([
   R("A:1149", "apology_after_order", "…1149", "«عاوز اعمل اوردر» ⇒ موظف ⇒ العميل اتصل وطلب (كاشير ٢٥ ر.س 17:58)", "18:27 «وصلتنا رسالتك وما قدرنا نخدمك وقتها، نعتذر… وش تحب تطلب؟»", "مفيش اعتذار ولا بيع: العميل اتخدم", "waorders.ordersSince في lead_followup (موقع + كاشير، orderAwareHours) + طلب موظف/تحويل بيمنع المتابعة"),
   R("A:0448", "apology_after_order", "…0448", "«Hello» ⇒ الكاشير بعت الروابط ⇒ دفعت موقع ٤٨ ر.س 01:30", "01:53 «ما قدرنا نخدمك وقتها، نعتذر… وش تحب تطلب؟»", "مفيش اعتذار: دفعت قبلها بـ٢٣ دقيقة", "lead_followup بيشوف طلبات الموقع والكاشير في آخر orderAwareHours"),
@@ -199,6 +204,14 @@ export const REVIEW_SEED = Object.freeze([
   R3("2026-10-14", "S:9734", "answered_staff_question", "…9734", "الموظف: «اتشرف بأسم حضرتك» ⇒ العميل بعد ٥ دقايق «اهلا وسهلاً استاذ احمد» ثم «شادي»", "ماجد: «ما أعرف هالاسم كأنه خطأ مني. وش تحب تطلب اليوم؟»", "الرد للموظف (تأكيد قصير + تنبيه)", "answerToStaff + staffStopsMajed"),
   R3("2026-10-20", "A:9131", "misunderstood", "…9131", "نص زر إعلان ميتا الجاهز «مرحبًا! هل يمكنني الحصول على مزيد من المعلومات حول هذا؟» (والمطعم مقفول)", "«ما وصلني وش تقصد بـ«هذا»، هل تسأل عن طبق أو بوكس معيّن؟»", "أشهر ٢–٣ عروض حية بأسعارها + «أي واحد شفته؟» (+ «نفتح ١٢»)", "adPrefillAr ⇒ ad_button_text (adPrefillOffers)",
     "تسأل «وش تقصد بـ«هذا»؟» على نص زر إعلان ميتا الجاهز («هل يمكنني الحصول على مزيد من المعلومات حول هذا؟»)", "تعرض ٢–٣ عروض حية بأسعارها وتسأل أي واحد شافه أو كم شخص"),
+  /* MJ2 (٢٢/١٠ 17:46–17:51، …3177، قراية بس): ٤ غلطات في محادثة واحدة — درس واحد لماجد (التوصيل)، والباقي اتقفل بالكود */
+  R4("2026-10-22", "D:3177", "delivery_unchecked", "…3177", "«و هل يوجد توصيل لحي المنار» من غير دبوس موقع", "«نعم نوصل داخل جدة 👍 شارك موقعك…» ⇒ شاركت الموقع ⇒ «للأسف موقعك خارج نطاق التوصيل»", "طلب الموقع عشان نتأكد من التغطية والرسوم، من غير «نعم» قبل الفحص",
+    "deliveryClaim ⇒ delivery_unconfirmed (المراجِع) لحد ما quote_delivery تقول deliverable + التعليمات وتلميح need_location", "تقول «نعم نوصل» قبل ما quote_delivery تأكد موقعه", "تطلب الموقع عشان تتأكد من التغطية والرسوم"),
+  R4("2026-10-22", "F:3177", "faq_off_point", "…3177", "«لا أبغى توصيل لأن أسعاركم على تطبيقات التواصل مبالغ فيها» (رأي مش سؤال)", "faq(apps) بالحرف: «نعم، تجدنا على كيتا وهنقرستيشن ونينجا… وأول طلب… بكود FIRST» — وسطر FIRST اتقال قبلها بـ٣ دقايق", "كلمتين تقدير + سطر المقارنة المعتمد بس («الطلب من موقعنا … بسعر المطعم نفسه»)، من غير «نعم» ولا قايمة التطبيقات ولا FIRST تاني",
+    "appsAnswer في faq(apps): النص كله للسؤال المباشر بس + سطر FIRST مرة في المحادثة (oneOfferPerChat) — ونفس القاعدة في رد بوت القواعد"),
+  R4("2026-10-22", "E:3177", "edited_reply", "…3177", "العميلة عدّلت رسالتها ⇒ وصلت «[edit]»", "ماجد: «ما وصلتني رسالتك بعد التعديل. وش تحب تطلب؟»", "سكوت (التعديل مش رسالة جديدة)", "IGNORED_TYPES + edit (wabotrun) — ماجد مابيتنادى، ومتابعة «ما قدرنا نخدمك» مابتتحسبش عليها"),
+  R4("2026-10-22", "W:3177", "order_no_without_order", "…3177", "رأي في أسعار التطبيقات ⇒ ماجد حوّل «complaint»", "«لو تكرّمت اكتب رقم الطلب (يبدأ بحرف W) عشان نخدمك أسرع» — والرقم مالوش ولا طلب من الموقع", "رسالة التحويل من غير سطر رقم الطلب",
+    "complaint_plain لما anyWebOrder = false ومفيش رقم طلب في الكلام؛ وتحويل الشكوى من ماجد بيقرا طلب الرقم (complaint_known)"),
 ].map((x) => ({ ...x, lesson_on: Boolean(x.lesson_dont || x.lesson_do) })));
 
 /* ── ب) كتلة الدروس ────────────────────────────────────────────────────────── */

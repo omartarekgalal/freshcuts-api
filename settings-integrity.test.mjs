@@ -104,7 +104,7 @@ test("عرض جديد بالكامل من اللوحة: بيتعمل موقوف�
   const dup = await offers.createOffer(pool, { id: "nd96_kilo", title: "x", price: 50, until: "2026-10-30" }, "t");
   assert.equal(dup.error, "id_taken");
   const r = await offers.createOffer(pool, {
-    id: "family_box", title: "بوكس العيلة", price: 149, from: "2026-10-01", until: "2026-10-31",
+    id: "family_box", title: "بوكس العيلة", price: 149, from: "2099-10-01", until: "2099-10-31",
     channels: { dineIn: false, takeaway: true, delivery: true },
     extra: { copy: { title: "بوكس العيلة ١٤٩", line: "٤ مشاوي + ٢ أرز", cta: "كوّن البوكس ←" }, gifts: ["بيبسي لتر"],
       badgeItems: { items: ["91", "x"], variant: "كيلو" }, bundleSlug: "family-box" },
@@ -118,7 +118,7 @@ test("عرض جديد بالكامل من اللوحة: بيتعمل موقوف�
   assert.equal(o.productId, "offer-family_box");
   assert.deepEqual(o.badgeItems.items, ["91"], "الأرقام بس");
   assert.deepEqual(o.components.map((c) => c.label), ["٤ مشاوي", "٢ أرز"]);
-  const pub = offers.publicOffer(o, at("2026-10-05"));
+  const pub = offers.publicOffer(o, at("2099-10-05"));
   assert.equal(pub.onlineOnly, true);
   assert.equal(pub.status, "disabled");
   // تشغيل + تعديل السعر (المخصّص: السعر مش مقفول)
@@ -126,16 +126,16 @@ test("عرض جديد بالكامل من اللوحة: بيتعمل موقوف�
   assert.equal(on.ok, true, on.message);
   assert.ok(on.changed.includes("price"));
   assert.equal(offers.offerById("family_box").price, 159);
-  assert.equal(offers.publicOffer(offers.offerById("family_box"), at("2026-10-05")).status, "live");
-  assert.ok(offers.activeOffers(at("2026-10-05")).some((x) => x.id === "family_box"));
+  assert.equal(offers.publicOffer(offers.offerById("family_box"), at("2099-10-05")).status, "live");
+  assert.ok(offers.activeOffers(at("2099-10-05")).some((x) => x.id === "family_box"));
   // الباقة المربوطة بتاخد حالة العرض المخصّص زي ٩٦ بالظبط
-  const av = bundleAvailability({ offer_id: "family_box", active: true }, offers.publicOffer(offers.offerById("family_box"), at("2026-10-05")));
+  const av = bundleAvailability({ offer_id: "family_box", active: true }, offers.publicOffer(offers.offerById("family_box"), at("2099-10-05")));
   assert.equal(av.orderable, true);
   assert.deepEqual(av.kinds.sort(), ["delivery", "pickup"]);
   // إعادة التحميل من الجدول بتحافظ على كل ده
   await offers.loadOffers(pool);
   assert.equal(offers.offerById("family_box").copy.title, "بوكس العيلة ١٤٩");
-  // لسه مابدأش (من ١ أكتوبر) ومالوش صفحة منشورة ⇒ يتمسح
+  // لسه مابدأش (من ١ أكتوبر ٢٠٩٩ — تواريخ في المستقبل عشان الاختبار مايعتمدش على النهاردة، MJ2) ومالوش صفحة منشورة ⇒ يتمسح
   const del = await offers.deleteOffer(pool, "family_box");
   assert.equal(del.ok, true, del.message);
   assert.equal(offers.offerById("family_box"), null);

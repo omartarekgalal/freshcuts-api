@@ -384,8 +384,9 @@ test("ميتا اعتمدت fc_order_pickup_ready (بعد ما المالك يق
     const t = w.calls[0].body.template;
     assert.deepEqual([t.name, t.language.code], ["fc_order_pickup_ready", "ar"]);
     assert.deepEqual(t.components.find((c) => c.type === "body").parameters.map((p) => p.text), [NO]);
-    assert.equal(t.components.find((c) => c.type === "button").parameters[0].text, NO);
-    assert.deepEqual(w.db.msgs.map((m) => [m.template, m.body]), [["fc_order_pickup_ready", OWNER_TEXT]]);
+    /* MJ2 (٢٢/١٠): النسخة المعتمدة عند ميتا BODY بس — مفيش مكوّن زر في الحمولة (الزر كان سبب WA_132018)، والنص المحفوظ = النص المعتمد */
+    assert.equal(t.components.find((c) => c.type === "button"), undefined);
+    assert.deepEqual(w.db.msgs.map((m) => [m.template, m.body]), [["fc_order_pickup_ready", `تحديث طلبك رقم ${NO}: طلبك جاهز للاستلام من الفرع. يرجى ذكر رقم الطلب عند الاستلام.`]]);
     assert.deepEqual(cap.of("pickup_ready", "whatsapp").map((e) => e.ok), [true]);
     assert.equal(w.db.sms.length, 0, "واتساب وصل والمرحلة تغني عن الـSMS");
   } finally { cap.stop(); }
@@ -416,19 +417,20 @@ test("whatsapp.sendOrderUpdate: collected رسالة حرة بس (نافذة م�
 }));
 
 // ═════════ ٥) الكتالوج والمخطط والتسميات ═════════
-test("الكتالوج: fc_order_pickup_ready بصياغة المالك (ar + en)، صالح لميتا، لسه HOLD ومش في أي دفعة، وجسم التقديم جاهز", () => {
+test("الكتالوج: fc_order_pickup_ready = النسخة المعتمدة عند ميتا (ar + en، BODY بس — MJ2)، صياغة المالك للرسالة الحرة، صالح لميتا، لسه HOLD ومش في أي دفعة", () => {
   const ar = CAT.findTemplate("fc_order_pickup_ready", "ar"), en = CAT.findTemplate("fc_order_pickup_ready", "en");
-  assert.equal(CAT.bodyOf(ar), "طلبك رقم {{1}} جاهز للاستلام من فريش كاتس 📍 تفضّل إلى الفرع واذكر رقم طلبك.");
-  assert.equal(CAT.bodyOf(en), "Your order {{1}} is ready for pickup from Fresh Cuts 📍 Please come to the branch and mention your order number.");
+  assert.equal(CAT.bodyOf(ar), "تحديث طلبك رقم {{1}}: طلبك جاهز للاستلام من الفرع. يرجى ذكر رقم الطلب عند الاستلام.");
+  assert.equal(CAT.bodyOf(en), "Order {{1}} update: your order is ready for pickup at the branch. Please mention your order number when collecting.");
+  assert.equal(ar.meta.windowBody, "طلبك رقم {{1}} جاهز للاستلام من فريش كاتس 📍 تفضّل إلى الفرع واذكر رقم طلبك.", "صياغة المالك فضلت للرسالة الحرة جوّه النافذة");
+  assert.equal(en.meta.windowBody, "Your order {{1}} is ready for pickup from Fresh Cuts 📍 Please come to the branch and mention your order number.");
   for (const t of [ar, en]) { assert.deepEqual(CAT.validateTemplate(t), []); assert.equal(t.category, "UTILITY"); assert.equal(t.meta.stageWhenApproved, "pickup_ready"); }
   assert.doesNotMatch(CAT.bodyOf(ar), /السلامة|جدة|خرائط/, "مفيش حي ولا مدينة — سبب الرفضين السابقين");
   assert.ok(CAT.HOLD.fc_order_pickup_ready); assert.match(CAT.HOLD.fc_order_pickup_ready, /١٧\/١٠|RT2/);
   assert.ok(!CAT.SUBMIT_BATCHES.flat().includes("fc_order_pickup_ready"));
   const sub = CAT.submissionBody(ar);
   assert.deepEqual(Object.keys(sub), ["name", "language", "category", "components"]);
-  assert.deepEqual(sub.components.map((c) => c.type), ["BODY", "BUTTONS"]);
+  assert.deepEqual(sub.components.map((c) => c.type), ["BODY"], "MJ2: زي المعتمد عند ميتا — من غير زر");
   assert.deepEqual(sub.components[0].example, { body_text: [["W1790012345678"]] });
-  assert.deepEqual(sub.components[1].buttons, [{ type: "URL", text: "تفاصيل الطلب", url: "https://freshcuts.sa/track/{{1}}", example: ["https://freshcuts.sa/track/W1790012345678"] }]);
   assert.equal(W.v2TemplateOf("pickup_ready", "fc_order_ready_pickup"), "fc_order_pickup_ready");
   assert.equal(W.v2TemplateOf("delivered", "fc_order_delivered"), "fc_order_delivered_v2");
   assert.equal(W.STAGE_TEMPLATES.pickup_ready, "fc_order_ready_pickup", "ربط المرحلة نفسه ماتغيّرش (wa-catalog)");

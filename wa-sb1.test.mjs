@@ -78,13 +78,13 @@ test("(3) the next fee step with ONE concrete item that closes it — exact gap,
 });
 
 test("(4) a first-timer asks «توصلون حيّنا؟ وكم التوصيل؟» (13/10, twice): the first-order line is added once, before the closing question; never again", async () => {
-  const c = chat([say("نعم نوصل داخل جدة 👍 شاركني موقعك هنا في واتساب (📎 ثم «الموقع») عشان أتأكد من التغطية والرسوم؟"), say("تمام. وش تحب تطلب؟")], { world: { profile: "new" } });
+  const c = chat([say("شاركني موقعك هنا في واتساب (📎 ثم «الموقع») عشان أتأكد من التغطية والرسوم؟"), say("تمام. وش تحب تطلب؟")], { world: { profile: "new" } });      // MJ2: من غير «نعم نوصل» قبل الدبوس
   const r = await c.turn("توصلون حيّنا؟ وكم التوصيل؟");
   assert.match(r.text, /🎁 أول طلب توصيل لك من موقعنا مجاني للطلبات من 60 ر.س بكود FIRST\.\n.*؟$/s);
   assert.equal(r.trace.proactive, "first");
   const r2 = await c.turn("ابي اطلب");
   assert.doesNotMatch(r2.text, /FIRST/, "said once");
-  const off = chat([say("نعم نوصل داخل جدة 👍 شاركني موقعك؟")], { world: { profile: "new" }, acfg: { salesBrain: false } });
+  const off = chat([say("شاركني موقعك عشان أتأكد من التغطية؟")], { world: { profile: "new" }, acfg: { salesBrain: false } });
   assert.doesNotMatch((await off.turn("توصلون حيّنا؟")).text, /FIRST/, "switch off: as before");
   const asked = chat([say("عرض أول طلب: توصيل مجاني بكود FIRST للطلبات من 60 ر.س. وش تحب تطلب؟")], { world: { profile: "new" } });
   const ra = await asked.turn("وش عرض أول طلب؟");

@@ -53,7 +53,7 @@ const CONFIGURED = { WHATSAPP_TOKEN: "tok", WHATSAPP_PHONE_ID: "PHONE1" };      
 const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
-function world({ handovers = null, waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
+function world({ handovers = null, waBot = {}, notifications = { whatsappEnabled: true }, orders = [], pastOrders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
   at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null, team = null, flow = null, fav = null, expandBundle = null, campReply = null, courierWa = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
@@ -502,6 +502,7 @@ function world({ handovers = null, waBot = {}, notifications = { whatsappEnabled
       if (/^UPDATE review_invites SET wa_answer=\$2/i.test(s)) { (db.reviewAnswers ||= []).push([p[0], p[1]]); return { rows: [] }; }
       if (/^INSERT INTO wa_bot_chats\(phone_norm, last_loc\)/i.test(s)) { chat(p[0]).last_loc = JSON.parse(p[1]); return { rows: [] }; }
       if (/^INSERT INTO wa_optin_log\(phone_norm, kind, value, text_version, text, source, order_no, ip, ua\) VALUES \(\$1, 'marketing'/i.test(s)) { db.consentLog.push({ phone_norm: p[0], kind: "marketing", value: p[1], text_version: p[2], text: p[3], source: "bot", ua: p[4], at: iso() }); return { rows: [] }; }
+      if (/\/\*mj2:any_web_order\*\//.test(s)) return { rows: [...orders, ...pastOrders].filter((o) => o.phone_norm === p[0] && !o.is_test).slice(-1).map(() => ({ "?column?": 1 })) };      // MJ2: طلب موقع في أي وقت
       if (/FROM shop_orders WHERE phone_norm=\$1/i.test(s)) return { rows: orders.filter((o) => o.phone_norm === p[0]).slice(-1) };
       if (/^UPDATE settings SET data = jsonb_set/i.test(s)) { db.settings.waBot = JSON.parse(p[0]); return { rows: [], rowCount: 1 }; }
       return { rows: [], rowCount: 0 };
@@ -1003,8 +1004,11 @@ test("complaint or order problem: apology in the house style, order number, imme
   const r = await w.say("الطلب وصل بارد وناقص");
   assert.deepEqual(r.sent, [txt(ME, `نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\nطلبك رقم W1790011111111 قدّامنا.${SOON}`)]);
   assert.equal(w.sms[0].body, "Fresh Cuts WhatsApp: customer 0512345678 needs staff (complaint) order W1790011111111. Reply from the restaurant phone.");
-  const w2 = world({ waBot: { mode: "live" } });
+  const w2 = world({ waBot: { mode: "live" }, pastOrders: [order({ status: "delivered", created_at: "2026-09-01T18:00:00.000Z" })] });      // MJ2: طلب موقع قديم على الرقم ⇒ نطلب رقم الطلب
   assert.deepEqual((await w2.say("جاني طلب غلط")).sent, [txt(ME, `نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\nلو تكرّمت اكتب رقم الطلب (يبدأ بحرف W) عشان نخدمك أسرع.${SOON}`)]);
+  /* MJ2 (…3177 ٢٢/١٠): مفيش ولا طلب موقع على الرقم ومفيش رقم طلب في الكلام ⇒ من غير «اكتب رقم الطلب (يبدأ بحرف W)» */
+  const w3 = world({ waBot: { mode: "live" } });
+  assert.deepEqual((await w3.say("جاني طلب غلط")).sent, [txt(ME, `نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.${SOON}`)]);
   w2.clock.advance(1);
   const no = await w2.say("W1790011111111");
   assert.equal(no.log.reply_key, "status", "an order number is read as a status question (a fact): answered, never as a second complaint");
@@ -6388,7 +6392,7 @@ test("MJ1 #٥ سالم وحسام (١٦/١٠): complaint + photo + «عندي م
   u.db.msgs.push({ wamid: "wamid.UPD1", direction: "out", phone_norm: "512345678", template: "fc_order_delivered", order_no: "W1790016140999", stage: "delivered", status: "sent", created_at: new Date(u.clock.now().getTime() - 1800_000).toISOString() });
   assert.match((await u.say("الطلب وصل بارد وناقص")).sent[0].text.body, /طلبك رقم W1790016140999 قدّامنا/);
   // nothing in the thread ⇒ the question as before; switch off ⇒ the old three messages
-  const z = world({ waBot: { mode: "live" } }); assert.match((await z.say("الطلب وصل بارد وناقص")).sent[0].text.body, /اكتب رقم الطلب/);
+  const z = world({ waBot: { mode: "live" }, pastOrders: [order({ status: "delivered", created_at: "2026-09-01T18:00:00.000Z" })] }); assert.match((await z.say("الطلب وصل بارد وناقص")).sent[0].text.body, /اكتب رقم الطلب/);
   const o = world({ waBot: { mode: "live", handoverBurstSec: 0 }, orders: [order({ status: "delivered" })] });
   await o.say("الطلب وصل بارد وناقص"); o.clock.advanceSec(10);
   assert.equal((await o.say("وكمان الرز ناقص")).log.reply_key, "handoff_remind", "burst guard off: the old reminder");
@@ -6990,6 +6994,7 @@ for (const c of MJC) {
       if (e.say != null) res.push(await w.say(e.say, { from: FROM }));
       else if (e.press) res.push(await w.press(e.press[0], e.press[1], { from: FROM }));
       else if (e.button) res.push(await w.say(null, { from: FROM, raw: { type: "button", button: { text: e.button, payload: e.button } } }));
+      else if (e.raw) res.push(await w.say(null, { from: FROM, raw: e.raw }));      // MJ2: رسالة بنوعها الخام (edit …)
       else if (e.cashier) { await w.cashier(e.cashier, FROM); res.push(null); }
       else if (e.advance) { w.clock.advance(e.advance); res.push(null); }
       else if (e.advanceSec) { w.clock.advanceSec(e.advanceSec); res.push(null); }

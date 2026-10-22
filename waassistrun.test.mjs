@@ -445,7 +445,7 @@ test("AS4 — «وعليكم السلام» is an answer to a greeting: when the
   const m2 = scripted([say("وعليكم السلام 👋 وش تحب تطلب اليوم؟")]);
   const r2 = await turn(makeWorld({}, { callModel: m2.callModel }), null, "السلام عليكم");
   assert.equal(r2.text, "وعليكم السلام 👋 وش تحب تطلب اليوم؟", "the customer greeted: kept");
-  assert.ok(AR.SYSTEM_PROMPT.includes("state no fee before the pin")); assert.ok(AR.SYSTEM_PROMPT.includes("«نعم نوصل داخل جدة 👍»"));
+  assert.ok(AR.SYSTEM_PROMPT.includes("state no fee before the pin")); assert.ok(!AR.SYSTEM_PROMPT.includes("«نعم نوصل داخل جدة 👍»"), "MJ2: no «yes, we deliver» before the pin");
   assert.ok(AR.SYSTEM_PROMPT.includes("Never offer a service that no tool result or context mentions"));
 });
 

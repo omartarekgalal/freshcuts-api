@@ -231,18 +231,24 @@ export const TEMPLATES = [
      📍 RT2 (١٧/١٠ — عمر: «موصلتش رسايل واتس اب ان الطلب جاهز»): النص بقى الصياغة اللي المالك اقترحها (فريش كاتس + تفضّل إلى الفرع + اذكر رقم طلبك)،
      بالعربي والإنجليزي — ده جسم التقديم لميتا زي ما هو (submissionBody). لحد ما ميتا تعتمده: نفس النص بيطلع **رسالة حرة ببلاش** جوّه نافذة الـ٢٤ ساعة
      (whatsapp.js sendOrderUpdate لمرحلة pickup_ready لما المرحلة في waBot.windowV2Stages)، وبره النافذة ⇒ SMS البديل لو المرحلة في smsStages.
-     لسه مانتبهش: النسختين اللي قبله اترفضوا INCORRECT_CATEGORY (جملة الفرع/الحي/زر الخرايط) — النص ده عن الطلب وتعليمة الاستلام بس، من غير حي ولا مدينة. */
+     لسه مانتبهش: النسختين اللي قبله اترفضوا INCORRECT_CATEGORY (جملة الفرع/الحي/زر الخرايط) — النص ده عن الطلب وتعليمة الاستلام بس، من غير حي ولا مدينة.
+     📍 MJ2 (٢٢/١٠): ميتا **معتمدة** fc_order_pickup_ready (ar + en، UTILITY) بنص تاني وجسم بس **من غير زر** (اتقرا بـGraph GET من حاوية الـAPI ٢٢/١٠).
+     الكتالوج كان لسه بزر «تفاصيل الطلب» برابط بمتغيّر ⇒ كل إرسال بره النافذة اترفض WA_132018 (عدد المتغيّرات مش مطابق: ميتا مالهاش زر) — ٥ مرات ١٩–٢٢/١٠،
+     والـSMS البديل هو اللي وصل. القالب هنا = المعتمد عند ميتا بالحرف (BODY بس). صياغة المالك فضلت **للرسالة الحرة جوّه النافذة** (meta.windowBody + زر التتبع)
+     عشان العميل جوّه النافذة يشوف نفس اللي كان بيشوفه. */
   T({ name: "fc_order_pickup_ready", category: "UTILITY", group: "order",
-    body: "طلبك رقم {{1}} جاهز للاستلام من فريش كاتس 📍 تفضّل إلى الفرع واذكر رقم طلبك.",
-    vars: [ORDER_NO], buttons: [TRACK("تفاصيل الطلب")],
-    meta: { purpose: "طلب استلام صار جاهز — صياغة المالك (١٧/١٠) باسم جديد", trigger: "notify.orderReady ⇒ pos_ready_at لطلب option=pickup (RT2: حر جوّه النافذة الآن، قالب بعد اعتماد ميتا)",
+    body: "تحديث طلبك رقم {{1}}: طلبك جاهز للاستلام من الفرع. يرجى ذكر رقم الطلب عند الاستلام.",
+    vars: [ORDER_NO],
+    meta: { purpose: "طلب استلام صار جاهز — النسخة المعتمدة عند ميتا (BODY بس، MJ2 ٢٢/١٠)",
+      windowBody: "طلبك رقم {{1}} جاهز للاستلام من فريش كاتس 📍 تفضّل إلى الفرع واذكر رقم طلبك.", windowTrack: "تفاصيل الطلب", trigger: "notify.orderReady ⇒ pos_ready_at لطلب option=pickup (RT2: حر جوّه النافذة الآن، قالب بعد اعتماد ميتا)",
       send: "auto-candidate", replaces: "fc_order_ready_pickup", stageWhenApproved: "pickup_ready",
       fallbackSms: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع",
       notes: "RT2 ١٧/١٠: مربوط بالمرحلة pickup_ready عن طريق waBot.windowV2Stages (الاسم البديل بدل _v2) — بره النافذة مايتبعتش إلا لو ميتا بتقول APPROVED." } }),
   T({ name: "fc_order_pickup_ready", category: "UTILITY", group: "order", language: "en",
-    body: "Your order {{1}} is ready for pickup from Fresh Cuts 📍 Please come to the branch and mention your order number.",
-    vars: [ORDER_NO], buttons: [TRACK("Order details")],
-    meta: { purpose: "Pickup order is ready — the owner's wording (17/10) under a new name", trigger: "notify.orderReady, option=pickup", send: "auto-candidate", replaces: "fc_order_ready_pickup", stageWhenApproved: "pickup_ready", fallbackSms: null } }),
+    body: "Order {{1}} update: your order is ready for pickup at the branch. Please mention your order number when collecting.",
+    vars: [ORDER_NO],
+    meta: { purpose: "Pickup order is ready — the version Meta approved (BODY only, MJ2 22/10)",
+      windowBody: "Your order {{1}} is ready for pickup from Fresh Cuts 📍 Please come to the branch and mention your order number.", windowTrack: "Order details", trigger: "notify.orderReady, option=pickup", send: "auto-candidate", replaces: "fc_order_ready_pickup", stageWhenApproved: "pickup_ready", fallbackSms: null } }),
 
   T({ name: "fc_courier_assigned", category: "UTILITY", group: "order",
     body: "رتّبنا مندوب لطلبك رقم {{1}} 🛵\nيستلم الطلب أول ما يجهز من المطبخ، وتقدر تتابع من الرابط.",

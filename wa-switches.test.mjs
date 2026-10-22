@@ -92,9 +92,10 @@ test("القالبين الجداد: في الكتالوج، موقوفين (HOL
     assert.equal(C.campaignSpec(name), null);
   }
   assert.equal(W.STAGE_TEMPLATES.pickup_ready, "fc_order_ready_pickup", "المرحلة لسه على القالب القديم — الجديد مايتبعتش");
-  // RT2 (١٧/١٠): صياغة المالك — نفس النص بيطلع رسالة حرة جوّه النافذة لحد ما ميتا تعتمده
-  assert.equal(CAT.bodyOf(CAT.findTemplate("fc_order_pickup_ready", "ar")), "طلبك رقم {{1}} جاهز للاستلام من فريش كاتس 📍 تفضّل إلى الفرع واذكر رقم طلبك.");
-  assert.equal(CAT.bodyOf(CAT.findTemplate("fc_order_pickup_ready", "en")), "Your order {{1}} is ready for pickup from Fresh Cuts 📍 Please come to the branch and mention your order number.");
+  // RT2 (١٧/١٠): صياغة المالك = الرسالة الحرة جوّه النافذة · MJ2 (٢٢/١٠): جسم القالب = النسخة المعتمدة عند ميتا (BODY بس)
+  assert.equal(CAT.findTemplate("fc_order_pickup_ready", "ar").meta.windowBody, "طلبك رقم {{1}} جاهز للاستلام من فريش كاتس 📍 تفضّل إلى الفرع واذكر رقم طلبك.");
+  assert.equal(CAT.bodyOf(CAT.findTemplate("fc_order_pickup_ready", "ar")), "تحديث طلبك رقم {{1}}: طلبك جاهز للاستلام من الفرع. يرجى ذكر رقم الطلب عند الاستلام.");
+  assert.equal(CAT.bodyOf(CAT.findTemplate("fc_order_pickup_ready", "en")), "Order {{1}} update: your order is ready for pickup at the branch. Please mention your order number when collecting.");
   // مسار التقديم بيرفضهم
   const app = fakeApp(); const calls = [];
   W.register(app, { pool: { query: async () => ({ rows: [], rowCount: 0 }) }, requireAdmin: async () => null, getSettingsData: async () => ({}), jb: JSON.stringify, normPhone: String },

@@ -58,11 +58,11 @@ test("after the pin with no basket: a number that has never had a delivery order
   assert.equal(AR.assistConfig({}).firstLead, true); assert.ok(R.schemaFor(cfg).some((r) => r.key === "assist.firstLead")); assert.doesNotMatch(R.TEXTS.first_lead.ar.replace(/\{[a-z_]+\}/g, ""), /\d/);
 });
 
-test("«في توصيل؟» without a pin: the tool and the prompt both say «yes, inside Jeddah» first and the pin request in the same message, and no fee before the pin", async () => {
+test("«في توصيل؟» without a pin: the tool and the prompt ask for the pin in the same message, never «yes, we deliver» before it (MJ2 …3177: «نعم نوصل داخل جدة» ⇒ out of range), and no fee before the pin", async () => {
   const W = makeWorld({ profile: "new" }, {});
   const r = await W.tools.quote_delivery(PHONE, { total: 0 });
-  assert.equal(r.error, "need_location"); assert.match(r.hint, /«نعم نوصل داخل جدة 👍»/); assert.match(r.hint, /State no fee before the pin/);
-  assert.match(AR.SYSTEM_PROMPT, /first that yes, we deliver inside Jeddah \(«نعم نوصل داخل جدة 👍»\), then ask them to share their location/);
+  assert.equal(r.error, "need_location"); assert.doesNotMatch(r.hint, /نعم نوصل/); assert.match(r.hint, /do not say yet that we deliver/); assert.match(r.hint, /State no fee before the pin/);
+  assert.match(AR.SYSTEM_PROMPT, /do not confirm that we deliver to them \(no «نعم نوصل…» before the pin\), ask them to share their location/);
   assert.match(AR.SYSTEM_PROMPT, /starting with «نعم نوصل لك 👍»; if the result has "first_order", lead with its "say" text/);
   assert.ok(AR.SYSTEM_PROMPT.length < 24000);
 });

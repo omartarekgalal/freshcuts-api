@@ -234,3 +234,57 @@ export function complaintDetail(text) {
   if (complimentOnly(raw)) return false;
   return DETAIL_RE.test(n) && !DETAIL_ASK_RE.test(n);
 }
+
+/* ═══ MJ2 (٢٢/١٠ — …3177، قراية بس من wa_messages + wa_assist_turns) ═══════════════════════════════════════════
+   العميلة سألت «هل يوجد توصيل لحي المنار» ⇒ ماجد: «نعم نوصل داخل جدة 👍 …» ⇒ شاركت الموقع ⇒ «خارج نطاق التوصيل». بعدها «أسعاركم على التطبيقات
+   مبالغ فيها» ⇒ faq("apps") اتبعت بالحرف: «نعم، تجدنا على كيتا وهنقرستيشن ونينجا… وأول طلب… بكود FIRST» (سطر FIRST اتقال قبلها بـ٣ دقايق).
+
+   ١٠) appsAnswer — نص faq("apps") المعتمد على قد الكلام:
+       • السؤال المباشر («أنتم على التطبيقات؟» / «موجودين في هنقرستيشن؟») ⇒ النص زي ما هو.
+       • غير كده (رأي / شكوى من أسعار التطبيقات / مقارنة) ⇒ سطر «تجدنا على …» بيتشال (العميل عارف إننا هناك — هو بيشتكي منها)، ومفيش «نعم» في الأول،
+         وسطر المقارنة المعتمد («الطلب من موقعنا … بسعر المطعم نفسه») هو اللي بيفضل.
+       • سطر «أول طلب … FIRST» اتقال قبل كده في المحادثة (firstSaid) ⇒ بيتشال (عرض واحد في المحادثة — oneOfferPerChat).
+   ١١) deliveryClaim — الرد بيأكد إننا بنوصّل للعميل («نعم نوصل داخل جدة» / «نوصل لحيك» / «we deliver to you»). مسموح بس بعد ما الموقع اتفحص
+       (quote_delivery رجّعت deliverable) — قبل الدبوس ماجد بيطلب الموقع عشان يتأكد، مش بيقول «نعم». النفي والشرط («ما نوصل» / «إذا نوصل») مش تأكيد. */
+const APP_WORD_RE = /(?:^| )(?:[وبل]|ال|بال|وال|في)?(?:تطبيقات|تطبيق|ابلكيشن|ابلكيشنات|برامج التوصيل|هنقرستيشن|هنجرستيشن|هنقر|هنجر|كيتا|نينجا|hungerstation|hunger|keeta|ninja|apps?)(?: |$)/;
+const APPS_OPINION_RE = /(?:^| )(?:[وبل]|ال)?(?:اسعار|اسعاركم|اسعارها|سعر|سعركم|غالي|غاليه|غالين|اغلي|اعلي|ارخص|مبالغ|مبالغه|زياده|طفيفه|فرق|الفرق|عمولة|عموله|نصب|استغلال|مرتفع|مرتفعه|expensive|pricey|overpriced|prices?)(?: |$)/;
+const APPS_DIRECT_RE = /(?:^| )(?:هل|موجودين|موجود|عندكم|انتم|انتو|انتوا|تطلعون|القاكم|الاقيكم|نلقاكم|يمدي|ينفع|اقدر|نقدر|are you|do you|can i)(?: |$)/;
+const DEMONSTRATIVE_RE = /(?:^| )(?:و)?(?:ذا|هذا|هذي|ذي|هاذا|هادا)(?: |$)/;
+const FIRST_LINE_RE = /اول طلب.{0,60}مجان|first (?:delivery )?order.{0,80}free|free delivery.{0,60}first/;
+/* ⇒ true = سؤال مباشر «أنتم على التطبيقات؟»؛ false = كلام عن التطبيقات (رأي / شكوى أسعار / «وذا على هنقرستيشن» مع صورة) */
+export function appsDirectQuestion(text) {
+  const raw = String(text || ""), n = N(raw);
+  if (!APP_WORD_RE.test(n) || APPS_OPINION_RE.test(n)) return false;
+  if (/[?؟]/.test(raw) || APPS_DIRECT_RE.test(n)) return true;
+  return !DEMONSTRATIVE_RE.test(n) && n.split(" ").length <= 6;      // «هنقرستيشن؟» من غير علامة / «كيتا» لوحدها = سؤال؛ «وذا على هنقرستيشن» = مقارنة
+}
+/* ⇒ { text, direct, dropped: [list|first] } — text null لو مفيش حاجة تفضل (المنادي يرجع للنص المعتمد من غير «نعم») */
+export function appsAnswer(raw, { asked = "", firstSaid = false } = {}) {
+  const direct = appsDirectQuestion(asked), dropped = [];
+  const isList = (l) => APP_WORD_RE.test(N(l)) && !/موقعنا|الموقع|website|freshcuts/i.test(l);
+  const isFirst = (l) => /\bFIRST\b/.test(l) || FIRST_LINE_RE.test(N(l));
+  const out = [];
+  let cut = false;
+  for (const line of String(raw || "").split("\n")) {
+    if (!direct && isList(line)) { dropped.push("list"); cut = true; continue; }
+    if (firstSaid && isFirst(line)) { dropped.push("first"); cut = true; continue; }
+    out.push(line);
+  }
+  let text = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (!direct) text = text.replace(/^\s*(?:نعم|أيوه|ايوه|أي|اي|أكيد|اكيد|yes)\s*[،,.!]?\s*/i, "");
+  if (cut) text = text.replace(/^و(?=ال|أ|ا)/, "");      // «والطلب من موقعنا…» بعد ما السطر اللي قبله اتشال ⇒ «الطلب من موقعنا…»
+  return { text: text || null, direct, dropped };
+}
+const DELIVER_TOKEN_RE = /^ب?نوصل(?:ك|كم|ه|ها|هم)?$/;
+const DELIVER_NOT = new Set(["ما", "لا", "مو", "مش", "ماراح", "راح", "اذا", "لو", "هل", "ان", "عشان", "نشوف", "اتاكد", "نتاكد", "اشوف", "للاسف", "يمكن", "ممكن", "ماندري"]);
+export function deliveryClaim(text) {
+  const t = N(text).split(" ");
+  for (let i = 0; i < t.length; i++) {
+    if (!DELIVER_TOKEN_RE.test(t[i])) continue;
+    if (DELIVER_NOT.has(t[i - 1]) || DELIVER_NOT.has(t[i - 2])) continue;
+    return t.slice(Math.max(0, i - 1), i + 3).join(" ");
+  }
+  const en = /\b(?:yes,? )?we (?:do )?deliver (?:to|in|inside|across|all)\b/i.exec(String(text || ""));
+  if (en && !/\b(?:if|whether|don'?t|do not|can'?t|cannot)\s+we\b/i.test(String(text || ""))) return en[0];
+  return null;
+}

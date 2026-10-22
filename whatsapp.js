@@ -213,6 +213,8 @@ export function registerCatalog(mod, { override = false } = {}) {
     defs[name] = {
       category: t.category, components: t.components, language: lang, variants: { [lang]: t.components },
       catalog: true, group: t.group || (t.meta && t.meta.group) || null, purpose: (t.meta && t.meta.purpose) || null,
+      /* MJ2: نص الرسالة الحرة جوّه النافذة لو مختلف عن القالب المعتمد (fc_order_pickup_ready: ميتا اعتمدت نص تاني من غير زر، والمالك عايز صياغته جوّه النافذة) */
+      ...(t.meta && t.meta.windowBody ? { window: { body: String(t.meta.windowBody), track: t.meta.windowTrack ? String(t.meta.windowTrack).slice(0, 20) : null } } : {}),
       // نفس شكل bind بتاع السجل: {body[], button[]} — + missing عشان المُرسل مايبعتش متغيّر فاضي
       bind: (ctx) => {
         if (!bindFn) return { body: [], button: [], missing: ["bindTemplate"] };
@@ -384,7 +386,7 @@ const isoOf = (ts) => {
   return Number.isFinite(n) && n > 0 ? new Date(n * 1000).toISOString() : null;
 };
 const MEDIA_AR = { image: "صورة", video: "فيديو", audio: "رسالة صوتية", voice: "رسالة صوتية", document: "ملف",
-  sticker: "ملصق", location: "موقع", contacts: "جهة اتصال", reaction: "تفاعل", unsupported: "رسالة مش مدعومة", revoke: "رسالة اتمسحت" };
+  sticker: "ملصق", location: "موقع", contacts: "جهة اتصال", reaction: "تفاعل", unsupported: "رسالة مش مدعومة", revoke: "رسالة اتمسحت", edit: "رسالة اتعدّلت" };
 
 /* نص أي رسالة (وارد/صدى/تاريخ) — والوسائط بتتكتب بين أقواس عشان الكاشير يفهم. */
 export function messageText(m) {
@@ -394,7 +396,19 @@ export function messageText(m) {
   if (m?.type === "reaction") return m.reaction?.emoji ? `[تفاعل ${m.reaction.emoji}]` : "[تفاعل]";
   if (m?.type === "document" && m.document?.filename) return `[ملف: ${m.document.filename}]`;
   if (m?.type === "template") return "[قالب]";
+  if (m?.type === "edit") { const e = editOf(m); return e && e.text ? `[عدّل رسالته] ${e.text}` : "[رسالة اتعدّلت]"; }      // MJ2
   return m?.type ? `[${MEDIA_AR[m.type] || m.type}]` : "";
+}
+/* MJ2 (…3177 ٢٢/١٠) — العميل عدّل رسالة: ميتا بتبعت رسالة نوعها edit (لأرقام «Coexistence»، زي revoke). كانت بتتحفظ «[edit]» وماجد يرد عليها
+   «ما وصلتني رسالتك بعد التعديل…». البوت بيسكت عليها (wabotrun IGNORED_TYPES)؛ هنا بس بنحفظ النص الجديد لو موجود (للصندوق) ومرجع الرسالة الأصلية
+   وأسماء الحقول اللي جت (شكل الحمولة لسه مش متأكدين منه — أول حالة اتحفظت «[edit]» من غير تفاصيل). */
+export function editOf(m) {
+  if (m?.type !== "edit") return null;
+  const e = m.edit && typeof m.edit === "object" ? m.edit : {};
+  const inner = e.message && typeof e.message === "object" ? e.message : e;
+  const t = inner?.text?.body ?? inner?.body ?? inner?.caption ?? null;
+  const ref = [e.original_message_id, e.message_id, e.id, m.context?.id].find((x) => typeof x === "string" && x.trim());
+  return { text: t != null && String(t).trim() ? String(t).slice(0, 1000) : null, original: ref ? String(ref).slice(0, 200) : null, keys: Object.keys(e).slice(0, 10) };
 }
 /* CR2 (١٦/١٠) — العميل مسح رسالة («حذف للجميع»): ميتا بتبعت رسالة نوعها revoke ومعاها revoke.original_message_id = wamid الرسالة اللي اتمسحت
    (مرجع ميتا: webhooks/reference/messages/revoke — لأرقام تطبيق واتساب بزنس «Coexistence»، لحد يومين من إرسال الرسالة). نسختنا من الرسالة
@@ -502,7 +516,8 @@ export function parseWebhook(body, { phoneId = null, phoneIds = [], ownNumbers =
             ? { lat: Number(m.location.latitude), lng: Number(m.location.longitude) } : null,
           ...(mediaOf(m) ? { media: mediaOf(m) } : {}),
           ...(revokeOf(m) ? { revoke: revokeOf(m) } : {}),      // CR2: الرسالة اتمسحت — مرجع الرسالة الأصلية
-          intent: m.type === "reaction" || m.type === "revoke" ? null : intentOf(text) });
+          ...(editOf(m) ? { edit: editOf(m) } : {}),      // MJ2: الرسالة اتعدّلت — النص الجديد (لو جه) + المرجع
+          intent: m.type === "reaction" || m.type === "revoke" || m.type === "edit" ? null : intentOf(text) });
       }
       for (const m of v.message_echoes || []) {
         out.echoes.push({ wamid: m.id, from: m.from, to: m.to, type: m.type, text: messageText(m), at: isoOf(m.timestamp), ...(mediaOf(m) ? { media: mediaOf(m) } : {}), ...(revokeOf(m) ? { revoke: revokeOf(m) } : {}) });
@@ -1285,9 +1300,12 @@ export function register(app, ctx, deps = {}) {
             const useV2 = Array.isArray(wb.windowV2Stages) && wb.windowV2Stages.includes(stage) && TEMPLATES[v2n] && typeof TEMPLATES[v2n].bind === "function";
             const textName = useV2 ? v2n : template;
             const textParams = useV2 ? TEMPLATES[v2n].bind({ ...orderData(o), ...o }) : params;
-            const body = withEta(renderTemplateText(textName, textParams)).slice(0, 1000);
-            const ub = (TEMPLATES[textName].components.find((c) => c.type === "BUTTONS")?.buttons || []).find((b) => b.type === "URL");
-            const url = ub ? String(ub.url).replace("{{1}}", String((textParams.button || [])[0] || "")) : null;
+            const win = TEMPLATES[textName].window || null;      // MJ2: صياغة جوّه النافذة غير نص القالب المعتمد
+            const vals = Array.isArray(textParams.body) ? textParams.body : [];
+            const body = withEta(win ? win.body.replace(/\{\{(\d+)\}\}/g, (m, i) => (vals[Number(i) - 1] != null ? cleanParam(vals[Number(i) - 1]) : m)) : renderTemplateText(textName, textParams)).slice(0, 1000);
+            const ub = win ? (win.track ? { type: "URL", text: win.track, url: `${STORE()}/track/{{1}}` } : null)
+              : (TEMPLATES[textName].components.find((c) => c.type === "BUTTONS")?.buttons || []).find((b) => b.type === "URL");
+            const url = ub ? String(ub.url).replace("{{1}}", win ? encodeURIComponent(String(order.order_no || "")) : String((textParams.button || [])[0] || "")) : null;
             const cUrl = courier && courier.wa ? courierChatUrl(order.order_no) : null;
             const cBody = cUrl && courier.first_name && TEMPLATES.fc_order_on_the_way_courier ? withEta(renderTemplateText("fc_order_on_the_way_courier", { body: [order.order_no, courier.first_name] })) : body;
             const payload = cUrl
@@ -1459,7 +1477,7 @@ export function register(app, ctx, deps = {}) {
     const ins = await pool.query(
       `INSERT INTO wa_messages(wamid, direction, phone_norm, status, body, pricing, source, msg_type)
        VALUES ($1,'in',$2,'received',$3,$4,'api',$5) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
-      [m.wamid, pn, String(m.text || `[${m.type}]`).slice(0, 1000), m.referral || m.unsupported || rv ? jb({ ...(m.referral ? { referral: m.referral } : {}), ...(m.unsupported ? { unsupported: m.unsupported } : {}), ...(rv ? { revoke: rv.meta } : {}) }) : null, m.type || null]);
+      [m.wamid, pn, String(m.text || `[${m.type}]`).slice(0, 1000), m.referral || m.unsupported || rv || m.edit ? jb({ ...(m.referral ? { referral: m.referral } : {}), ...(m.unsupported ? { unsupported: m.unsupported } : {}), ...(rv ? { revoke: rv.meta } : {}), ...(m.edit ? { edit: { original: m.edit.original, keys: m.edit.keys } } : {}) }) : null, m.type || null]);
     if (ins.rowCount === 0) return; // ويب هوك مكرر — اتعالج قبل كده
     if (rv && rv.ref) await pool.query("UPDATE wa_messages SET revoked_wamid=$2 WHERE wamid=$1", [m.wamid, rv.ref]).catch((e) => console.error("[wa] revoke ref:", e.message));
     if (m.media) await pool.query("UPDATE wa_messages SET media=$2::jsonb WHERE wamid=$1", [m.wamid, jb(m.media)]).catch((e) => console.error("[wa] media meta:", e.message));

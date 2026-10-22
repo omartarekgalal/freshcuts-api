@@ -647,7 +647,7 @@ export function makeAssistTools(deps = {}) {
   async function quote_delivery(phone, { lat, lng, total = 0 } = {}) {
     let la = Number(lat), ln = Number(lng), from = "given";
     if (!(Number.isFinite(la) && Number.isFinite(ln))) { const l = deps.lastLocation ? await deps.lastLocation(phone) : null; if (l && Number.isFinite(Number(l.lat))) { la = Number(l.lat); ln = Number(l.lng); from = "shared_in_chat"; } }
-    if (!(Number.isFinite(la) && Number.isFinite(ln))) return { ok: false, error: "need_location", hint: "in ONE message: yes, we deliver inside Jeddah («نعم نوصل داخل جدة 👍»), then ask them to share their location pin here so you can confirm their address and the fee. State no fee before the pin." };
+    if (!(Number.isFinite(la) && Number.isFinite(ln))) return { ok: false, error: "need_location", hint: "in ONE message: do not say yet that we deliver to them (some districts are outside our range — MJ2), ask them to share their location pin here so you can check that delivery reaches them and the fee. State no fee before the pin." };
     let r; try { r = await deps.quote({ lat: la, lng: ln, orderTotal: Number(total) || 0 }); } catch { r = null; }
     if (!r || typeof r.deliverable !== "boolean") return unavailable("delivery_quote");
     if (r.deliverable) return { ok: true, deliverable: true, fee: Number(r.fee), for_total: Number(total) || 0, to_next_tier: Number(r.toNextTier) > 0 ? round2(r.toNextTier) : null, next_tier_fee: Number.isFinite(Number(r.nextTierFee)) ? Number(r.nextTierFee) : null,

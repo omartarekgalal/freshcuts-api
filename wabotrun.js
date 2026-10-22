@@ -72,7 +72,7 @@ import { FREE_STAGES } from "./waswitches.js";      // RT2 مراجعة (١٧/١
 import { JOURNEY_GROUP, JOURNEY_GROUP_AR, JOURNEY_DEFAULTS, JOURNEY_NUMS, JOURNEY_BOOLS, JOURNEY_SCHEMA, journeyCfg, holdUntil, deferDecision, PROACTIVE_KEYS, PROACTIVE_JOB_KINDS, PAID_CONFIRM_SQL } from "./wajourney.js";      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض
 import { OF_KIND, OF_GROUP, OF_GROUP_AR, OF_DEFAULTS, OF_NUMS, OF_BOOLS, OF_SCHEMA, OF_DDL, ofConfig, openingPlan, cartSnapshotOf, makeOpenFollowUp } from "./waopenfu.js";      // WO1 (١٩/١٠): «نكمّل لما نفتح»
 import { LEARN_GROUP, LEARN_GROUP_AR, LEARN_DEFAULTS, LEARN_NUMS, LEARN_BOOLS, LEARN_SCHEMA, learnConfig, makeLearn, registerLearnRoutes } from "./walearn.js";      // BF1 (١٩/١٠): الحرّاس + سجل الأخطاء + الدروس + الفحص الليلي
-import { promiseProblems, isGoAhead, spamKind, comingKind, loneLatinGreeting, adPrefill, locationConfirm, socialLink, asksStaffByName, partySizeOf, altBoxFor, praiseOnly, complimentOnly, praiseWhat, complaintDetail, etaAsk } from "./waguard.js";      // BF1
+import { promiseProblems, isGoAhead, spamKind, comingKind, loneLatinGreeting, adPrefill, locationConfirm, socialLink, asksStaffByName, partySizeOf, altBoxFor, praiseOnly, complimentOnly, praiseWhat, complaintDetail, etaAsk, appsAnswer } from "./waguard.js";      // BF1
 import { CHAT_SQL, chatSince, chatBlock, pendingStaffQuestion, makeLanes, etaTold } from "./wachat.js";      // MJ1 (٢٢/١٠): ماجد بيشوف المحادثة + طابور لكل رقم
 import { ordersSince, recentOrdersOf, existingOrderBrief, POS_ITEMS_SQL } from "./waorders.js";      // BF1 A: طلب من أي قناة (موقع / كاشير / صالة)
 import { COURIER_JOB_DEFAULTS, COURIER_JOB_SCHEMA, COURIER_JOB_SCHEMA_GROUP, courierJobConfig, courierJobFromBody } from "./courierwa-cfg.js";      // CW1
@@ -257,6 +257,9 @@ export const TEXTS = Object.freeze({
     "We're sorry about that 🙏\nI've passed your chat to the branch manager.\nWe have your order {order_no} in front of us.\n{wait}", ["order_no"], ["wait"]),
   complaint_ask: t("شكوى (نطلب رقم الطلب)", "نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\nلو تكرّمت اكتب رقم الطلب (يبدأ بحرف W) عشان نخدمك أسرع.\n{wait}",
     "We're sorry about that 🙏\nI've passed your chat to the branch manager.\nPlease send your order number (it starts with W) so we can help faster.\n{wait}", [], ["wait"]),
+  /* MJ2 (…3177 ٢٢/١٠: رأي في أسعار التطبيقات اتحوّل شكوى ⇒ «اكتب رقم الطلب (يبدأ بحرف W)» لعميلة مالهاش ولا طلب من الموقع): مفيش طلب على الرقم ومفيش رقم طلب في كلامه ⇒ من غير سطر رقم الطلب */
+  complaint_plain: t("شكوى (مفيش طلب من الموقع على الرقم)", "نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\n{wait}",
+    "We're sorry about that 🙏\nI've passed your chat to the branch manager.\n{wait}", [], ["wait"]),
   problem: t("مشكلة دفع / موقع / كود", "نعتذر عن المشكلة 🙏 حوّلتها لموظف.\n{wait}",
     "Sorry about the trouble 🙏 I've passed it to a staff member.\n{wait}", [], ["wait"]),
   change: t("تعديل / إلغاء طلب", "تعديل الطلب أو إلغاؤه يحتاج موظف 🙏 حوّلت طلبك له.\n{wait}",
@@ -607,7 +610,7 @@ const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "h
   "cw:order": "change", "cw:stop": "stop", "stop:updates": "stop_updates", "stop:ok": "ack", "stop:undo": "start",      // M2: «الغاء» لوحدها ⇒ سؤال بزرارين؛ الإيقاف ⇒ العروض بس + زر تحديثات الطلب
   "rf:yes": "rf_yes", "rf:no": "rf_no" };      // FU1: زرّين رسالة «متابعة اللي ردّ»
 const MENU_IDS = { main: "main", boxes: "boxes", cats: "cats", offers: "offers", delivery: "delivery", pickup: "pickup", status: "status", hours: "hoursloc", location: "location", packs: "packs", pay: "payment", human: "human", channel: "channel" };
-const IGNORED_TYPES = new Set(["reaction", "sticker", "system", "ephemeral", "request_welcome", "order", "revoke"]);      // PK1: رسالة العميل مسحها (revoke) كانت بتوصل للمساعد كنص «[revoke]» وبيرد عليها بالإنجليزي (١٣/١٠)
+const IGNORED_TYPES = new Set(["reaction", "sticker", "system", "ephemeral", "request_welcome", "order", "revoke", "edit"]);      // PK1: رسالة العميل مسحها (revoke) كانت بتوصل للمساعد كنص «[revoke]» وبيرد عليها بالإنجليزي (١٣/١٠) · MJ2: «[edit]» (العميل عدّل رسالته) اترد عليها من ماجد «ما وصلتني رسالتك بعد التعديل» (…3177 ٢٢/١٠) ⇒ سكوت
 const MEDIA_TYPES = new Set(["image", "audio", "voice", "video", "document", "contacts", "location"]);
 /* ═══ MJ1 (١٧/١٠) — الطلب الشغّال أولاً ═══
    يوم ١٦/١٠: صلاح (طلبه في الطريق: موقع + «دور 3. شقه 9» + صورة ⇒ «تبيه نفسه؟» و«نعم نوصل لك 👍 الرسوم…») · حماده (دفع وبعدها بثواني موقع + «زود الخبز» ⇒ «نفس طلبك السابق؟»).
@@ -1396,7 +1399,8 @@ export function buildReply(key, c) {
     }
     case "faq": {
       const row = cfg.faq?.[String(c.arg)] || {};
-      const ans = faqAnswer(String((lang === "en" ? row.en || row.ar : row.ar) || ""), c.asked || "");      // مفيش ترجمة ⇒ العربي المعتمد. السطور المشروطة: بس لو العميل سأل عنها (PS3)
+      let ans = faqAnswer(String((lang === "en" ? row.en || row.ar : row.ar) || ""), c.asked || "");      // مفيش ترجمة ⇒ العربي المعتمد. السطور المشروطة: بس لو العميل سأل عنها (PS3)
+      if (ans && String(c.arg) === "apps" && c.asked) ans = appsAnswer(ans, { asked: c.asked }).text || ans;      // MJ2: رأي في أسعار التطبيقات ⇒ سطر المقارنة من غير «نعم، تجدنا على…»
       if (!ans) throw new FaqMissing(String(c.arg));
       return { body: F("faq_body", { answer: ans }) };
     }
@@ -1513,7 +1517,8 @@ export function buildReply(key, c) {
       if (late) r.handoff = ["order_late", "urgent"]; else if (sk.handoff) r.handoff = ["order_issue", "urgent"];
       return r;
     }
-    case "complaint": return { body: order ? F("complaint_known", { order_no: order.order_no, wait: wait() }) : F("complaint_ask", { wait: wait() }) };
+    case "complaint": return { body: order ? F("complaint_known", { order_no: order.order_no, wait: wait() })
+      : data.anyWebOrder === false && !data.orderNoAsked ? F("complaint_plain", { wait: wait() }) : F("complaint_ask", { wait: wait() }) };      // MJ2: مالوش ولا طلب موقع ⇒ مانطلبش رقم يبدأ بـW
     case "dishfact": {
       /* إجابة السؤال الواحد من حقايق الأصناف. مقفول من اللوحة، أو الحالة مش مؤكدة ⇒ موظف. حساسية شديدة ⇒ موظف (عاجل) من غير أي كلام عن صنف. */
       const a = c.arg && typeof c.arg === "object" ? c.arg : {};
@@ -2590,6 +2595,12 @@ export function register(app, ctx, deps = {}) {
         const tno = th && th[0] && /^[A-Za-z0-9-]{3,30}$/.test(String(th[0].order_no || "")) ? String(th[0].order_no) : null;
         if (tno) { const r2 = await q(`/*mj1:order_by_no*/ SELECT ${cols} FROM shop_orders WHERE order_no=$1 AND status NOT IN ('expired','pending_payment') LIMIT 1`, [tno]); if (r2 && r2[0]) { data.order = r2[0]; data.orderFromThread = true; } }
       }
+      /* MJ2: شكوى ومفيش طلب قريب ⇒ هل الرقم ده طلب من الموقع أصلاً في أي وقت؟ لأ (والقاعدة ردّت) ⇒ complaint_plain من غير «اكتب رقم الطلب (يبدأ بحرف W)». القاعدة وقعت ⇒ null ⇒ زي الأول. */
+      data.orderNoAsked = orderNo || null;
+      if (!data.order && !orderNo && !data.orderDbFailed && need("complaint") && /^5\d{8}$/.test(String(phone || ""))) {
+        const any = await q(`/*mj2:any_web_order*/ SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') LIMIT 1`, [phone]);
+        data.anyWebOrder = any === null ? null : any.length > 0;
+      }
     }
     /* FD1: رد على رسالة «طبقك المفضل» (الضغطة أو «نعم» أول رد — القرار في work) ⇒ العرض المخزّن للرقم ده بس */
     data.campaign = key === "order" && campaign && campaign.fav ? campaign : null;
@@ -3503,7 +3514,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       const ls = await q(`SELECT l.phone_norm, l.at, l.lang FROM wa_bot_log l
                            WHERE l.at > NOW() - make_interval(mins => $1::int + 60) AND l.at <= NOW() - make_interval(mins => $1::int)
                              AND l.id = (SELECT max(x.id) FROM wa_bot_log x WHERE x.phone_norm = l.phone_norm)
-                             AND l.decision = 'silent' AND l.reason IN ('out_of_scope','ignored_type','auto_reply_covered') AND COALESCE(l.msg_type,'') NOT IN ('revoke','reaction','sticker','system','ephemeral','request_welcome')
+                             AND l.decision = 'silent' AND l.reason IN ('out_of_scope','ignored_type','auto_reply_covered') AND COALESCE(l.msg_type,'') NOT IN ('revoke','reaction','sticker','system','ephemeral','request_welcome','edit')
                            ORDER BY l.at LIMIT 20`, [Math.ceil(cfg.leadFollowUpMin)]);      // BF1 A (…9821: ❤️ بعد «شكراً» ⇒ «ما قدرنا نخدمك»): التفاعل/الملصق مش رسالة محتاجة رد
       for (const l of ls || []) await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`lead:${l.phone_norm}:${riyadhDay(now)}`, l.phone_norm, "lead_followup", now.toISOString(), jb({ at: new Date(l.at).toISOString(), lang: l.lang === "en" ? "en" : "ar" }), null]);
     }
@@ -4015,7 +4026,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
   const HUMAN_OUT = `m.direction = 'out' AND COALESCE(m.status,'') NOT IN ('failed','skipped') AND ((m.source = 'echo' AND COALESCE(m.echo_kind,'staff') <> 'auto') OR (m.template IS NULL AND COALESCE(m.source,'api') NOT IN ('bot','window','echo')))`;
   /* $1 الدقايق · $2 أسباب السكوت. أول رسالة ساكتة بعد آخر رد بشري وبعد آخر تحويل، عدّى عليها $1 دقيقة (ولسه جوّه ساعة بعدها) */
   const STAFF_SILENT_SQL = `/*ss:candidates*/ SELECT l.phone_norm, min(l.at) AS first_at FROM wa_bot_log l
-     WHERE l.decision = 'silent' AND l.reason = 'never_reply' AND l.detail = ANY($2::text[]) AND COALESCE(l.msg_type,'') NOT IN ('revoke','reaction')
+     WHERE l.decision = 'silent' AND l.reason = 'never_reply' AND l.detail = ANY($2::text[]) AND COALESCE(l.msg_type,'') NOT IN ('revoke','reaction','edit')
        AND l.at > NOW() - make_interval(mins => $1::int + 60)
        AND l.at > COALESCE((SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = l.phone_norm AND ${HUMAN_OUT}), '-infinity'::timestamptz)
        AND l.at > COALESCE((SELECT max(h.at) FROM wa_handovers h WHERE h.phone_norm = l.phone_norm), '-infinity'::timestamptz)
@@ -4563,7 +4574,10 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const bc = { cfg, lang: L, data, referral: null, factual: false, arg: null };
     let reply, handoff = null;
     try {
-      if (r.handover) { const [k, tuple] = ASSIST_HANDOVER[r.handover.reason] || ASSIST_HANDOVER.needs_staff; reply = buildReply(k, k === "dishfact" ? { ...bc, arg: { id: null, text: "حساسية شديدة" } } : bc); handoff = tuple; reply = { body: reply.body }; }
+      if (r.handover) { const [k, tuple] = ASSIST_HANDOVER[r.handover.reason] || ASSIST_HANDOVER.needs_staff;
+        if (k === "complaint" && data && !data.order && cls.key !== "complaint") { try { const dc = await loadData({ settings, cfg, phone, orderNo: cls.entities?.orderNo || null, key: "complaint", now, know });      // MJ2: نص الشكوى بيعرف الطلب (أو إن مفيش طلب)
+          for (const f of ["order", "orderFromThread", "orderDbFailed", "anyWebOrder", "orderNoAsked"]) if (dc[f] !== undefined) data[f] = dc[f]; } catch (e) { console.error("[assist] complaint order:", e.message); } }
+        reply = buildReply(k, k === "dishfact" ? { ...bc, arg: { id: null, text: "حساسية شديدة" } } : bc); handoff = tuple; reply = { body: reply.body }; }
       else { let map = null; if (r.photoItem && !r.cart && !r.location) { try { map = { title: textOf(cfg, "cta_menu", L), url: `${STORE}/l/wab-menu#item-${r.photoItem}` }; } catch { map = null; } }      // PS5: «كيف شكله؟» ⇒ زر يفتح صورة الصنف في المنيو
         if (r.location && !r.cart) { try { map = buildReply("location", bc).cta || null; } catch { map = null; } }      // PS3: رد الموقع ⇒ زر «افتح الخريطة» (نفس رابط بوت القواعد). السلة لها الأولوية (زر واحد في الرسالة)
         if (r.menu && !r.cart && !map) { try { map = { title: textOf(cfg, "cta_menu", L), url: `${STORE}/l/wab-menu` }; } catch { map = null; } }      // PK1: «وش عندكم؟» ⇒ زر يفتح المنيو كامل
