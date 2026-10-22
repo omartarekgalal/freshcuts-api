@@ -100,7 +100,8 @@ import * as whatsapp from "./whatsapp.js";
 import * as wainbox from "./wainbox.js";
 import * as wacloud from "./wacloud.js";
 import * as wahealth from "./wahealth.js";      // WH1 (١٦/١٠): مراقب صحة توصيل واتساب + تنبيه المالك
-import * as revpulse from "./revpulse.js";      // RP2 (١٦/١٠): رسالة الدخل الدورية للمالك (واتساب حر لو النافذة مفتوحة، وإلا SMS)
+import * as revpulse from "./revpulse.js";
+import * as opsreport from "./opsreport.js";      // 🧭 OPS1 (عمر ٢٢/١٠): تقرير الوردية + كارت الفريق + «قفل من غير رد» + checklist الوردية      // RP2 (١٦/١٠): رسالة الدخل الدورية للمالك (واتساب حر لو النافذة مفتوحة، وإلا SMS)
 import * as carts from "./carts.js";
 import * as freebar from "./freebar.js";
 import * as openwait from "./openwait.js";
@@ -3460,6 +3461,9 @@ adsreport.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), adspen
 /* 📲 RP2 (عمر ١٦/١٠ «عايز رسالة دورية بالدخل»): الدخل كل ساعتين ١ الضهر → ١ بالليل + ملخص القفلة ٣:١٥ للمالك — أرقام
    bizApi.salesData نفسها (نفس /api/reports/biz/sales?preset=today)، واتساب حر لو نافذة المالك مفتوحة وإلا SMS خدمي؛ عمره ما قالب مدفوع. */
 revpulse.register(app, moduleCtx, { biz: bizApi, wa: waApi, health: () => waHealthApi, sendSms: (m) => accounts.sendSms(m) });
+/* 🧭 OPS1 (عمر ٢٢/١٠ «عالجلي مشاكل التشغيل وقصور الموظفين»): GET /api/cms/ops-report (تقرير أي وردية/يوم) + الإرسال المجدول (مقفول افتراضياً
+   — settings.opsReport.enabled من اللوحة) + رصد «قفل من غير رد» كل دقيقة (تسجيل بس؛ التنبيه بمفتاح) + checklist الوردية /api/portal/shift. */
+opsreport.register(app, moduleCtx, { wa: waApi, sendSms: (m) => accounts.sendSms(m), push: () => portalApi.push, requirePortal: portalApi.requirePortal });
 // mkhub بيقرا الصرف المتطابق مع اليوم التشغيلي من هنا (عقد: {days:[{day, meta, whatsapp, snapchat, tiktok}]}، meta شامل الواتساب)
 globalThis.__fcAlignedSpend = async (from, to) => ({
   source: "ad_spend_hourly",

@@ -130,6 +130,8 @@ const PATH_SECTIONS = [
   // KP1 (١٧/١٠): أداء الفريق = «الطلبات» (العمليات تشوفه)؛ أهدافه «إعدادات» (والكتابة للمالك بس جوّه المسار)
   [/^\/api\/cms\/staff-kpis\/settings/, "settings"],
   [/^\/api\/cms\/staff-kpis/, "orders"],
+  // OPS1 (٢٢/١٠): تقرير الوردية = «الطلبات»؛ إعداداته «إعدادات» (والكتابة للمالك بس جوّه المسار)
+  [/^\/api\/cms\/ops-report\/settings/, "settings"],
   [/^\/api\/cms\/(ops|sla)/, "orders"],
   [/^\/api\/(shop\/coupons|discounts)/, "discounts"],
   [/^\/api\/(finance|keeta-payouts|costing|staff-meals|staff_meals|pay\/|influencer-payments)/, "finance"],
