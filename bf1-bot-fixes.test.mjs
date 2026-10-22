@@ -87,7 +87,7 @@ test("B decide: a message older than maxAgeMinutes goes to staff only when TYPED
 test("أ registry seed: every finding of the 19/10 review is a confirmed row with a known type, a masked phone, the wrong reply, the correct behaviour and the guard", () => {
   assert.ok(L.REVIEW_SEED.length >= 31);
   for (const r of L.REVIEW_SEED) {
-    assert.ok(L.MISTAKE_TYPES[r.type], r.mkey); assert.match(r.mkey, /^rev1910:[A-L]:|^rev2010:[JP]:/);      /* BF3: + مراجعة ٢٠/١٠ */ assert.match(r.phone_masked, /^…\d{4}$/);
+    assert.ok(L.MISTAKE_TYPES[r.type], r.mkey); assert.match(r.mkey, /^rev1910:[A-L]:|^rev2010:[JP]:|^rev2210:[ACDRSX]:/);      /* BF3: + مراجعة ٢٠/١٠ · MJ1: + مراجعة ٢٢/١٠ */ assert.match(r.phone_masked, /^…\d{4}$/);
     assert.ok(r.example && r.correct && r.guard, r.mkey); assert.doesNotMatch(`${r.example} ${r.wrong_reply || ""}`, /05\d{8}|9665\d{8}|\b5\d{8}\b/, `${r.mkey}: no full phone`);
   }
   for (const letter of "ABCDEFGHIJKL") assert.ok(L.REVIEW_SEED.some((r) => r.mkey.startsWith(`rev1910:${letter}:`)), `finding ${letter} is in the registry`);
@@ -165,7 +165,7 @@ test("ج nightly gate: after selfReviewHour:selfReviewMinute Riyadh, once per bu
 test("settings: every BF1 knob is a dashboard setting with a schema row, safe defaults, and range checks on save", () => {
   const def = R.botConfig({});
   assert.deepEqual([def.orderAwareHours, def.promiseGuard, def.goAheadCart, def.campExpiredAlt, def.staffStopsMajed, def.claimSilentMin, def.claimEscalate, def.closedComplaintAtOpen, def.spamQuiet, def.lessonsEnabled, def.lessonsMaxChars, def.selfReview, def.selfReviewHour, def.selfReviewMinute],
-    [3, true, true, true, true, 3, true, true, true, true, 1500, true, 4, 30]);
+    [3, true, true, true, true, 3, true, true, true, true, 2000, true, 4, 30]);      // MJ1: الدروس ١٥٠٠ ⇒ ٢٠٠٠ حرف
   for (const k of Object.keys(L.LEARN_DEFAULTS)) assert.ok(R.SCHEMA[k], `${k} has a schema row`);
   const bad = R.configFromBody({ claimSilentMin: 99 }, {}); assert.equal(bad.ok, false); assert.ok(bad.errors.includes("claimSilentMin"));
   const ok = R.configFromBody({ claimSilentMin: 5, selfReview: false, orderAwareHours: 6 }, {}); assert.equal(ok.ok, true);

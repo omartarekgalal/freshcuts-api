@@ -31,14 +31,28 @@ export const LEARN_DEFAULTS = Object.freeze({
   spamQuiet: true,             // I: سبام (رابط دعوة / تيمو…) ⇒ سطر واحد، ولا «أنا معك» ولا تنبيه
   shortEnglishArabic: true,    // BF3 (…4268 ٢٠/١٠): «Online» / «Offers» / «Menu» لوحدها أو نص زر ⇒ الرد بالعربي (البوت وماجد)
   praiseThanks: true,          // BF3 (…5082 ٢٠/١٠): مدح الأكل ⇒ شكر قصير، مش تحويل لموظف
+  /* MJ1 (٢٢/١٠ — «ماجد بيتلغبط ومش بيفهم المحادثة»): wachat.js */
+  serialChat: true,            // رسايل نفس العميل بتتعالج واحدة ورا التانية (مش بالتوازي) — مفيش ردّين متناقضين ولا جلستين
+  mergeBurst: true,            // …والنصوص اللي وصلت ورا بعض وهي مستنية دورها = دور واحد لماجد
+  mergeSec: 15,                // …لو بين الرسالة والتانية الثواني دي أو أقل
+  majedSeesChat: true,         // ماجد بيشوف اللي اتقال في المحادثة من آخر رد ليه (الموظف، البوت، تحديثات الطلب، الحملات)
+  chatLookbackHours: 6,        // …وفي أول دور في محادثة جديدة: آخر الساعات دي
+  chatMaxLines: 14,            // …بحد أقصى سطور
+  answerToStaff: true,         // الموظف سأل العميل سؤال ⇒ رد العميل للموظف (تأكيد قصير + تنبيه)، مش لماجد ولا رد بوت
+  staffQuestionHours: 2,       // …لو السؤال من الساعات دي أو أقل
+  complaintDetailAck: true,    // تفاصيل شكوى مكتوبة بعد تقييم واطي / ملاحظة ⇒ «وصلت ملاحظتك»، مش كارت صنف من المنيو
+  adPrefillOffers: true,       // نص زر إعلان ميتا الجاهز («هل يمكنني الحصول على مزيد من المعلومات حول هذا؟») ⇒ العروض بأسعارها، مش «وش تقصد بهذا؟»
+  etaFromChat: true,           // «كم باقي ويوصل؟» ⇒ الوقت اللي اتبعتله في رسالة «في الطريق» (⏱ يوصلك خلال …)، مش «ما عندي وقت وصول»
   lessonsEnabled: true,        // ب: الدروس بتتبعت لماجد
-  lessonsMaxChars: 1500,       // …بحد أقصى
+  lessonsMaxChars: 2000,       // …بحد أقصى (MJ1: ١٥٠٠ ⇒ ٢٠٠٠ عشان درسين ٢٢/١٠ مايقصّوش دروس ١٩/١٠ و٢٠/١٠)
   selfReview: true,            // ج: الفحص الليلي
   selfReviewHour: 4, selfReviewMinute: 30,   // …بتوقيت الرياض (بعد القفل)
   selfReviewMax: 60,           // …أقصى عدد صفوف «مشتبه» في الليلة
 });
-export const LEARN_NUMS = Object.freeze({ orderAwareHours: [1, 24], claimSilentMin: [0, 30], lessonsMaxChars: [300, 4000], selfReviewHour: [0, 11], selfReviewMinute: [0, 59], selfReviewMax: [5, 300] });
-export const LEARN_BOOLS = Object.freeze(["promiseGuard", "goAheadCart", "campExpiredAlt", "staffStopsMajed", "claimEscalate", "closedComplaintAtOpen", "spamQuiet", "shortEnglishArabic", "praiseThanks", "lessonsEnabled", "selfReview"]);
+export const LEARN_NUMS = Object.freeze({ orderAwareHours: [1, 24], claimSilentMin: [0, 30], lessonsMaxChars: [300, 4000], selfReviewHour: [0, 11], selfReviewMinute: [0, 59], selfReviewMax: [5, 300],
+  mergeSec: [3, 60], chatLookbackHours: [1, 24], chatMaxLines: [4, 30], staffQuestionHours: [1, 12] });      // MJ1
+export const LEARN_BOOLS = Object.freeze(["promiseGuard", "goAheadCart", "campExpiredAlt", "staffStopsMajed", "claimEscalate", "closedComplaintAtOpen", "spamQuiet", "shortEnglishArabic", "praiseThanks", "lessonsEnabled", "selfReview",
+  "serialChat", "mergeBurst", "majedSeesChat", "answerToStaff", "complaintDetailAck", "adPrefillOffers", "etaFromChat"]);      // MJ1
 const clamp = (v, [lo, hi], d) => { const n = Number(v); return Number.isFinite(n) && v !== "" && v !== null ? Math.min(hi, Math.max(lo, n)) : d; };
 export function learnConfig(x = {}) {
   const src = x && typeof x === "object" ? x : {};
@@ -61,6 +75,17 @@ export const LEARN_SCHEMA = Object.freeze({
   spamQuiet: S("boolean", "سبام ⇒ سطر واحد وبس", "رابط دعوة / تيمو / شي إن / «اربح» ⇒ سطر «الرقم ده لطلبات فريش كاتس» مرة، ومفيش «أنا معك» ولا تحويل ولا تنبيه للفريق."),
   shortEnglishArabic: S("boolean", "كلمة إنجليزي لوحدها أو نص زر ⇒ الرد بالعربي", "«Online» أو «Offers» أو «Menu» أو «Hi» أو نص زر إعلان قصير مش لغة العميل (عميلنا سعودي) ⇒ البوت وماجد يردّوا بالعربي. الإنجليزي بس لما العميل يكتب جملة إنجليزي حقيقية (٣ كلمات أو أكتر)، أو لو المحادثة كانت إنجليزي قبلها. مقفول ⇒ الحكم القديم (كلمة زي «Menu» ⇒ إنجليزي)."),
   praiseThanks: S("boolean", "مدح الأكل ⇒ شكر قصير، مش تحويل لموظف", "«الشوي انهارده أحسن من امبارح» أو «تحفة» أو «ما شاء الله» ⇒ سطر شكر دافي («تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً») من غير بيع ولا تحويل. أي كلمة سلبية («بس»، «بارد»، «مجاش»…) ⇒ مش مدح ويمشي في مسار الشكوى زي ما هو. نص الشكر في نصوص البوت (praise)."),
+  serialChat: S("boolean", "رسايل العميل الواحد بتتعالج واحدة ورا التانية", "العميل بعت كذا رسالة ورا بعض ⇒ ماجد والبوت بيردّوا على واحدة بعد ما اللي قبلها تخلص (زي الإنسان)، مش بالتوازي. من غيرها: «تخفه» + «بجد» + «كريب» في ثانيتين كانوا بياخدوا ٣ ردود متناقضة من ٣ جلسات (…5960 ٢٠/١٠)، و«انا هاجي الفرع» + «استلم» سلتين (…1139)."),
+  mergeBurst: S("boolean", "…والنصوص اللي ورا بعض = رد واحد", "رسايل نصية وصلت وهي لسه مستنية دورها (الثواني اللي تحت) بتتقرا مع بعض في دور واحد لماجد، ورد واحد. الضغطات والصور والموقع و«إيقاف / موظف» بتتعالج لوحدها دايماً."),
+  mergeSec: NS("mergeSec", "…أقصى فرق بين الرسالتين", "رسالتين بينهم الثواني دي أو أقل وهما مستنيين في الطابور بيندمجوا.", "ثانية"),
+  majedSeesChat: S("boolean", "ماجد بيشوف كل اللي اتقال في المحادثة", "قبل كل رد: اللي الموظف كتبه (البورتال / الموبايل)، ونص رد البوت، ورسايل الطلب («في الطريق ⏱ يوصلك خلال …»)، والحملة اللي وصلت العميل — من آخر رد لماجد. من غيرها كان بيسأل اللي اتجاوب ويناقض اللي اتقال («ما عندي وقت وصول» …0450 ٢١/١٠)."),
+  chatLookbackHours: NS("chatLookbackHours", "…في أول رد بمحادثة جديدة: آخر", "أول دور لماجد في محادثة (أو بعد ما المحادثة القديمة قفلت) بيشوف رسايل الساعات دي.", "ساعة"),
+  chatMaxLines: NS("chatMaxLines", "…بحد أقصى سطور", "الأحدث بس لو زادوا (كل سطر مقصوص ومخفي فيه الأرقام والأسماء).", "سطر"),
+  answerToStaff: S("boolean", "الموظف سأل العميل ⇒ رده للموظف", "آخر رسالة للعميل كانت سؤال من الموظف («حضرتك الطلب كان الساعه كام» / «الاوردر بأسم مين») وعدّت مدة سكوت البوت ⇒ رد العميل مايروحش لماجد ولا يتجاوب من البوت: سطر «وصلت ✅ بلّغت الموظف» + تنبيه للموظف (…0340 ٢٢/١٠ اتقالها «سؤالك يحتاج واحد من الفريق»)."),
+  staffQuestionHours: NS("staffQuestionHours", "…لو سؤال الموظف من آخر", "بعد المدة دي رد العميل بيتعامل كلام جديد عادي.", "ساعة"),
+  complaintDetailAck: S("boolean", "تفاصيل الشكوى ⇒ «وصلت ملاحظتك»", "بعد تقييم واطي أو «عندي ملاحظة» العميل كتب وش صار («طلبت بيتزا … لكن … خالية من الجبنة») ⇒ سطر «وصلت ملاحظتك ✅ والمدير يتابعها معك» مرة واحدة — مش كارت صنف من المنيو (…0340 ٢٢/١٠ خدت «كريب ميكس جبن 20 ر.س»)."),
+  adPrefillOffers: S("boolean", "نص زر إعلان ميتا الجاهز ⇒ العروض بأسعارها", "«مرحبًا! هل يمكنني الحصول على مزيد من المعلومات حول هذا؟» (أو بالإنجليزي) نص ميتا مش كلام العميل ⇒ ماجد يعرض ٢–٣ عروض حية بأسعارها ويسأل أي واحد شافه، من غير «وش تقصد بـ«هذا»؟» (…9131 ٢٠/١٠)."),
+  etaFromChat: S("boolean", "«كم باقي ويوصل؟» ⇒ الوقت اللي اتبعتله", "رسالة «في الطريق» فيها «⏱ يوصلك خلال 21~31 دقيقة · قبل 11:40» ⇒ أداة حالة الطلب بترجّعه وماجد بيكرره، مش «ما عندي وقت وصول محدد»."),
   lessonsEnabled: S("boolean", "دروس الأخطاء بتتبعت لماجد", "الأخطاء المتأكدة اللي ليها «ماتعملش / اعمل» ومفتاح الدرس شغّال ⇒ كتلة قصيرة في تعليمات ماجد. كل تغيير نسخة في السجل."),
   lessonsMaxChars: NS("lessonsMaxChars", "دروس الأخطاء: الحجم الأقصى", "اللي يزيد بيتقص (الأحدث تأكيداً أولاً).", "حرف"),
   selfReview: S("boolean", "الفحص الليلي لردود البوت وماجد", "كل ليلة بعد القفل: فحوص ثابتة على ردود اليوم (قراية بس، من غير موديل) ⇒ صفوف «مشتبه» في سجل الأخطاء للمالك يأكدها أو يشيلها."),
@@ -91,6 +116,10 @@ export const MISTAKE_TYPES = Object.freeze({
   recipe_disclosure: "كلام وصفة / مقادير / مورّد",
   out_of_hours_send: "رسالة مبادِرة والمطعم مقفول",
   repeated_question: "نفس السؤال اتكرر",
+  lost_context: "ماجد ماشافش اللي اتقال في المحادثة (موظف / البوت / تحديث الطلب)",      // MJ1
+  parallel_reply: "ردّين على نفس الكلام في نفس اللحظة (أدوار بالتوازي)",      // MJ1
+  answered_staff_question: "رد على كلام العميل للموظف",      // MJ1
+  contradiction: "رد ناقض رسالة اتبعتت للعميل",      // MJ1
   other: "غير ذلك",
 });
 export const MISTAKE_STATUSES = Object.freeze({ suspected: "مشتبه", confirmed: "متأكدة", fixed: "اتصلّحت", dismissed: "مش غلطة" });
@@ -115,6 +144,7 @@ const riyadhDay = (d) => new Date((d instanceof Date ? d.getTime() : Number(d)) 
 /* ── أ) مراجعة ١٩/١٠ متزرّعة (٣١ ملاحظة في ١٧ محادثة) — status confirmed، و«ماتعملش / اعمل» لماجد في الغلطات اللي عن كلامه ── */
 const R = (key, type, phone, example, wrong, correct, guard, lessonDont = null, lessonDo = null) => ({ mkey: `rev1910:${key}`, type, phone_masked: phone, example, wrong_reply: wrong, correct, guard, lesson_dont: lessonDont, lesson_do: lessonDo, day: "2026-10-18" });
 const R2 = (key, type, phone, example, wrong, correct, guard, lessonDont = null, lessonDo = null) => ({ ...R(key, type, phone, example, wrong, correct, guard, lessonDont, lessonDo), mkey: `rev2010:${key}`, day: "2026-10-20" });      // BF3
+const R3 = (day, key, type, phone, example, wrong, correct, guard, lessonDont = null, lessonDo = null) => ({ ...R(key, type, phone, example, wrong, correct, guard, lessonDont, lessonDo), mkey: `rev2210:${key}`, day });      // MJ1 (مراجعة ٢٢/١٠ لمحادثات ١٢–٢٢/١٠)
 export const REVIEW_SEED = Object.freeze([
   R("A:1149", "apology_after_order", "…1149", "«عاوز اعمل اوردر» ⇒ موظف ⇒ العميل اتصل وطلب (كاشير ٢٥ ر.س 17:58)", "18:27 «وصلتنا رسالتك وما قدرنا نخدمك وقتها، نعتذر… وش تحب تطلب؟»", "مفيش اعتذار ولا بيع: العميل اتخدم", "waorders.ordersSince في lead_followup (موقع + كاشير، orderAwareHours) + طلب موظف/تحويل بيمنع المتابعة"),
   R("A:0448", "apology_after_order", "…0448", "«Hello» ⇒ الكاشير بعت الروابط ⇒ دفعت موقع ٤٨ ر.س 01:30", "01:53 «ما قدرنا نخدمك وقتها، نعتذر… وش تحب تطلب؟»", "مفيش اعتذار: دفعت قبلها بـ٢٣ دقيقة", "lead_followup بيشوف طلبات الموقع والكاشير في آخر orderAwareHours"),
@@ -155,6 +185,20 @@ export const REVIEW_SEED = Object.freeze([
   R2("J:4268b", "wrong_language", "…4268", "«Offers» بعد دقيقة", "«Here's what we have right now: 🔥 Our offers now: • Crepe Solo Box — SAR 29 …» (العروض كلها بالإنجليزي)", "نفس العروض بأسعارها بالعربي («بوكس الكريب الفردي 29 ر.س»…)", "latinShort ⇒ عربي، ولغة المحادثة ماتتسجّلش إنجليزي من كلمة واحدة"),
   R2("P:5082", "misunderstood", "…5082", "«الشوي انهارده احسن من امبارح» (مدح، بعد ملاحظة على طلبه)", "«سؤالك يحتاج واحد من الفريق 🙏 حوّلته لهم.» + تحويل needs_staff", "«تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً» — مفيش تحويل", "complimentOnly ⇒ رد praise (القواعد) + customer_praise لماجد + handover(needs_staff) مرفوض على المدح — praiseThanks",
     "تحوّل مدح الأكل («الشوي انهارده احسن من امبارح») لموظف", "سطر شكر دافي («تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً»)، والشكوى بس تتحوّل"),
+  /* MJ1 (٢٢/١٠): مراجعة كل المحادثات من ١٢/١٠ (wa_messages + wa_assist_turns + wa_bot_log، قراية بس). السببين الجذريين: ماجد أعمى عن المحادثة، وأدواره بالتوازي */
+  R3("2026-10-21", "C:0450", "contradiction", "…0450", "«كم باقي ويوصل» بعد رسالة «في الطريق … ⏱ يوصلك خلال 21~31 دقيقة · قبل 11:40 م» بـ٩ دقايق", "«ما عندي وقت وصول محدد أقدر أعطيك إياه»", "«حسب آخر تحديث يوصلك خلال 21~31 دقيقة، قبل 11:40 م»", "order_status ⇒ eta_we_told + سطور المحادثة لماجد (etaFromChat / majedSeesChat)",
+    "تقول «ما عندي وقت وصول» والعميل واصلته رسالة «⏱ يوصلك خلال …» على نفس الطلب", "تكرر الوقت اللي اتبعتله بالظبط (eta_we_told من order_status)"),
+  R3("2026-10-22", "S:0340", "answered_staff_question", "…0340", "الموظف سأل «حضرتك الطلب كان الساعه كام» (12:47) والمحادثة اتفكّت لوحدها 13:11؛ العميلة ردت 13:20 «الطلب كان مبارح بالليل الساعة ١١»", "ماجد: «سؤالك يحتاج واحد من الفريق 🙏 حوّلته لهم» + تحويل needs_staff", "«وصلت ✅ بلّغت الموظف اللي يتابع معك» + تنبيه للموظف", "pendingStaffQuestion ⇒ staff_answer (answerToStaff)"),
+  R3("2026-10-22", "D:0340", "misunderstood", "…0340", "بعد «يحتاج تحسين» ⇒ «شيء ثاني»: «طلبت بيتزا مع حشوة جبنة عالاطراف لكن … اكتشفت انها خالية من الجبنة»", "كارت «*كريب ميكس جبن* — 20 ر.س» (اتطابق على كلمة جبنة)", "«وصلت ملاحظتك ✅ والمدير يتابعها معك هنا» مرة واحدة", "complaintDetail ⇒ complaint_detail (complaintDetailAck)"),
+  R3("2026-10-22", "R:0340", "parallel_reply", "…0340", "«الطلب كان مبارح…» و«شكرا» في ٥ ثواني", "«العفو، حيّاك الله» من البوت قبل رد ماجد، ورسالة التحويل بعدها", "رد واحد بالترتيب (الرسالة التانية بعد الأولى)", "makeLanes: طابور لكل رقم + دمج (serialChat / mergeBurst)"),
+  R3("2026-10-21", "R:1634", "parallel_reply", "…1634", "«السلام عليكم» و«المنيو» في ٦ ثواني", "تعريفين «معك ماجد…» في ثانيتين، وجلسة ماجد ماشافتش إن البوت بعت المنيو", "رد ماجد ثم المنيو من غير تعريف تاني، والمنيو متسجّل في جلسته", "makeLanes (serialChat) + نص رد البوت في الجلسة"),
+  R3("2026-10-20", "R:5960", "parallel_reply", "…5960", "«تخفه» + «بجد» + «كريب» في ٤ ثواني", "٣ ردود من ٣ جلسات: «مو واضح لي وش تقصدين بـ«بجد»» + «الله يسلمك سلمي» + «لكم شخص؟»", "رد واحد على الكلام كله (شكر + «كريب؟ لكم شخص؟»)", "makeLanes + mergeBurst"),
+  R3("2026-10-20", "R:1139", "parallel_reply", "…1139", "«ايوه» + «نجرسكو» ثم «انا هاجي الفرع» + «استلم»", "نفس الرد مرتين، وسلتين بكودين مختلفين", "رد واحد وسلة واحدة", "makeLanes + mergeBurst"),
+  R3("2026-10-14", "X:1838", "lost_context", "…1838", "الكاشير كتب «الاوردر جاهز ي فندم» ⇒ العميل «جاي في الطريق يابشمهندس»", "ماجد: «تبي نجهّز لك طلبك قبل ما توصل؟ آخر طلب لك…» ثم «أنا معك 🙂 قل لي كم شخص»", "سكوت (العميل بيكلم الموظف) أو «حيّاك، نستناك»", "سطور المحادثة لماجد (majedSeesChat) + staffStopsMajed"),
+  R3("2026-10-13", "X:6545", "lost_context", "…6545", "الموظف قال مكوّنات المشكل والسعر (١٣:٣٢–١٣:٤٣)، والعميل سأل «بهذا المبلغ كم سيخ؟»", "ماجد: «ما عندي معلومة مؤكدة عن عدد الأسياخ… اكتب موظف»", "يبني على اللي الموظف قاله في المحادثة", "majedSeesChat"),
+  R3("2026-10-14", "S:9734", "answered_staff_question", "…9734", "الموظف: «اتشرف بأسم حضرتك» ⇒ العميل بعد ٥ دقايق «اهلا وسهلاً استاذ احمد» ثم «شادي»", "ماجد: «ما أعرف هالاسم كأنه خطأ مني. وش تحب تطلب اليوم؟»", "الرد للموظف (تأكيد قصير + تنبيه)", "answerToStaff + staffStopsMajed"),
+  R3("2026-10-20", "A:9131", "misunderstood", "…9131", "نص زر إعلان ميتا الجاهز «مرحبًا! هل يمكنني الحصول على مزيد من المعلومات حول هذا؟» (والمطعم مقفول)", "«ما وصلني وش تقصد بـ«هذا»، هل تسأل عن طبق أو بوكس معيّن؟»", "أشهر ٢–٣ عروض حية بأسعارها + «أي واحد شفته؟» (+ «نفتح ١٢»)", "adPrefillAr ⇒ ad_button_text (adPrefillOffers)",
+    "تسأل «وش تقصد بـ«هذا»؟» على نص زر إعلان ميتا الجاهز («هل يمكنني الحصول على مزيد من المعلومات حول هذا؟»)", "تعرض ٢–٣ عروض حية بأسعارها وتسأل أي واحد شافه أو كم شخص"),
 ].map((x) => ({ ...x, lesson_on: Boolean(x.lesson_dont || x.lesson_do) })));
 
 /* ── ب) كتلة الدروس ────────────────────────────────────────────────────────── */
@@ -252,6 +296,8 @@ export function replyTexts(replies) {
 }
 /* BF3: رد «إنجليزي» = ٥ كلمات لاتيني ورا بعض ومفيش ٥ كلمات عربي ورا بعض؛ رد التحويل لموظف */
 const EN_REPLY_RE = /(?:[A-Za-z][A-Za-z'’-]*[\s,.;:!?()-]+){5,}/, AR_REPLY_RE = /[؀-ۿ]{2,}(?:\s+[؀-ۿ]{2,}){4,}/, HANDOVER_SAY_RE = /يحتاج واحد من الفريق|حوّلته لهم|حولته لهم|حوّلت محادثتك|حولت محادثتك/;
+/* MJ1: «ما عندي وقت وصول محدد» وأخواتها (بعد normalize) */
+const NO_ETA_RE = /ما عندي (?:وقت|موعد) (?:وصول|توصيل)|ما (?:اقدر|نقدر) (?:احدد|نحدد|اعطيك|اعرف) (?:وقت|موعد) (?:ال)?(?:وصول|توصيل)|no (?:exact |estimated )?(?:arrival|delivery) time|can'?t (?:give|tell) (?:you )?(?:an? )?(?:exact )?(?:arrival|delivery) time/;
 const SALES_KEYS = ["lead_followup", "lead_nudge", "assist_followup", "reply_followup", "window_keep", "open_followup", "assist_reminder"];
 const PROACTIVE = ["lead_followup", "lead_nudge", "assist_followup", "reply_followup", "window_keep", "open_followup", "paid_note"];
 
@@ -370,6 +416,20 @@ export function makeLearn({ q, ddl = null, jb, now = () => new Date(), menuIndex
     for (const d of (await q(`/*sr:double*/ SELECT l.id, l.phone_norm, l.at FROM wa_bot_log l WHERE l.at >= $1 AND l.at < $2 AND l.decision = 'replied' AND l.reply_key = 'assist'
           AND EXISTS (SELECT 1 FROM wa_messages m WHERE m.phone_norm = l.phone_norm AND m.source = 'echo' AND COALESCE(m.echo_kind,'staff') <> 'auto' AND m.created_at BETWEEN l.at - INTERVAL '60 seconds' AND l.at + INTERVAL '60 seconds') LIMIT 50`, A)) || [])
       add({ mkey: key("double_reply", d.phone_norm, d.id), type: "double_reply", phone_masked: maskPhone(d.phone_norm), example: "رد ماجد ورسالة موظف في نفس الدقيقة", wrong_reply: null, correct: "موظف كتب ⇒ ماجد يسكت", guard: "staffStopsMajed", detail: { log: Number(d.id) } });
+    /* ١١) MJ1: ردّين لماجد لنفس الرقم في ٢٠ ثانية من جلستين مختلفتين = أدوار بالتوازي (…5960 / …1139) */
+    for (const d of (await q(`/*sr:parallel*/ SELECT a.id, a.phone_norm, a.final_text FROM wa_assist_turns a WHERE a.at >= $1 AND a.at < $2 AND a.handled_by = 'assistant' AND a.outcome IN ('sent')
+          AND EXISTS (SELECT 1 FROM wa_assist_turns b WHERE b.phone_norm = a.phone_norm AND b.id < a.id AND b.handled_by = 'assistant' AND b.outcome IN ('sent') AND b.at > a.at - INTERVAL '20 seconds' AND b.session_id IS DISTINCT FROM a.session_id) ORDER BY a.at LIMIT 50`, A)) || [])
+      add({ mkey: key("parallel_reply", d.phone_norm, d.id), type: "parallel_reply", phone_masked: maskPhone(d.phone_norm), example: "ردّين لماجد في ٢٠ ثانية من جلستين مختلفتين", wrong_reply: d.final_text || null, correct: "رد واحد بالترتيب", guard: "serialChat + mergeBurst (wachat.makeLanes)", detail: { turn: Number(d.id) } });
+    /* ١٢) MJ1: ماجد قال «ما عندي وقت وصول» والعميل واصلته رسالة «⏱ يوصلك خلال …» في الـ٣ ساعات اللي قبلها (…0450) */
+    const etaSent = new Map();
+    for (const m of (await q(`/*sr:eta*/ SELECT phone_norm, created_at FROM wa_messages WHERE created_at >= ($1::timestamptz - INTERVAL '3 hours') AND created_at < $2 AND direction = 'out' AND body LIKE '%⏱%' LIMIT 2000`, A)) || []) {
+      const k = String(m.phone_norm); if (!etaSent.has(k)) etaSent.set(k, []); etaSent.get(k).push(Date.parse(m.created_at)); }
+    for (const r of rows) {
+      if (r.reply_key !== "assist") continue;
+      const txt = replyTexts(r.replies); if (!txt || !NO_ETA_RE.test(normalize(txt))) continue;
+      const at = Date.parse(r.at), sent = etaSent.get(String(r.phone_norm)) || [];
+      if (sent.some((t) => t < at && at - t < 3 * 3600_000)) add({ mkey: key("contradiction", r.phone_norm, r.id), type: "contradiction", phone_masked: maskPhone(r.phone_norm), example: "رسالة «⏱ يوصلك خلال …» اتبعتت قبلها", wrong_reply: txt, correct: "يكرر الوقت اللي اتبعتله (eta_we_told)", guard: "etaFromChat (order_status eta_we_told)", detail: { log: Number(r.id) } });
+    }
     let filed = 0; const byType = {};
     for (const c of cands.slice(0, max)) { if (await file(c, day)) { filed++; byType[c.type] = (byType[c.type] || 0) + 1; } }
     return { found: cands.length, filed, byType };

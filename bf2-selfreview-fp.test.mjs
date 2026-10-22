@@ -129,5 +129,5 @@ test("BF2 self-review replay of 19/10: the 7 false rows are gone, every real det
 test("BF2 schema: every BF1 setting has an Arabic label and Arabic help (verify «Arabic label + help on each»)", () => {
   const ar = (s) => /[؀-ۿ]/.test(String(s || ""));
   for (const [k, v] of Object.entries(L.LEARN_SCHEMA)) { assert.ok(ar(v.ar), `${k}: Arabic label`); assert.ok(ar(v.help), `${k}: Arabic help`); }
-  assert.equal(Object.keys(L.LEARN_SCHEMA).length, 17);      // BF3: + shortEnglishArabic + praiseThanks
+  assert.equal(Object.keys(L.LEARN_SCHEMA).length, 28);      // BF3: + shortEnglishArabic + praiseThanks · MJ1: + ١١ (wachat)
 });

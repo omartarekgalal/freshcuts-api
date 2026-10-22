@@ -697,7 +697,15 @@ export function makeAssistTools(deps = {}) {
     /* BF1 (…0356 «الطلب جاي معاه رز؟» ⇒ «ما عندي تفاصيل أصنافه… اكتب موظف»): أصناف الطلب المفتوح (الاسم + الكمية + ملاحظة العميل) عشان يجاوب من غير موظف */
     const row = (o) => { const items = siteItems(o.items); return { order_no: o.order_no, status: o.status, mode: o.option, total: round2(o.total), track_url: `${STORE}/track/${o.order_no}`, ...(items.length ? { items } : {}) }; };
     const open = r.filter((o) => !CLOSED.has(String(o.status))), closed = r.filter((o) => CLOSED.has(String(o.status)));
-    return { ok: true, has_open_order: open.length > 0, orders: open.map(row), closed: closed.slice(0, 2).map(({ order_no, status }) => ({ order_no, status })),
+    /* MJ1 (…0450 ٢١/١٠ «كم باقي ويوصل» ⇒ «ما عندي وقت وصول محدد» بعد ٩ دقايق من رسالة «⏱ يوصلك خلال 21~31 دقيقة · قبل 11:40 م»):
+       الوقت اللي اتبعت للعميل في رسالة الطلب (smarteta) بيرجع مع الطلب المفتوح — ماجد بيكرره بالظبط. مفتاح etaFromChat (deps.etaOn) */
+    const etas = new Map();
+    if (open.length && (!deps.etaOn || (await deps.etaOn()) !== false)) {
+      const er = await q(`/*mjc:eta*/ SELECT order_no, body, created_at FROM wa_messages WHERE phone_norm=$1 AND direction='out' AND order_no = ANY($2::text[]) AND body LIKE '%⏱%' AND COALESCE(status,'') NOT IN ('failed','skipped') ORDER BY created_at DESC LIMIT 5`, [phone, open.map((o) => String(o.order_no))]);
+      for (const e of er || []) { if (etas.has(String(e.order_no))) continue; const m = /⏱\s*([^\n]{4,80})/.exec(String(e.body || ""));
+        if (m) etas.set(String(e.order_no), { said: m[1].trim(), sent_minutes_ago: Math.max(0, Math.round((now().getTime() - Date.parse(e.created_at)) / 60_000)), rule: "this is the arrival time our order update already told the customer: if they ask when it arrives, repeat it exactly (do not say you have no arrival time); if that time has already passed, apologise and say the courier is on the way and you will pass it to the team (handover needs_staff only if they ask)" }); }
+    }
+    return { ok: true, has_open_order: open.length > 0, orders: open.map((o) => ({ ...row(o), ...(etas.has(String(o.order_no)) ? { eta_we_told: etas.get(String(o.order_no)) } : {}) })), closed: closed.slice(0, 2).map(({ order_no, status }) => ({ order_no, status })),
       ...(open.length ? {} : { note: "No open order under this number. Say so plainly; offer to order, or to type «موظف». Do not describe a closed order as being prepared or on its way." }) };
   }
   async function customer_profile(phone) {

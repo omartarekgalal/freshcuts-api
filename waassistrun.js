@@ -499,7 +499,7 @@ const EXTRA_RULES = [
   /* PS4 (تقييم ١٣/١٠: الموديل السريع كتب «وعليكم... لا، الرسالة ما فيها تحية. نبدأ: …» في الرسالة) — كلام الموديل لنفسه بالعربي */
   [/الرسال[ةه] (?:ما|لا|مو) (?:فيها|تحتوي)|(?:^|[.\n]\s*)(?:نبد[أا]|لنبد[أا]|الرد)\s*:|\.\.\.\s*لا،|العميل (?:ما|لم) (?:سل[ّ]?م|يسل[ّ]?م|حي[ّ]?ا)|(?:حسب|وفق|بحسب) (?:التعليمات|القواعد)/u, "self_talk"],
   [/(ما|لا|مافي|ما في) ?(عندنا|يوجد|فيه)? ?مكسرات (في |ب)(ال)?مطبخ|مطبخنا (ما|لا|خالي)|no nuts in (the|our) kitchen|nut[- ]free/i, "health_or_guarantee"],
-  [/anthropic|claude|openai|chatgpt|\bgpt\b|language model|نموذج لغوي|note_suggestion|preview_cart|list_boxes|list_packs|check_availability|get_offers|get_hours|what_we_know|ask_knowledge|manager_notes|came_from_ad|channel_invite|heard_from_voice_note|seen_in_a_picture|delivery_savers|remind_me|dish_photo|also_as|ask_which|reply_rule|pictures_the_customer_sent_earlier|note_names_a_product|order_for_later|first_order|most_ordered|lighter_option|before_the_choices|customer_is_postponing|introduce_yourself|customer_is_ordering|customer_praise|english_button_text|staff_handled|staff_told_customer|still_to_do|boxes_reaching|business_brief|menu_button|handover\(|<context|customer_message/i, "internal_leak"],
+  [/anthropic|claude|openai|chatgpt|\bgpt\b|language model|نموذج لغوي|note_suggestion|preview_cart|list_boxes|list_packs|check_availability|get_offers|get_hours|what_we_know|ask_knowledge|manager_notes|came_from_ad|channel_invite|heard_from_voice_note|seen_in_a_picture|delivery_savers|remind_me|dish_photo|also_as|ask_which|reply_rule|pictures_the_customer_sent_earlier|note_names_a_product|order_for_later|first_order|most_ordered|lighter_option|before_the_choices|customer_is_postponing|introduce_yourself|customer_is_ordering|customer_praise|english_button_text|chat_since|ad_button_text|eta_we_told|arrival_time_we_told|staff_handled|staff_told_customer|still_to_do|boxes_reaching|business_brief|menu_button|handover\(|<context|customer_message/i, "internal_leak"],
 ];
 /* جمل الرفض الأمين (بتتشال قبل قواعد الكلمات). كل نمط = نفي + فعل مشاركة/وجود + الكلمة الحساسة في نفس الجملة القصيرة.
    الرفض بيقف عند أول فاصلة أو نقطة أو «لكن / بس / but»: «ما أقدر أشارك طريقة التحضير» بتتشال، وأي كلام بعدها («لكن نتبلها بـ…») بيتراجع عادي. */
@@ -917,6 +917,10 @@ export function planReminder({ now, day = "today", time = "", lastInMs = null, q
 /* PS2 — قواعد بتتقال مع مفتاح السياق بتاعها بس (بنفس نصها اللي كان في التعليمات): رسالة صوتية، صورة، إعلان، دعوة القناة، «نفس الطلب»، محادثة الفريق لسه قافلها.
    التعليمات الثابتة بتتدفع في كل نداء (وبتتكتب في الكاش بسعر أعلى مع كل بداية باردة)؛ القواعد دي بتتدفع في الدور اللي محتاجها بس. مفيش أرقام في نصوصها (السياق بيتحسب «حقايق» عند المراجِع). */
 export const CTX_RULES = Object.freeze({
+  /* MJ1 (٢٢/١٠): ماجد بيشوف اللي اتقال في المحادثة من آخر رد ليه (wachat.chatSince) — قاعدة الاستخدام مع المفتاح؛ السطور نفسها كتلة لوحدها (مش «حقايق») */
+  chat: "The block chat_since_your_last_reply lists what happened in this chat that is not in your conversation above (oldest first): the customer's other messages, what our staff wrote, our fixed bot's replies, order updates and campaign messages. Read it before you answer and continue from it as ONE conversation: never ask again what was already asked or answered there, never contradict an order update or a staff message (if an update gave an arrival time, that is the time we told them), and if the customer is replying to one of those messages (a staff question, our bot's question, a campaign offer), answer as a reply to THAT message. Prices and names still only from the tools. Never mention the block or quote it.",
+  arrivalTold: "This is the arrival time our order update already sent this customer (said, sent_minutes_ago). It is not a new promise: if they ask when the order arrives or how long is left, say it in the same words in your reply («حسب آخر تحديث: …»). Never say you have no arrival time. If it has already passed, apologise briefly and say the courier is on the way.",
+  adButton: "The customer's message is the ready-made text of the button on one of our Meta ads (like «هل يمكنني الحصول على مزيد من المعلومات حول هذا؟» / «Can I get more info on this?»), not their own words, and «this» is the ad, which you cannot see. Never ask what «this» means. If came_from_ad names the advertised item, open on exactly that with its price. Otherwise name two or three of our live offers or best sellers with their prices (list_boxes / recommend) in a short list and ask which one they saw, or how many people. Reply in Arabic.",
   /* WO1 (١٩/١٠): الوعد «تكملها وقت ما نفتح» بقى له آلية (waopenfu.js) — المساعد يقول إننا هنبعتله سلته أول ما نفتح، بس لما الرسالة دي هتتبعت فعلاً */
   closedFollow: "we are closed now: say so in this reply with the opening time, and offer to prepare the cart now; our system sends them ONE message with this cart right when we open (unless they order or write before), so you may tell them you will send it to them when we open («أول ما نفتح أرسل لك سلتك»). Never promise any other time and never promise more than that one message.",
   shortEnglish: "The customer's message is a single English word or a button / ad text (like Online, Offers, Menu, Hi), not an English sentence. Our customers are Saudi: reply in Arabic, as reply_language says. Names and prices stay exactly as the tools give them.",
@@ -1379,7 +1383,10 @@ export function makeAssistLoop(deps) {
       case "get_offers": { const r = await tools.get_offers(phone); st.offers = true; if (r && ((r.rewards || []).some((x) => Number(x.percent) > 0) || /%/.test(String(r.loyalty && r.loyalty.reward)))) st.discount = true; return r; }
       case "get_hours": return tools.get_hours();
       case "delivery_info": { const r0 = deps.deliveryInfo ? await deps.deliveryInfo() : null; if (!r0) return { ok: false, error: "unavailable", what: "delivery_policy" }; const { ladder: _ladder, ...r } = r0; return r; }
-      case "order_status": return tools.order_status(phone);
+      case "order_status": { const r = await tools.order_status(phone);
+        /* MJ1 (…0450): وقت الوصول اللي رسالة الطلب قالته (eta_we_told) مسموح يتقال بنصه — حارس «وعد بوقت» (time_promise) بيستثنيه هو بس (زي نصوص الكود المعتمدة) */
+        for (const o of (r && r.orders) || []) { const sd = o && o.eta_we_told && o.eta_we_told.said ? String(o.eta_we_told.said) : ""; if (sd && !T.etaSay.includes(sd)) T.etaSay.push(...etaVariants(sd)); }
+        return r; }
       /* PS1 — السلة الصغيرة / الاعتراض على رسوم التوصيل: الحلول الحقيقية بأرقامها (العروض + التسعيرة لموقعه + سلّم الرسوم + البوكسات)، محسوبة بالكود. */
       case "delivery_savers": return feeOptions(T, Math.max(0, Number(a.total) || 0));
       case "quote_delivery": { const r = await tools.quote_delivery(phone, { total: Number(a.total) || 0 }); if (r && r.raw) delete r.raw; if (r && r.ok && r.deliverable && Number(r.fee) > 0) r.if_the_fee_is_an_obstacle = "call delivery_savers with the same total";
@@ -1627,7 +1634,7 @@ export function makeAssistLoop(deps) {
     if (T.cartNow) st.cartNow = T.cartNow;
     return { ok: true, text, cart: T.cart, handover: null, session: T.session, trace: T.trace, location: false, reminder: null, buttons: null, list: null, photoItem: null, menu: false, afterCart: sg ? { name: sg.name, kind: sg.kind } : null };
   }
-  async function runTurn({ phone, text, lang = "ar", session: session0, acfg, context: context0 = {}, profile = null, earlierPictures = null, personal = undefined, mem = null, tap = null, guards = null, lessons = null }) {
+  async function runTurn({ phone, text, lang = "ar", session: session0, acfg, context: context0 = {}, profile = null, earlierPictures = null, personal = undefined, mem = null, tap = null, guards = null, lessons = null, chat = null }) {
     const t0 = Date.now(), deadline = t0 + acfg.timeoutMs;
     const session = compactSession(JSON.parse(JSON.stringify(session0)), { maxChars: acfg.compactAfterChars, keepTurns: acfg.compactKeepTurns });          // الجلسة الأصلية ماتتلمسش لو الدور فشل؛ الطويلة بتتلخّص (PS2)
     const st = session.state;
@@ -1639,8 +1646,10 @@ export function makeAssistLoop(deps) {
     const pm = pickModel(acfg, session, text);
     const trace = { tools: [], verdicts: [], calls: [], suggestions: [], unanswered: [], ms: 0, model: pm.model, tier: pm.tier, costSar: 0, in: 0, out: 0, cached: 0, sent: null, ...(session.compacted && session.compacted !== (session0.compacted || 0) ? { compacted: true } : {}) };
     const T = { phone, lang, session, trace, cart: null, handover: null, profile, acfg, factSay: [], kbSay: [], location: false, reminder: null, buttons: null, feeSay: null, photoItem: null, previewNow: false, askWhich: null, menuBtn: false, sgNow: null, weightsNow: null, cartNow: null, blocks: [], sales: null,
-      ctxIn: context, tap: tap || tapCtx || null, complaint: false, noOfferWhy: null, sgBlockedWhy: null, praise: Boolean(guards && guards.praise !== false) && complimentOnly(text) };
+      ctxIn: context, tap: tap || tapCtx || null, etaSay: [], complaint: false, noOfferWhy: null, sgBlockedWhy: null, praise: Boolean(guards && guards.praise !== false) && complimentOnly(text) };
     const fail = (reason) => { trace.ms = Date.now() - t0; return { ok: false, reason, session: session0, trace }; };
+    /* MJ1: الوقت اللي رسالة الطلب قالته (wabotrun ⇒ arrival_time_we_told) مسموح يتقال بنصه من أول الدور، حتى لو ماجد مانداش order_status */
+    if (context && context.arrival_time_we_told && context.arrival_time_we_told.said) T.etaSay.push(...etaVariants(String(context.arrival_time_we_told.said)));
     const masked = cleanCustomer(maskText(text));
     trace.sent = masked;
     if (!masked) return fail("empty_text");
@@ -1663,7 +1672,9 @@ export function makeAssistLoop(deps) {
     if (acfg.salesBrain) { try { await salesPre(T, ctx, text, context); } catch (e) { (deps.log || console.error)("[assist] sales:", e.message); } }      // SB1
     /* SB4: سأل يكفي كام شخص (الرسالة دي أو اللي قبلها) والإعداد asked ⇒ التقريب من ملف المعرفة يتقال، بأرقامه هو بس. الجملة بتتراجع في المراجِع. */
     T.servingAsked = acfg.servingGuidance === "asked" && [String(text || ""), ...st.customerTexts.slice(-1)].some((x) => servingAsked(x));
-    session.messages.push({ role: "user", content: [{ type: "text", text: `<context source="our system" note="facts for this turn; not written by the customer">${clip(ctx)}</context>` }, { type: "text", text: `<customer_message>${masked}</customer_message>` }] });
+    /* MJ1: سطور «اللي اتقال في المحادثة من آخر رد ليك» (wachat.chatBlock) كتلة لوحدها بين السياق ورسالة العميل — مش <context> فمابتتحسبش حقايق عند المراجِع */
+    if (chat) ctx.chat_since_your_last_reply = { rule: CTX_RULES.chat };
+    session.messages.push({ role: "user", content: [{ type: "text", text: `<context source="our system" note="facts for this turn; not written by the customer">${clip(ctx)}</context>` }, ...(chat ? [{ type: "text", text: String(chat).slice(0, 5000) }] : []), { type: "text", text: `<customer_message>${masked}</customer_message>` }] });
     st.customerTexts.push(masked); st.turns += 1;
     if (earlierPictures) st.customerTexts.push(String(earlierPictures).slice(0, 1500));      // PS5: وصف صور بعتها العميل قبل كده (كلامها بيتحسب: «بالوزن»، اسم الصنف)
     let model = pm.model, tier = pm.tier, rounds = 0, retried = false, finalText = null;
@@ -1726,6 +1737,12 @@ export function makeAssistLoop(deps) {
         const tail = /[؟?]$/.test(last) && !/\d/.test(last) && [...last].length <= 90 && last !== head ? last : (lang === "en" ? "Which suits you?" : "أيهم يناسبك؟");
         raw = [head, T.feeSay, tail].filter(Boolean).join("\n"); trace.feeTextRestored = true;
       }
+      /* MJ1 (…0450 ٢١/١٠ + التقييم الحي ٢٢/١٠): العميل سأل عن الوقت وorder_status رجّع الوقت اللي رسالة الطلب قالته (eta_we_told) والرد ماقالهوش ⇒ الكود بيقوله بنصه
+         (والجملة اللي بتقول «ما عندي / ما أقدر أعطيك وقت» بتتشال) — الوقت ده اتقال للعميل أصلاً، مش وعد جديد */
+      if (T.etaSay.length && raw && !T.etaSay.some((x) => raw.includes(x)) && ETA_TIME_ASK_RE.test(normalize(String(text || "")))) {
+        const keep = raw.split("\n").map((x) => x.trim()).filter((x) => x && !NO_TIME_LINE_RE.test(normalize(x)));
+        raw = [...keep, `${lang === "en" ? "As per the last update" : "حسب آخر تحديث"}: ${T.etaSay[0]} 🛵`].join("\n"); trace.etaRestored = true;
+      }
       /* SB1: كتلة العروض الحية بتتبعت بنصها (قالب الكود): لو الموديل غيّر فيها، الكود بيرجّعها بنفس الطريقة (سطر افتتاحي قصير + الكتلة + سؤال). */
       for (const b of T.blocks) if (!T.cart && raw && !raw.includes(b)) {
         const ls = raw.split("\n").map((x) => x.trim()).filter(Boolean), first = ls[0] || "", last = ls[ls.length - 1] || "";
@@ -1744,7 +1761,7 @@ export function makeAssistLoop(deps) {
       const menuFacts = brief ? { text: brief, owner: brief.split("## Live menu")[0].split("\n").filter((l) => !/^\(live prices/.test(l)).join("\n") } : null;
       /* دعوة القناة في رد فيه إجابة حساسية/مكوّن ⇒ السطر بيتشال بالكود (مش مكانها). */
       if (chUrl && T.factSay.length && raw.includes(chUrl)) raw = raw.split("\n").filter((l) => !l.includes(chUrl)).join("\n").trim();
-      const v = checkReply(raw, { facts, customerText: st.customerTexts.join("\n"), know, discountAllowed: st.discount, appsAllowed: st.apps, offersSeen: st.offers === true, sayTexts: [...st.say, ...(chSay ? [chSay] : []), ...(T.sgNow && T.sgNow.line ? [T.sgNow.line] : []), ...(T.recapText ? [T.recapText] : [])], lang, channelUrl: chUrl, introAllowed: Boolean(context && context.introduce_yourself), turnText: text, freeCode: T.freeCode || null, recentCustomer: st.customerTexts.slice(-3).join("\n"), reminderSet: Boolean(T.reminder && T.reminder.at), weakClose: Boolean(acfg.sellerClose) && !T.cart && !T.handover, menuFacts, serving: { mode: acfg.servingGuidance, asked: Boolean(T.servingAsked), guide: T.servingGuide || {} },
+      const v = checkReply(raw, { facts, customerText: st.customerTexts.join("\n"), know, discountAllowed: st.discount, appsAllowed: st.apps, offersSeen: st.offers === true, sayTexts: [...st.say, ...T.etaSay, ...(chSay ? [chSay] : []), ...(T.sgNow && T.sgNow.line ? [T.sgNow.line] : []), ...(T.recapText ? [T.recapText] : [])], lang, channelUrl: chUrl, introAllowed: Boolean(context && context.introduce_yourself), turnText: text, freeCode: T.freeCode || null, recentCustomer: st.customerTexts.slice(-3).join("\n"), reminderSet: Boolean(T.reminder && T.reminder.at), weakClose: Boolean(acfg.sellerClose) && !T.cart && !T.handover, menuFacts, serving: { mode: acfg.servingGuidance, asked: Boolean(T.servingAsked), guide: T.servingGuide || {} },
         ...(guards ? { actions: guards.promise !== false ? { cartBuilt: Boolean(T.cart), cartTouched: Boolean(T.cart || T.previewNow) } : null, lastCampaign: context && context.last_campaign ? context.last_campaign : null, complaintOpen: complaintCtx(context), existingOrder: Boolean(context && context.existing_order) } : {}) });
       /* PS4: نفس سؤال الاختيار تاني والعميل قال «جهزه / أي شي»، أو تالت مرة ⇒ مرفوض: يقترح الأكثر مبيعاً ويسأل «أعتمده؟» */
       { const sk = askedSlot(raw, st.lastBox); if (acfg.pickForMe && sk && st.askedSlot && st.askedSlot.key === sk && (PICK_RE.test(normalize(String(text || ""))) || st.askedSlot.n >= 2)) { v.ok = false; v.problems.push({ type: "repeated_choice_question", value: sk }); } }
@@ -1803,11 +1820,17 @@ export function makeAssistLoop(deps) {
 }
 
 /* رسالة اتردّ عليها من بوت القواعد وسط محادثة المساعد ⇒ تتسجّل في الجلسة عشان المساعد يفضل فاهم السياق (إلحاق بس). */
-export function noteRulesTurn(session, text, key) {
+/* MJ1: سؤال عن وقت الوصول (بعد normalize) + سطر بيقول «ما عندي / ما أقدر أعطيك وقت» */
+const etaVariants = (sd) => [sd, sd.replace(/\s*·\s*/g, "، "), sd.replace(/\s*·\s*/g, " - "), sd.replace(/\s*·\s*/g, " "), sd.split(/\s*·\s*/)[0]];
+const ETA_TIME_ASK_RE = /(?:^| )(?:متي|امتي|كم|وقت|يوصل|يوصلني|توصل|يجي|يجيني|بيجي|بيجيني|باقي|تاخر|المندوب|when|how long|eta|arrive)(?: |$)/;
+const NO_TIME_LINE_RE = /(?:ما|لا|مو) (?:عندي|اقدر|استطيع|نقدر|نستطيع|اعرف|اعطيك)[^.؟?!]{0,40}(?:وقت|موعد|دقيق)|(?:can'?t|cannot|don'?t have|do not have)[^.?!]{0,40}(?:time|eta)/;
+/* MJ1 (٢٢/١٠): بنسجّل **نص** رد القواعد مش اسم المفتاح بس («[answered by the fixed menu bot: status]» ماكانش بيقول لماجد إيه اللي اتقال للعميل) */
+export function noteRulesTurn(session, text, key, sent = "") {
   const s = JSON.parse(JSON.stringify(session));
   const masked = cleanCustomer(maskText(text)) || "[non-text message]";
+  const said = String(sent || "").split(/\n+/).map((l) => maskText(l)).filter(Boolean).join(" ⏎ ").slice(0, 600);      // مقنّع زي كلام العميل (أرقام / أسماء / عناوين)
   s.messages.push({ role: "user", content: [{ type: "text", text: `<customer_message>${masked}</customer_message>` }] });
-  s.messages.push({ role: "assistant", content: [{ type: "text", text: `[answered by the fixed menu bot: ${String(key || "reply").slice(0, 30)}]` }] });
+  s.messages.push({ role: "assistant", content: [{ type: "text", text: said ? `[our fixed menu bot replied (${String(key || "reply").slice(0, 30)}): ${said}]` : `[answered by the fixed menu bot: ${String(key || "reply").slice(0, 30)}]` }] });
   s.state.customerTexts.push(masked);
   return s;
 }

@@ -75,7 +75,8 @@ test("BF3 registry: the 20/10 mistakes are confirmed review rows (masked phones)
   const t = L.lessonsText(all, L.LEARN_DEFAULTS.lessonsMaxChars);
   assert.equal(t.ids.length, all.length, `all ${all.length} lessons fit in ${L.LEARN_DEFAULTS.lessonsMaxChars} chars (${t.text.length})`);
   const lines = t.text.split("\n");
-  assert.match(lines[1], /تحوّل مدح الأكل/); assert.match(lines[2], /ترد بالإنجليزي على كلمة إنجليزي لوحدها/);
+  /* MJ1: دروس ٢٢/١٠ بقت الأحدث (أول) — درسين BF3 لسه موجودين ومش مقصوصين */
+  assert.ok(lines.some((l) => /تحوّل مدح الأكل/.test(l))); assert.ok(lines.some((l) => /ترد بالإنجليزي على كلمة إنجليزي لوحدها/.test(l)));
   assert.equal(lines.length, all.length + 1, "one line per lesson");
 });
 
@@ -85,7 +86,7 @@ test("BF3 settings: two new dashboard switches (on by default) with Arabic label
     assert.equal(L.LEARN_DEFAULTS[k], true, k); assert.ok(L.LEARN_BOOLS.includes(k), k); assert.ok(ar(L.LEARN_SCHEMA[k].ar) && ar(L.LEARN_SCHEMA[k].help), k);
     assert.equal(L.learnConfig({})[k], true); assert.equal(L.learnConfig({ [k]: false })[k], false);
   }
-  assert.equal(Object.keys(L.LEARN_SCHEMA).length, 17);
+  assert.equal(Object.keys(L.LEARN_SCHEMA).length, 28);      // MJ1: + ١١
 });
 
 /* ── ٤) الفحص الليلي بيمسك النوعين دول من نفسه ───────────────────────────── */

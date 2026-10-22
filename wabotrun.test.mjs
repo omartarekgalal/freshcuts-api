@@ -194,6 +194,14 @@ function world({ handovers = null, waBot = {}, notifications = { whatsappEnabled
       if (failDb && failDb.test(s)) throw new Error("db down");
       { const om = /^\/\*of:([a-z_]+)\*\//.exec(s); if (om) return ofFake(om[1], p); }
       { const bm = /^\/\*bf1:([a-z_]+)\*\//.exec(s); if (bm) return bf1Fake(bm[1], p); }      // BF1
+      /* MJ1 سياق ماجد (٢٢/١٠): wachat.CHAT_SQL (آخر رسايل الرقم، الأحدث أولاً) · «رد قبل كده بنفس المفتاح من بعد لحظة» · وقت الوصول اللي اتبعت (order_status) */
+      { const cm = /^\/\*mjc:([a-z_]+)\*\//.exec(s);
+        if (cm && cm[1] === "chat") return { rows: db.msgs.filter((m) => m.phone_norm === p[0] && US(m.created_at) > US(p[1]) && !["failed", "skipped"].includes(m.status || "") && m.source !== "history")
+          .map((m, i) => ({ id: m.id || i + 1, wamid: m.wamid || null, direction: m.direction, source: m.source || "api", echo_kind: m.echo_kind || null, template: m.template || null, status: m.status || null, msg_type: m.msg_type || "text", body: m.body || "", created_at: m.created_at, _i: i }))
+          .sort((a, b) => US(b.created_at) - US(a.created_at) || b._i - a._i).slice(0, p[2]).map(({ _i, ...r }) => r) };
+        if (cm && cm[1] === "replied") return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.reply_key === p[1] && ["replied", "dry", "silent"].filter((x) => /'silent'/.test(s) || x !== "silent").includes(l.decision) && T0(l.at) > T0(p[2])).slice(0, 1).map(() => ({})) };
+        if (cm && cm[1] === "eta") return { rows: db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "out" && p[1].includes(m.order_no) && /⏱/.test(m.body || "") && !["failed", "skipped"].includes(m.status || "")).sort((a, b) => T0(b.created_at) - T0(a.created_at)).slice(0, 5).map((m) => ({ order_no: m.order_no, body: m.body, created_at: m.created_at })) };
+        if (cm) throw new Error(`mjc fake: unknown statement ${cm[1]}`); }
       if (/^\/\*bf3:prevlang\*\//.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.id !== p[1] && l.lang).slice(-1).map((l) => ({ lang: l.lang })) };      // BF3: لغة آخر رسالة للرقم
       if (/^INSERT INTO wa_bot_guard_hits/i.test(s)) { (db.guardHits ||= []).push({ phone: p[0], guard: p[1], kind: p[2], value: p[3], text: p[4] }); return { rows: [] }; }      // BF1
       if (/^SELECT version, text FROM wa_bot_lessons ORDER BY version DESC LIMIT 1/i.test(s)) return { rows: (db.lessons || []).slice(-1) };      // BF1
@@ -2610,10 +2618,13 @@ const TESTERS = ["0512345678"];
 const LEGACY_ASSIST = { salesBrain: false, imageBurstSec: 0, firstLead: false, grillFamilies: false, oneOfferPerChat: false, ackMaxChars: 0, feeMoment: false, menuToRules: false, pickForMe: false, choiceList: false, bigBoxSar: 0, pairingEnabled: false, adButtons: false, weightToAssistant: false, faqShort: false,
   briefEnabled: false, sellerClose: false, nudgeMin: 0,      // PK1: ملف المعرفة، قفلة السؤال ومتابعة السكوت — اختباراتهم في wa-pk1.test.mjs
   personalSell: false, boxForDish: false, drinksPerPerson: false, familyOutside: false, comboFallback: false, skipNeverTakes: false, tierNetOnly: false };      // S1: البيع الشخصي — اختباراته في wa-sb6.test.mjs
-function aWorld(steps, o = {}) {
+function aWorld(steps, o0 = {}) {
   const m = aModel(steps), store = memStore();
-  const w = world({ bundles: LIVE.bundles, links: ALL_LINKS, ...o, waBot: { mode: "test", testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "test", forceSuggestion: false, typing: false, orderWordsStrong: true, ...LEGACY_ASSIST, ...((o.waBot || {}).assist || {}) } }, assistModel: m.callModel, assistStore: store });
-  return { ...w, m, store: store.st };
+  /* MJ1: delayMs = الموديل بياخد وقت (عشان الأدوار المتوازية تبان)، live.max = أقصى عدد نداءات شغّالة في نفس اللحظة */
+  const { delayMs = 0, ...o } = o0, live = { cur: 0, max: 0 };
+  const callModel = async (a) => { live.cur++; live.max = Math.max(live.max, live.cur); try { if (delayMs) await new Promise((r) => setTimeout(r, delayMs)); return await m.callModel(a); } finally { live.cur--; } };
+  const w = world({ bundles: LIVE.bundles, links: ALL_LINKS, ...o, waBot: { mode: "test", testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "test", forceSuggestion: false, typing: false, orderWordsStrong: true, ...LEGACY_ASSIST, ...((o.waBot || {}).assist || {}) } }, assistModel: callModel, assistStore: store });
+  return { ...w, m, store: store.st, live };
 }
 const msgs = (r) => r.sent.filter((b) => b.type);                    // رسايل فعلية (من غير «مقروء + جاري الكتابة»)
 const receipts = (r) => r.sent.filter((b) => b.status === "read");
@@ -6960,3 +6971,75 @@ test("BF3 …5082 جوّه محادثة ماجد: المدح بيفضل معاه
   assert.equal(bodyOf(msgs(r)[0]), "تسلم، يسعدنا إن الشوي عجبك 🙏 ننتظرك دايماً");
   const tr = JSON.stringify(w.m.seen[2].messages); assert.match(tr, /compliment_not_handover/, "the handover tool answered «not handed over»");
 }));
+
+/* ══ MJ1 (٢٢/١٠): «ماجد بيتلغبط ومش بيفهم المحادثة» — مجموعة التقييم (eval/majed-context/cases.mjs): ٣٠+ محادثة حقيقية مقنّعة ══════════════
+   كل حالة: الأحداث بالترتيب من الويب هوك الحقيقي لطلب Graph، والموديل مكتوب مسبقاً. بيتقاس منطق القرار حوالين ماجد (مين يرد، ماجد شايف إيه، نداءات متوازية). */
+const MJC = (await import("./eval/majed-context/cases.mjs")).CASES;
+const mjStep = (x) => (typeof x === "string" ? mSay(x) : mUse(...x.use.map(([n, i]) => tUse(n, i))));
+const mjAll = (seenCall) => seenCall.messages.map((m) => (Array.isArray(m.content) ? m.content.map((b) => b.text || (b.type === "tool_result" ? JSON.stringify(b.content) : "")).join("\n") : String(m.content || ""))).join("\n");
+const mjChat = (seenCall) => { const all = [...mjAll(seenCall).matchAll(/<chat_since_your_last_reply[^>]*>([\s\S]*?)<\/chat_since_your_last_reply>/g)]; return all.length ? all.at(-1)[1] : null; };
+const mjCtx = (seenCall) => { const all = [...mjAll(seenCall).matchAll(/<context [^>]*>([\s\S]*?)<\/context>/g)]; return all.length ? all.at(-1)[1] : ""; };
+for (const c of MJC) {
+  test(`MJ1 eval ${c.id} (${c.src}): ${c.what}`, withEnv(CONFIGURED, async () => {
+    const P = BF(c.n), FROM = BFTO(c.n);
+    const orders = (c.orders || []).map((o) => order({ phone_norm: P, order_no: o.order_no, status: o.status, created_at: new Date(Date.parse(OPEN_AT) - (o.minAgo || 30) * 60_000).toISOString() }));
+    const w = c.majed ? bfA(c.n, (c.model || []).map(mjStep), { orders, delayMs: c.delayMs || 0, disclosure: Boolean(c.disclosure), waBot: c.waBot || {} })
+      : bfRules(c.n, { orders, disclosure: Boolean(c.disclosure), waBot: c.waBot || {} });
+    const res = [];
+    for (const e of c.events) {
+      if (e.say != null) res.push(await w.say(e.say, { from: FROM }));
+      else if (e.press) res.push(await w.press(e.press[0], e.press[1], { from: FROM }));
+      else if (e.button) res.push(await w.say(null, { from: FROM, raw: { type: "button", button: { text: e.button, payload: e.button } } }));
+      else if (e.cashier) { await w.cashier(e.cashier, FROM); res.push(null); }
+      else if (e.advance) { w.clock.advance(e.advance); res.push(null); }
+      else if (e.advanceSec) { w.clock.advanceSec(e.advanceSec); res.push(null); }
+      else if (e.tick != null) { await w.tick(e.tick); res.push(null); }
+      else if (e.push) { const x = e.push; w.db.msgs.push({ wamid: `wamid.MJ${w.db.msgs.length}`, direction: x.direction || "out", phone_norm: P, body: x.body, source: x.source || "api", template: x.template || null, order_no: x.order_no || null, stage: x.stage || null, status: x.direction === "in" ? "received" : "sent", created_at: new Date(w.clock.now().getTime() - (x.minAgo || 0) * 60_000).toISOString() }); res.push(null); }
+      else if (e.chat) { const ch = w.db.chats.get(P) || { phone_norm: P, unknown_streak: 0 }; w.db.chats.set(P, ch);
+        if (e.chat.handoff_reason) { ch.handoff_reason = e.chat.handoff_reason; ch.handoff_at = new Date(w.clock.now().getTime() - ((e.chat.handoffSecAgo || 0) * 1000 + (e.chat.handoffMinAgo || 0) * 60_000)).toISOString(); }
+        if (e.chat.releasedAfterEcho) ch.released_at = w.clock.now().toISOString();
+        res.push(null); }
+      else if (e.par) res.push(await Promise.all(e.par.map((x) => (typeof x === "string" ? w.say(x, { from: FROM }) : w.press(x.press[0], x.press[1], { from: FROM })))));
+    }
+    if (process.env.MJ_DEBUG) console.log("MJDBG", c.id, JSON.stringify((w.store ? w.store.turns : []).map((t) => [t.handledBy, t.outcome, ((t.trace && t.trace.verdicts) || []).map((v) => (v.problems || []).map((p) => `${p.type}:${p.value}`))])), JSON.stringify(res.map((r) => (Array.isArray(r) ? r.map((x) => x && x.log && [x.log.reply_key, x.log.decision, x.log.reason]) : r && r.log && [r.log.reply_key, r.log.decision, r.log.reason, r.log.detail]))));
+    const X = c.expect || {}, tag = (i) => `${c.id} event ${i}`;
+    const check = (r, want, i) => {
+      assert.ok(r && r.log, `${tag(i)}: a logged decision`);
+      const first = msgs(r)[0], body = first ? bodyOf(first) : null, all = msgs(r).map(bodyOf).join("\n");
+      if (want.key) assert.equal(r.log.reply_key, want.key, `${tag(i)}: key`);
+      if (want.decision) assert.equal(r.log.decision, want.decision, `${tag(i)}: decision`);
+      if (want.reason) assert.equal(r.log.reason, want.reason, `${tag(i)}: reason`);
+      if (want.handoff !== undefined) assert.equal(r.log.handoff, want.handoff, `${tag(i)}: handoff`);
+      if (want.body) assert.equal(body, want.body, `${tag(i)}: body`);
+      for (const h of want.has || []) assert.match(all, new RegExp(h), `${tag(i)}: has ${h}`);
+      for (const h of want.lacks || []) assert.ok(!all.includes(h) && !new RegExp(h).test(all), `${tag(i)}: lacks ${h}`);
+    };
+    for (const [i, want] of Object.entries(X.at || {})) {
+      const r = res[Number(i)];
+      if (Array.isArray(want)) { assert.ok(Array.isArray(r), `${tag(i)}: par`); want.forEach((wnt, k) => check(r[k], wnt, `${i}.${k}`)); }
+      else check(r, want, i);
+    }
+    if (X.model != null) assert.equal(c.majed ? w.m.used() : 0, X.model, `${c.id}: model calls`);
+    if (X.maxLive != null) assert.ok(w.live.max <= X.maxLive, `${c.id}: at most ${X.maxLive} model call at a time (saw ${w.live.max})`);
+    if (X.maxLiveAtLeast != null) assert.ok(w.live.max >= X.maxLiveAtLeast, `${c.id}: the old race (${w.live.max})`);
+    if (X.oneSession) assert.equal(new Set(w.store.turns.filter((t) => t.handledBy === "assistant").map((t) => t.sessionId)).size, 1, `${c.id}: one conversation, not forked sessions`);
+    const sentAll = w.calls.map((x) => x.body).filter((b) => b.type).map(bodyOf).join("\n");
+    for (const h of X.neverSent || []) assert.ok(!new RegExp(h).test(sentAll), `${c.id}: never sent ${h}`);
+    if (X.introCount != null) assert.equal((sentAll.match(/المساعد الرقمي لفريش كاتس|المساعد الآلي لفريش كاتس/g) || []).length, X.introCount, `${c.id}: introductions`);
+    for (const [k, want] of Object.entries(X.call || {})) {
+      const sc = w.m.seen[Number(k)]; assert.ok(sc, `${c.id}: model call ${k} happened`);
+      const all = mjAll(sc), chat = mjChat(sc), ctx = mjCtx(sc);
+      for (const h of want.chatHas || []) assert.match(chat || "", new RegExp(h), `${c.id} call ${k}: chat lines have ${h}`);
+      if (want.noChat) assert.equal(chat, null, `${c.id} call ${k}: no chat lines`);
+      for (const h of want.ctxHas || []) assert.ok(ctx.includes(h), `${c.id} call ${k}: context has ${h}`);
+      for (const h of want.ctxLacks || []) assert.ok(!ctx.includes(h), `${c.id} call ${k}: context lacks ${h}`);
+      for (const h of want.msgHas || []) assert.match(all, new RegExp(h), `${c.id} call ${k}: messages have ${h}`);
+      for (const h of want.msgLacks || []) assert.doesNotMatch(all, new RegExp(h), `${c.id} call ${k}: messages lack ${h}`);
+    }
+  }));
+}
+test("MJ1 eval: the set has 30+ real conversations, every one masked (5000000xx) and with a source and an expectation", () => {
+  assert.ok(MJC.length >= 30, `${MJC.length} cases`);
+  assert.equal(new Set(MJC.map((c) => c.id)).size, MJC.length, "unique ids");
+  for (const c of MJC) { assert.ok(c.src && c.what && c.expect && Object.keys(c.expect).length, c.id); assert.doesNotMatch(JSON.stringify(c), /05\d{8}|9665\d{8}|(?<!0{4})\b5[1-9]\d{7}\b/, `${c.id}: no real phone`); }
+});

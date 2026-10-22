@@ -38,6 +38,7 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
   const carts = [];
   const pool = { async query(sql) {
     const s = String(sql).replace(/\s+/g, " ").trim();
+    if (/^\/\*mjc:eta\*\//.test(s)) return { rows: w.eta && (w.orders || [])[0] ? [{ order_no: w.orders[0].order_no, body: w.eta, created_at: new Date(now().getTime() - 9 * 60_000).toISOString() }] : [] };      // MJ1: رسالة «في الطريق ⏱ يوصلك خلال …»
     if (/FROM shop_coupons WHERE upper\(code\)='FIRST'/.test(s)) return { rows: [{ code: "FIRST", percent: 0, active: true, expires_at: null, free_delivery: true, min_total: 60 }] };
     if (/shop_coupons/.test(s) && /used|coupon = /.test(s) && !/cms_loyalty/.test(s)) return { rows: w.firstUsed || w.profile === "returning" ? [{ x: 1 }] : [], rowCount: w.firstUsed || w.profile === "returning" ? 1 : 0 };
     if (/FROM cms_loyalty l JOIN shop_coupons/.test(s)) return { rows: (w.rewards || []).map((r) => ({ code: r.code, percent: 0, free_delivery: true, min_total: r.min_total ?? 60, expires: r.expires || null })) };      // SB1: w.rewards = unused reward coupons

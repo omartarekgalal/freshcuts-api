@@ -4116,3 +4116,46 @@
 {"at":"2026-10-14T05:27:17.406Z","day":"2026-10-14","run":"sb3-buyers","scenario":"sb1-buyer-regular-same-then-mashakel","model":"claude-sonnet-5-5","in":1398,"out":112,"cached":24269,"sar":0.032887,"ms":1514,"outcome":"ok","tier":"strong r0"}
 {"at":"2026-10-14T05:27:18.104Z","day":"2026-10-14","run":"sb3-buyers","scenario":"sb1-buyer-returning-one-to-reward","model":"claude-sonnet-5-5","in":390,"out":72,"cached":27714,"sar":0.026411,"ms":1480,"outcome":"ok","tier":"strong r1"}
 {"at":"2026-10-14T05:27:18.610Z","day":"2026-10-14","run":"sb3-buyers","scenario":"sb1-buyer-regular-same-then-mashakel","model":"claude-sonnet-5-5","in":444,"out":97,"cached":25384,"sar":0.026006,"ms":1200,"outcome":"ok","tier":"strong r1"}
+{"at":"2026-10-22T13:23:15.170Z","day":"2026-10-22","run":"mj1-live","scenario":"eta-0450","model":"claude-haiku-5-5","in":28523,"out":441,"cached":0,"sar":0.011523,"ms":3954,"outcome":"ok"}
+{"at":"2026-10-22T13:23:22.563Z","day":"2026-10-22","run":"mj1-live","scenario":"eta-0450","model":"claude-haiku-5-5","in":819,"out":210,"cached":22815,"sar":0.009257,"ms":7337,"outcome":"ok"}
+{"at":"2026-10-22T13:23:26.664Z","day":"2026-10-22","run":"mj1-live","scenario":"staff-said-6545","model":"claude-haiku-5-5","in":1104,"out":623,"cached":21826,"sar":0.009767,"ms":4027,"outcome":"ok"}
+{"at":"2026-10-22T13:23:31.498Z","day":"2026-10-22","run":"mj1-live","scenario":"out-of-zone-6390","model":"claude-haiku-5-5","in":1217,"out":456,"cached":21826,"sar":0.009496,"ms":4748,"outcome":"ok"}
+{"at":"2026-10-22T13:23:33.734Z","day":"2026-10-22","run":"mj1-live","scenario":"ad-prefill-9131","model":"claude-haiku-5-5","in":853,"out":144,"cached":21826,"sar":0.008775,"ms":2197,"outcome":"ok"}
+{"at":"2026-10-22T13:23:35.521Z","day":"2026-10-22","run":"mj1-live","scenario":"ad-prefill-9131","model":"claude-haiku-5-5","in":582,"out":140,"cached":22505,"sar":0.00892,"ms":1780,"outcome":"ok"}
+{"at":"2026-10-22T13:23:37.999Z","day":"2026-10-22","run":"mj1-live","scenario":"ad-prefill-en-3466","model":"claude-haiku-5-5","in":824,"out":166,"cached":21826,"sar":0.008805,"ms":2435,"outcome":"ok"}
+{"at":"2026-10-22T13:23:39.814Z","day":"2026-10-22","run":"mj1-live","scenario":"ad-prefill-en-3466","model":"claude-haiku-5-5","in":610,"out":175,"cached":22482,"sar":0.008988,"ms":1812,"outcome":"ok"}
+{"at":"2026-10-22T13:23:42.508Z","day":"2026-10-22","run":"mj1-live","scenario":"merged-5960","model":"claude-haiku-5-5","in":962,"out":308,"cached":21826,"sar":0.009123,"ms":2630,"outcome":"ok"}
+{"at":"2026-10-22T13:23:44.706Z","day":"2026-10-22","run":"mj1-live","scenario":"paid-online-0356","model":"claude-haiku-5-5","in":1237,"out":162,"cached":21826,"sar":0.008952,"ms":2147,"outcome":"ok"}
+{"at":"2026-10-22T13:23:48.194Z","day":"2026-10-22","run":"mj1-live","scenario":"paid-online-0356","model":"claude-haiku-5-5","in":361,"out":377,"cached":22812,"sar":0.009397,"ms":3486,"outcome":"ok"}
+{"at":"2026-10-22T13:23:49.445Z","day":"2026-10-22","run":"mj1-live","scenario":"complaint-2488","model":"claude-haiku-5-5","in":1353,"out":28,"cached":21826,"sar":0.008745,"ms":1218,"outcome":"ok"}
+{"at":"2026-10-22T13:23:53.273Z","day":"2026-10-22","run":"mj1-live","scenario":"campaign-0494","model":"claude-haiku-5-5","in":1156,"out":281,"cached":21826,"sar":0.009145,"ms":3786,"outcome":"ok"}
+{"at":"2026-10-22T13:23:54.807Z","day":"2026-10-22","run":"mj1-live","scenario":"campaign-0494","model":"claude-haiku-5-5","in":3011,"out":91,"cached":22747,"sar":0.00983,"ms":1532,"outcome":"ok"}
+{"at":"2026-10-22T13:24:00.429Z","day":"2026-10-22","run":"mj1-live","scenario":"campaign-0494","model":"claude-sonnet-5-5","in":31445,"out":55,"cached":0,"sar":0.2379,"ms":5621,"outcome":"ok"}
+{"at":"2026-10-22T13:24:03.831Z","day":"2026-10-22","run":"mj1-live","scenario":"campaign-0494","model":"claude-sonnet-5-5","in":1499,"out":157,"cached":25154,"sar":0.035996,"ms":3399,"outcome":"ok"}
+{"at":"2026-10-22T13:24:15.168Z","day":"2026-10-22","run":"mj1-live","scenario":"answered-question-7271","model":"claude-haiku-5-5","in":1039,"out":591,"cached":21826,"sar":0.009683,"ms":11281,"outcome":"ok"}
+{"at":"2026-10-22T13:24:18.106Z","day":"2026-10-22","run":"mj1-live","scenario":"staff-ready-1838","model":"claude-haiku-5-5","in":1179,"out":14,"cached":21826,"sar":0.008653,"ms":2890,"outcome":"ok"}
+{"at":"2026-10-22T13:26:27.717Z","day":"2026-10-22","run":"mj1-live","scenario":"eta-0450","model":"claude-haiku-5-5","in":1253,"out":395,"cached":21826,"sar":0.009395,"ms":3735,"outcome":"ok"}
+{"at":"2026-10-22T13:26:28.960Z","day":"2026-10-22","run":"mj1-live","scenario":"eta-0450","model":"claude-haiku-5-5","in":723,"out":101,"cached":22825,"sar":0.00902,"ms":1203,"outcome":"ok"}
+{"at":"2026-10-22T13:26:52.021Z","day":"2026-10-22","run":"mj1-live","scenario":"eta-0450","model":"claude-haiku-5-5","in":4,"out":674,"cached":22825,"sar":0.009825,"ms":4607,"outcome":"ok"}
+{"at":"2026-10-22T13:27:02.576Z","day":"2026-10-22","run":"mj1-live","scenario":"eta-0450","model":"claude-haiku-5-5","in":1251,"out":264,"cached":21826,"sar":0.009149,"ms":3268,"outcome":"ok"}
+{"at":"2026-10-22T13:27:05.494Z","day":"2026-10-22","run":"mj1-live","scenario":"eta-0450","model":"claude-haiku-5-5","in":598,"out":237,"cached":22823,"sar":0.009227,"ms":2817,"outcome":"ok"}
+{"at":"2026-10-22T13:27:46.129Z","day":"2026-10-22","run":"mj1-live","scenario":"eta-0450","model":"claude-haiku-5-5","in":4,"out":341,"cached":22823,"sar":0.0092,"ms":3828,"outcome":"ok"}
+{"at":"2026-10-22T13:27:49.107Z","day":"2026-10-22","run":"mj1-live","scenario":"eta-0450","model":"claude-haiku-5-5","in":694,"out":235,"cached":22823,"sar":0.00926,"ms":2916,"outcome":"ok"}
+{"at":"2026-10-22T13:28:20.043Z","day":"2026-10-22","run":"mj1-live","scenario":"eta-0450","model":"claude-haiku-5-5","in":1469,"out":66,"cached":21826,"sar":0.008859,"ms":1741,"outcome":"ok"}
+{"at":"2026-10-22T13:28:32.937Z","day":"2026-10-22","run":"mj1-live","scenario":"eta-0450","model":"claude-haiku-5-5","in":4,"out":66,"cached":22998,"sar":0.00875,"ms":2025,"outcome":"ok"}
+{"at":"2026-10-22T13:28:37.543Z","day":"2026-10-22","run":"mj1-live","scenario":"staff-said-6545","model":"claude-haiku-5-5","in":4,"out":743,"cached":22706,"sar":0.009909,"ms":4556,"outcome":"ok"}
+{"at":"2026-10-22T13:28:42.008Z","day":"2026-10-22","run":"mj1-live","scenario":"out-of-zone-6390","model":"claude-haiku-5-5","in":4,"out":578,"cached":22796,"sar":0.009634,"ms":4422,"outcome":"ok"}
+{"at":"2026-10-22T13:28:46.948Z","day":"2026-10-22","run":"mj1-live","scenario":"ad-prefill-9131","model":"claude-haiku-5-5","in":853,"out":136,"cached":21826,"sar":0.00876,"ms":4877,"outcome":"ok"}
+{"at":"2026-10-22T13:28:49.251Z","day":"2026-10-22","run":"mj1-live","scenario":"ad-prefill-9131","model":"claude-haiku-5-5","in":572,"out":158,"cached":22505,"sar":0.00895,"ms":2293,"outcome":"ok"}
+{"at":"2026-10-22T13:28:51.050Z","day":"2026-10-22","run":"mj1-live","scenario":"ad-prefill-en-3466","model":"claude-haiku-5-5","in":824,"out":159,"cached":21826,"sar":0.008792,"ms":1730,"outcome":"ok"}
+{"at":"2026-10-22T13:28:52.794Z","day":"2026-10-22","run":"mj1-live","scenario":"ad-prefill-en-3466","model":"claude-haiku-5-5","in":601,"out":147,"cached":22482,"sar":0.008932,"ms":1743,"outcome":"ok"}
+{"at":"2026-10-22T13:28:55.606Z","day":"2026-10-22","run":"mj1-live","scenario":"merged-5960","model":"claude-haiku-5-5","in":962,"out":318,"cached":21826,"sar":0.009142,"ms":2746,"outcome":"ok"}
+{"at":"2026-10-22T13:28:57.803Z","day":"2026-10-22","run":"mj1-live","scenario":"paid-online-0356","model":"claude-haiku-5-5","in":1237,"out":178,"cached":21826,"sar":0.008982,"ms":2145,"outcome":"ok"}
+{"at":"2026-10-22T13:29:01.452Z","day":"2026-10-22","run":"mj1-live","scenario":"paid-online-0356","model":"claude-haiku-5-5","in":381,"out":415,"cached":22812,"sar":0.009476,"ms":3645,"outcome":"ok"}
+{"at":"2026-10-22T13:29:03.726Z","day":"2026-10-22","run":"mj1-live","scenario":"complaint-2488","model":"claude-haiku-5-5","in":1353,"out":47,"cached":21826,"sar":0.00878,"ms":2217,"outcome":"ok"}
+{"at":"2026-10-22T13:29:06.048Z","day":"2026-10-22","run":"mj1-live","scenario":"campaign-0494","model":"claude-haiku-5-5","in":1156,"out":196,"cached":21826,"sar":0.008986,"ms":2263,"outcome":"ok"}
+{"at":"2026-10-22T13:29:07.426Z","day":"2026-10-22","run":"mj1-live","scenario":"campaign-0494","model":"claude-haiku-5-5","in":2905,"out":55,"cached":22747,"sar":0.009723,"ms":1375,"outcome":"ok"}
+{"at":"2026-10-22T13:29:11.602Z","day":"2026-10-22","run":"mj1-live","scenario":"campaign-0494","model":"claude-sonnet-5-5","in":31339,"out":55,"cached":0,"sar":0.237105,"ms":4175,"outcome":"ok"}
+{"at":"2026-10-22T13:29:15.286Z","day":"2026-10-22","run":"mj1-live","scenario":"campaign-0494","model":"claude-sonnet-5-5","in":1499,"out":176,"cached":25069,"sar":0.036644,"ms":3678,"outcome":"ok"}
+{"at":"2026-10-22T13:29:22.172Z","day":"2026-10-22","run":"mj1-live","scenario":"answered-question-7271","model":"claude-haiku-5-5","in":4,"out":532,"cached":22654,"sar":0.009494,"ms":6822,"outcome":"ok"}
+{"at":"2026-10-22T13:29:24.067Z","day":"2026-10-22","run":"mj1-live","scenario":"staff-ready-1838","model":"claude-haiku-5-5","in":4,"out":14,"cached":22766,"sar":0.008565,"ms":1838,"outcome":"ok"}
