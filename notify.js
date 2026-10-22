@@ -808,7 +808,8 @@ export function register(app, ctx, deps = {}) {
     try { all = (await getSettingsData()) || {}; cfg = all.notifications || {}; text = statusTextFor(stage, o, all); }
     catch (e) { emitNotify(o.order_no, stage, "none", false, { reason: "settings_failed" }); return null; }
     const smsStages = smsStagesOf(cfg);
-    const smsOn = cfg.smsEnabled === true && smsStages.includes(stage);
+    /* MJ2b (عمر ٢٣/١٠ «تتبعت لما الواتساب يفشل بس»): SMS «جاهز للاستلام» = بديل بس لما واتساب مايوصلش — مش مربوط بقايمة رسايل SMS، ومابيتبعتش لو واتساب وصل */
+    const smsOn = cfg.smsEnabled === true;
     const replaces = waReplacesSms(cfg, stage);
     let w = null;
     const logWa = (ok, extra) => emitNotify(o.order_no, stage, "whatsapp", ok, extra);
@@ -816,14 +817,14 @@ export function register(app, ctx, deps = {}) {
     else if (cfg.whatsappEnabled !== true) logWa(false, { error: "whatsapp_off" });
     else if (!waStageOn(cfg, stage)) logWa(false, { error: "stage_off" });      // SW1: المرحلة لازم تكون مشغّلة (RT2: الترحيل بيشغّلها)
     else {
-      try { w = await wa.sendOrderUpdate(o, stage, { fallbackSms: replaces && smsOn ? text : null }); }
+      try { w = await wa.sendOrderUpdate(o, stage, { fallbackSms: smsOn ? text : null }); }
       catch (e) { console.error(`[notify] WA ready failed for ${o.order_no}:`, e?.message); w = { ok: false, error: "send_failed" }; }
       // no_template_for_stage كان بيتبلع — دلوقتي كل سبب بيتسجّل زي ما هو (مع اسم القالب وحالته عند ميتا لو السبب إنه مش معتمد)
       logWa(w.ok === true, w.ok ? (w.free ? { free: true } : {}) : { error: String(w.skipped || w.error || "send_failed").slice(0, 60),
         ...(w.template ? { template: w.template, status: w.status || null } : {}) });
     }
     /* نفس قاعدة orderStatusChanged: واتساب وصل (أو السياسة شالته) والمرحلة «تغني عن الـSMS» ⇒ مفيش SMS */
-    const smsSkippedForWa = Boolean(((w && w.ok) || (w && w.policy === true)) && replaces);
+    const smsSkippedForWa = Boolean((w && w.ok) || (w && w.policy === true));
     if (smsOn && text && !smsSkippedForWa) {
       try {
         await smsSend({ phoneNorm: o.phone_norm, body: text, kind: "order_status", ref: `${o.order_no}:${stage}` });

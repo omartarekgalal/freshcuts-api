@@ -144,7 +144,7 @@ test("orderReady (استلام) والنافذة مفتوحة: رسالة حرة
   const cap = capture();
   try {
     await api.orderReady(NO); await flush();
-    assert.deepEqual(calls, [{ no: NO, st: "pickup_ready", opts: { fallbackSms: null } }], "smsStages من غير pickup_ready ⇒ مفيش نص بديل للويب هوك");
+    assert.deepEqual(calls, [{ no: NO, st: "pickup_ready", opts: { fallbackSms: `فريش كاتس: طلبك ${NO} جاهز للاستلام من الفرع` } }], "MJ2b: النص البديل دايماً مع الطلب (لو الواتساب فشل بعدين من الويب هوك)");
     const wa = cap.of("pickup_ready", "whatsapp");
     assert.equal(wa.length, 1); assert.deepEqual([wa[0].ok, wa[0].data.free, wa[0].orderNo], [true, true, NO]);
     assert.equal(sms.length, 0);
@@ -169,14 +169,14 @@ test("orderReady والنافذة مقفولة والقالب مرفوض: templa
       assert.deepEqual(cap.of("pickup_ready", "sms").map((e) => e.ok), [true]);
     } finally { cap.stop(); }
   }
-  // (ب) القايمة الحيّة النهارده (من غير pickup_ready) ⇒ مفيش SMS، وصف بيقول ليه
+  // (ب) MJ2b (عمر ٢٣/١٠ «تتبعت لما الواتساب يفشل بس»): من غير pickup_ready في القايمة ⇒ SMS البديل برضه لأن واتساب فشل
   {
     const { api, sms } = notifyWith({ waResult: notApproved, notifications: N_ON, order: PICKUP });
     const cap = capture();
     try {
       await api.orderReady(NO); await flush();
-      assert.equal(sms.length, 0);
-      assert.deepEqual(cap.of("pickup_ready", "sms").map((e) => [e.ok, e.data.error]), [[false, "stage_not_in_sms_stages"]]);
+      assert.equal(sms.length, 1);
+      assert.deepEqual(cap.of("pickup_ready", "sms").map((e) => e.ok), [true]);
     } finally { cap.stop(); }
   }
   // (ج) RT2 مراجعة: pickup_ready **مش** في الافتراضي ولا في القايمة الفاضية — SMS بفلوس = تعليم صريح من شاشة SMS (لو كانت في الافتراضي ومسح المالك القايمة كانت هتبدأ لوحدها)
@@ -188,19 +188,19 @@ test("orderReady والنافذة مقفولة والقالب مرفوض: templa
 
 test("orderReady: no_template_for_stage / stage_off / whatsapp_off بتتسجّل بدل ما تتبلع", async () => {
   const cases = [
-    [{ ok: false, skipped: "no_template_for_stage" }, N_ON, "no_template_for_stage", 1],
-    [{ ok: true }, LIVE_N, "stage_off", 0],                                   // قبل الترحيل: ده اللي كان بيحصل ٧ أيام من غير أي أثر
-    [{ ok: true }, { ...N_ON, whatsappEnabled: false }, "whatsapp_off", 0],
-    [{ ok: false, policy: true, skipped: "order_cap" }, N_ON, "order_cap", 1],
+    [{ ok: false, skipped: "no_template_for_stage" }, N_ON, "no_template_for_stage", 1, 1],
+    [{ ok: true }, LIVE_N, "stage_off", 0, LIVE_N.smsEnabled === true ? 1 : 0],   // MJ2b: واتساب ماتبعتش ⇒ SMS البديل لو SMS شغّال
+    [{ ok: true }, { ...N_ON, whatsappEnabled: false }, "whatsapp_off", 0, N_ON.smsEnabled === true ? 1 : 0],
+    [{ ok: false, policy: true, skipped: "order_cap" }, N_ON, "order_cap", 1, 0],   // السياسة شالته عمداً ⇒ مفيش SMS
   ];
-  for (const [waResult, notifications, error, nCalls] of cases) {
+  for (const [waResult, notifications, error, nCalls, nSms] of cases) {
     const { api, calls, sms } = notifyWith({ waResult, notifications: { ...notifications, pushEnabled: false }, order: PICKUP });
     const cap = capture();
     try {
       await api.orderReady(NO); await flush();
       assert.equal(calls.length, nCalls, error);
       assert.deepEqual(cap.of("pickup_ready", "whatsapp").map((e) => [e.ok, e.data.error]), [[false, error]], error);
-      assert.equal(sms.length, 0, error);
+      assert.equal(sms.length, nSms, error);
     } finally { cap.stop(); }
   }
 });
