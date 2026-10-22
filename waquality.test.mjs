@@ -1022,3 +1022,14 @@ test("مراجعة FD1 ٣ — تعديل رسالة صف واحد مقفول ل�
   const r2 = await call(n.app, "POST /api/cms/wa-sender/items/:id/edit", { json: { message: "نص جديد" }, param: { id: "1" } });
   assert.deepEqual([r2.status, n.db.queue[0].message], [200, "نص جديد"]);
 }));
+
+/* WK2210: فاصل واتساب Cloud بقى إعداد للمالك (custGapDays ٣–٧، الافتراضي ٧) */
+import { cloudGapOf, qualityCfg as _qc } from "./waquality.js";
+test("WK2210 cloudGapOf: default 7, clamped to 3..7", () => {
+  assert.equal(cloudGapOf({}), 7);
+  assert.equal(cloudGapOf({ waCloud: { custGapDays: 3 } }), 3);
+  assert.equal(cloudGapOf({ waCloud: { custGapDays: 1 } }), 3);
+  assert.equal(cloudGapOf({ waCloud: { custGapDays: 30 } }), 7);
+  assert.equal(cloudGapOf({ waCloud: { custGapDays: "" } }), 7);
+  assert.equal(_qc({ custGapDays: 4 }).custGapDays, 4);
+});

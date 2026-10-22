@@ -45,7 +45,7 @@ import { shopPaidSql, appOnlyPhonesSql } from "./identity.js";
 import { staffConfig, fitOneSms } from "./staffalerts.js";
 import { healthCfg } from "./wahealth.js";      // PH1: holdMaxHours (البدء المجدول بعد إيقاف الدفع)
 import { brakeWarn, lowReadCheck, qualityVerdict, qualityEventRow, warmupAdvance, warmupView, warmupStart, warmupClean, riyadhDay, custCapOf, custCapReason,
-  CLOUD_MIN_GAP_DAYS, META_CAPPED_CODE, qualityAlertText, warnAlertText } from "./waquality.js";
+  CLOUD_MIN_GAP_DAYS, cloudGapOf, META_CAPPED_CODE, qualityAlertText, warnAlertText } from "./waquality.js";
 import { nextStatus, TEMPLATES } from "./whatsapp.js";
 import { cloudCfg, cloudPacing, classifyError, fallbackFor, campaignParams, cloudJobProblem, defaultChannel,
   CAMPAIGN_TEMPLATES, campaignTemplateNames, campaignSpec, brakeCheck, campaignCost, mediaProblem, MEDIA_LIMITS, CLOUD_KEYS, CLOUD_CEILINGS, CLOUD_DEFAULTS,
@@ -754,7 +754,7 @@ export function register(app, ctx, deps = {}) {
     /* WK2210 (عمر ٢٢/١٠: «اتاكد ان كله بيوصل له رسايل حتى الفريق»): filters.includeStaff=true ⇒ أرقام الفريق/المستثنين (staffPhoneSet) بتدخل الحملة دي بس.
        بيتحفظ مع الحملة (wa_send_jobs.filters) وsendCloudRow بيحترمه وقت الإرسال. «إيقاف» والأرقام الغلط وكل باقي الحراس زي ما هم. */
     const staff = includeStaffOf(filters) ? new Set() : staffPhoneSet(s);
-    const recent = await recentMap(pns, cfg.gapDays, cloud ? { waGapDays: CLOUD_MIN_GAP_DAYS } : {});
+    const recent = await recentMap(pns, cfg.gapDays, cloud ? { waGapDays: cloudGapOf(s) } : {});      // WK2210: إعداد المالك (الافتراضي ٧)
     const invalid = await invalidSet(pns);
     const blk = await blockedSets(pns, cfg);
     const cap = custCapOf(s), mk = cloud ? await marketingCounts(pns) : new Map();
@@ -963,7 +963,7 @@ export function register(app, ctx, deps = {}) {
         capacity: { perDay, dailyCap: cc.dailyCap, spendDaySar: cc.spendDaySar, tierLimit: cc.tierLimit, reserveUtility: cc.reserveUtility, sentToday: st.today || 0, uniq24h: st.uniq24h || 0,
           brake: { minSends: cc.brakeMinSends, stopPct: cc.brakeStopPct, failPct: cc.brakeFailPct, warnPct: cc.brakeWarnPct,
             lowRead: { minDelivered: cc.lowReadMinDelivered, hours: cc.lowReadHours, pct: cc.lowReadPct } },
-          warmup: wv, custCap: { d7: cc.custCap7d, d30: cc.custCap30d, gapDays: Math.max(CLOUD_MIN_GAP_DAYS, r.cfg.gapDays) } },
+          warmup: wv, custCap: { d7: cc.custCap7d, d30: cc.custCap30d, gapDays: Math.max(cc.custGapDays, r.cfg.gapDays) } },
         appOnly: r.appOnly, templateSync: await tplSync(input.cloudTemplate),
         spec: campaignSpec(input.cloudTemplate), gate: wa ? await wa.gate() : "disabled", enabled: cc.enabled };
     }
@@ -1471,12 +1471,12 @@ export function register(app, ctx, deps = {}) {
 
   /* ── مشترك بين القناتين ─────────────────────────────────────────────── */
   // ليه مانبعتش للرقم ده دلوقتي؟ (null = ابعت) — نفس الترتيب في القناتين
-  async function skipReason(pn, cfg, staff, { cloud = false } = {}) {
+  async function skipReason(pn, cfg, staff, { cloud = false, waGap = CLOUD_MIN_GAP_DAYS } = {}) {
     const oo = (await pool.query("SELECT 1 FROM cms_contacts WHERE phone_norm=$1 AND opted_out_at IS NOT NULL", [pn])).rowCount;
     if (oo) return "opted_out";
     if (staff.has(pn)) return "staff";
     if ((await invalidSet([pn])).size) return "invalid_number";
-    const rec = await recentMap([pn], cfg.gapDays, cloud ? { waGapDays: CLOUD_MIN_GAP_DAYS } : {});
+    const rec = await recentMap([pn], cfg.gapDays, cloud ? { waGapDays: waGap } : {});
     if (rec.size) return rec.get(pn) === "sms" ? "gap_sms" : (cloud ? "gap_7d" : "gap_3d");
     const blk = await blockedSets([pn], cfg);
     if (blk.onlineRecent.size) return "ordered_online";
@@ -1549,7 +1549,7 @@ export function register(app, ctx, deps = {}) {
       warmup: wv, effectiveDailyCap: wv.cap,
       qualityGate: { last: lastQuality, stoppedByQuality: /^quality_/.test(String(st.stoppedReason || "")), lastStop: qs.lastStop || null,
         seen: { tier: qs.tier || null, portfolio: qs.portfolio || null, at: qs.at || null }, allowUnknown: cc.allowUnknownQuality, maxAgeMin: cc.qualityMaxAgeMin, ownerResumeOnly: true },
-      custCap: { d7: cc.custCap7d, d30: cc.custCap30d, gapDays: Math.max(CLOUD_MIN_GAP_DAYS, cfg.gapDays) },
+      custCap: { d7: cc.custCap7d, d30: cc.custCap30d, gapDays: Math.max(cc.custGapDays, cfg.gapDays) },
       pace: cloudPacing(cc, { ...st, warmCap: wv.cap }, inWindow(cfg, now())), gate: gate || null, phoneStatus: phone?.status || null,
       quality: phone?.quality || null, tier: phone?.tier || null,
       defaultChannel: defaultChannel({ gate, phoneStatus: phone?.status }),
@@ -1635,7 +1635,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   async function sendCloudRow(q, job, cfg, staff, cc = null) {
-    const why = await skipReason(q.phone_norm, cfg, includeStaffOf(job && job.filters) ? new Set() : staff, { cloud: true });      // WK2210
+    const why = await skipReason(q.phone_norm, cfg, includeStaffOf(job && job.filters) ? new Set() : staff, { cloud: true, waGap: cc && cc.custGapDays ? cc.custGapDays : CLOUD_MIN_GAP_DAYS });      // WK2210
     if (why) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, why]); return { skipped: why }; }
     /* FD1: حملة قيمها لكل مستلم (السعر والتوصيل في الرسالة) ⇒ نفس العرض بيتحسب تاني من البيانات الحيّة الحين، ولازم يطلع نفس النص بالحرف.
        اتغيّر (سعر / خلص / اتشال / رسم التوصيل / FIRST) أو العميل طلب من ساعتها أو ماقدرناش نتأكد ⇒ الصف يتخطّى بسببه. مفيش سعر قديم يوصل لعميل. */

@@ -89,7 +89,7 @@ export const CLOUD_KEYS = Object.freeze(["enabled", "dailyCap", "hourCap", "perT
   "retryTransient", "retryDelayMin", "retryMaxHours", "startLateMaxMin"]);
 /* مفاتيح «رفع السقف» = للمالك بس؛ تقليلها أو قفل القناة مسموح لأي دور يدخل الشاشة */
 export const CLOUD_CEILINGS = Object.freeze(["dailyCap", "hourCap", "perTick", "tierLimit", "spendDaySar", "brakeStopPct", "brakeFailPct",
-  "brakeWarnPct", "lowReadMinDelivered", "lowReadHours", "lowReadPct", "cappedFallbackSms", "allowUnknownQuality", "qualityMaxAgeMin", "custCap7d", "custCap30d", "warmup",
+  "brakeWarnPct", "lowReadMinDelivered", "lowReadHours", "lowReadPct", "cappedFallbackSms", "allowUnknownQuality", "qualityMaxAgeMin", "custCap7d", "custCap30d", "custGapDays", "warmup",
   "retryTransient", "retryMaxHours", "startLateMaxMin"]);
 const clampF = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) && v !== null && v !== "" ? Math.min(hi, Math.max(lo, Math.round(n * 100) / 100)) : d; };
 export function cloudCfg(settings) {

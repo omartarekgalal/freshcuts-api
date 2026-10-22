@@ -20,6 +20,13 @@ const r1 = (x) => Math.round(x * 10) / 10;
 export const META_CAPPED_CODE = 131049;
 /* الفاصل بين رسالتين واتساب لنفس العميل على قناة Cloud (الـSMS بيفضل ٣) */
 export const CLOUD_MIN_GAP_DAYS = 7;
+/* WK2210 (عمر ٢٢/١٠ «ابعت عادي متشغلش بالك بموضوع الاسبوع دا»): الفاصل ده بقى إعداد للمالك settings.waCloud.custGapDays (٣–٧، الافتراضي ٧).
+   أقل من ٣ مش مسموح: فاصل waSender.gapDays (٣) بيفضل تحت منه. */
+export const CLOUD_GAP_RANGE = Object.freeze([3, 7]);
+export function cloudGapOf(settings) {
+  const x = ((settings || {}).waCloud) || {};
+  return clampN(x.custGapDays, CLOUD_GAP_RANGE[0], CLOUD_GAP_RANGE[1], CLOUD_MIN_GAP_DAYS);
+}
 
 /* ── سقف العميل ─────────────────────────────────────────────────────────── */
 export const CUST_CAP_DEFAULTS = Object.freeze({ custCap7d: 1, custCap30d: 3 });
@@ -190,8 +197,8 @@ export function lowReadCheck(n, cc, now = Date.now()) {
 
 /* إعدادات الجودة داخل settings.waCloud (بتتنادى من cloudCfg). stopPct = حد الإيقاف بعد التنضيف. */
 export const QUALITY_DEFAULTS = Object.freeze({ brakeWarnPct: 1, lowReadMinDelivered: 50, lowReadHours: 6, lowReadPct: 40, cappedFallbackSms: false,
-  allowUnknownQuality: false, qualityMaxAgeMin: 10, custCap7d: 1, custCap30d: 3 });
-export const QUALITY_KEYS = Object.freeze(["brakeWarnPct", "lowReadMinDelivered", "lowReadHours", "lowReadPct", "cappedFallbackSms", "allowUnknownQuality", "qualityMaxAgeMin", "custCap7d", "custCap30d", "warmup"]);
+  allowUnknownQuality: false, qualityMaxAgeMin: 10, custCap7d: 1, custCap30d: 3, custGapDays: CLOUD_MIN_GAP_DAYS });
+export const QUALITY_KEYS = Object.freeze(["brakeWarnPct", "lowReadMinDelivered", "lowReadHours", "lowReadPct", "cappedFallbackSms", "allowUnknownQuality", "qualityMaxAgeMin", "custCap7d", "custCap30d", "custGapDays", "warmup"]);
 export function qualityCfg(x = {}, stopPct = 2) {
   const cap = custCapOf({ waCloud: x });
   return {
@@ -203,6 +210,7 @@ export function qualityCfg(x = {}, stopPct = 2) {
     allowUnknownQuality: x.allowUnknownQuality === true,
     qualityMaxAgeMin: clampN(x.qualityMaxAgeMin, 1, 10, QUALITY_DEFAULTS.qualityMaxAgeMin),
     custCap7d: cap.d7, custCap30d: cap.d30,
+    custGapDays: cloudGapOf({ waCloud: x }),      // WK2210
     warmup: warmupCfg(x.warmup),
   };
 }
