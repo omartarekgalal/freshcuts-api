@@ -124,3 +124,10 @@ test("التجميع التدريجي في الإيقاع", () => {
   assert.equal(pacing(cfg, { ...idle, today: 19 }, AT_17).wait, 0);
   assert.equal(senderCfg({}).warmup.enabled, false);
 });
+
+/* WK2210: أرقام الفريق بتدخل الحملة بس لما الحملة نفسها تطلب includeStaff:true */
+import { includeStaffOf } from "./wasender.js";
+test("WK2210 includeStaffOf: true only for an explicit includeStaff:true on the job filters", () => {
+  assert.equal(includeStaffOf({ includeStaff: true }), true);
+  for (const f of [null, undefined, {}, { includeStaff: "true" }, { includeStaff: 1 }, { includeStaff: false }, "includeStaff", []]) assert.equal(includeStaffOf(f), false);
+});

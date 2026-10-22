@@ -57,6 +57,8 @@ import { habitCfg, habitSchemaRows, planJob, storedPlanHours, riyadhParts, HABIT
 import { sendHoursCfg, isRestaurantOpenAt } from "./sendhours.js";      // عمر ١٨/١٠: «المطعم شغال طول اليوم» — ساعات الإرسال = مواعيد المطعم
 
 export const MIN_GAP_DAYS = 3;
+/* WK2210: الحملة دي بتدخل أرقام الفريق/المستثنين (قرار المالك لحملة بعينها — مش إعداد عام) */
+export const includeStaffOf = (filters) => Boolean(filters && typeof filters === "object" && filters.includeStaff === true);
 export const DEFAULTS = {
   enabled: false,           // المفتاح الرئيسي — مقفول لحد ما المالك يفتحه
   gapDays: 3,               // رقم واحد كل كام يوم (مابيقلّش عن ٣)
@@ -360,7 +362,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* صف الحملة اللي الدورة/التكملة/الإعادة محتاجينه (نفس الاستعلام في كل مكان) */
-  const JOB_SQL = "SELECT id, cloud_template, cloud_vars, image_url, video_url, link_slug, offer, fallback, spend_cap_sar, rate_sar, brake_ack_at, status, name FROM wa_send_jobs WHERE id=$1";
+  const JOB_SQL = "SELECT id, cloud_template, cloud_vars, image_url, video_url, link_slug, offer, fallback, spend_cap_sar, rate_sar, brake_ack_at, status, name, filters FROM wa_send_jobs WHERE id=$1";
   /* مراجعة SX2 (ج): نسبة الفشل بتبدأ من جديد بس لما التكملة ($2='running') تيجي بعد آخر فرملة فشل (fail_brake_at أحدث من fail_base_at).
      تكملة عادية (إيقاف يدوي / ميعاد / صورة) مابتغيّرش النافذة، ونسبة «إيقاف» مابتتصفّرش أبداً (jobCounts). */
   const FAIL_REBASE = "fail_base_at = CASE WHEN $2='running' AND fail_brake_at IS NOT NULL AND (fail_base_at IS NULL OR fail_brake_at > fail_base_at) THEN NOW() ELSE fail_base_at END";
@@ -749,7 +751,9 @@ export function register(app, ctx, deps = {}) {
       }
     }
     const pns = filtered.map((r) => r.pn);
-    const staff = staffPhoneSet(s);
+    /* WK2210 (عمر ٢٢/١٠: «اتاكد ان كله بيوصل له رسايل حتى الفريق»): filters.includeStaff=true ⇒ أرقام الفريق/المستثنين (staffPhoneSet) بتدخل الحملة دي بس.
+       بيتحفظ مع الحملة (wa_send_jobs.filters) وsendCloudRow بيحترمه وقت الإرسال. «إيقاف» والأرقام الغلط وكل باقي الحراس زي ما هم. */
+    const staff = includeStaffOf(filters) ? new Set() : staffPhoneSet(s);
     const recent = await recentMap(pns, cfg.gapDays, cloud ? { waGapDays: CLOUD_MIN_GAP_DAYS } : {});
     const invalid = await invalidSet(pns);
     const blk = await blockedSets(pns, cfg);
@@ -1631,7 +1635,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   async function sendCloudRow(q, job, cfg, staff, cc = null) {
-    const why = await skipReason(q.phone_norm, cfg, staff, { cloud: true });
+    const why = await skipReason(q.phone_norm, cfg, includeStaffOf(job && job.filters) ? new Set() : staff, { cloud: true });      // WK2210
     if (why) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, why]); return { skipped: why }; }
     /* FD1: حملة قيمها لكل مستلم (السعر والتوصيل في الرسالة) ⇒ نفس العرض بيتحسب تاني من البيانات الحيّة الحين، ولازم يطلع نفس النص بالحرف.
        اتغيّر (سعر / خلص / اتشال / رسم التوصيل / FIRST) أو العميل طلب من ساعتها أو ماقدرناش نتأكد ⇒ الصف يتخطّى بسببه. مفيش سعر قديم يوصل لعميل. */
