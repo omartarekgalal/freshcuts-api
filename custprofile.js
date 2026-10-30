@@ -46,7 +46,7 @@ const PHONE_RE = "^5[0-9]{8}$";
 const DOWS = Object.freeze(["sun", "mon", "tue", "wed", "thu", "fri", "sat"]);
 export const DOW_AR = Object.freeze({ sat: "السبت", sun: "الأحد", mon: "الاتنين", tue: "التلات", wed: "الأربع", thu: "الخميس", fri: "الجمعة" });
 const nz = (v) => (v == null ? "" : String(v));
-const tms = (v) => (v instanceof Date ? v.getTime() : Date.parse(nz(v)));
+const tms = (v) => (v instanceof Date ? v.getTime() : typeof v === "number" ? v : Date.parse(nz(v)));      // ٣٠/١٠: now() رقم ⇒ Date.parse("173…") = NaN ⇒ riyadhClock null ⇒ الـtick (الليلي + المسح) كان بيقع كل ٥ دقايق من ٢٤/١٠
 const iso = (v) => { const t = tms(v); return Number.isFinite(t) ? new Date(t).toISOString() : null; };
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;

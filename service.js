@@ -464,15 +464,18 @@ export function register(app, ctx, deps = {}) {
            FROM journey_sessions WHERE ${fence('started_at')}
             AND NOT COALESCE(is_bot,false) AND NOT COALESCE(is_qa,false) AND NOT COALESCE(is_staff,false)`),
       /* اللي سابوا رقمهم */
-      q(`SELECT id, created_at, phone_norm, item_count, subtotal, option, source,
-                notified_at, channel, skip_reason, order_no, order_total
-           FROM open_waitlist WHERE ${fence('created_at')} ORDER BY created_at DESC LIMIT 200`),
+      /* ٣٠/١٠: open_waitlist مافيهاش order_total — قيمة الطلب من shop_orders (الاستعلام كان بيقع وقسم «سابوا رقمهم» بيطلع فاضي) */
+      q(`SELECT w.id, w.created_at, w.phone_norm, w.item_count, w.subtotal, w.option, w.source,
+                w.notified_at, w.channel, w.skip_reason, w.order_no, so.total AS order_total
+           FROM open_waitlist w LEFT JOIN shop_orders so ON so.order_no = w.order_no
+          WHERE ${fence('w.created_at')} ORDER BY w.created_at DESC LIMIT 200`),
       /* الرسايل اللي اتبعتت فعلاً — من سجل الرسايل مش من نيّتنا */
       q(`SELECT at, phone_norm, status, parts, cost, error
            FROM sms_log WHERE kind='waitlist' AND ${fence('at')} ORDER BY at DESC LIMIT 200`),
       /* ورجعوا طلبوا؟ */
-      q(`SELECT count(*)::int AS n, COALESCE(round(sum(order_total))::int,0) AS sar
-           FROM open_waitlist WHERE order_no IS NOT NULL AND ${fence('created_at')}`),
+      q(`SELECT count(*)::int AS n, COALESCE(round(sum(so.total))::int,0) AS sar
+           FROM open_waitlist w LEFT JOIN shop_orders so ON so.order_no = w.order_no
+          WHERE w.order_no IS NOT NULL AND ${fence('w.created_at')}`),
       /* ٢٣/٩ — طلب عمر «اعرف كل حاجة حصلت في الوقت دا»: طلبات المتجر نفسها،
          مش بس اللي جم من قايمة الانتظار. ساعة الرياض عشان الجدول يتقرا. */
       q(`SELECT count(*)::int AS n,

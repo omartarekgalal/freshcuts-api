@@ -57,6 +57,9 @@ test("الساعة بتوقيت الرياض (نقطة البيع UTC) ويوم 
   assert.deepEqual([c.hour, c.bizDow, c.bizDay], [22, "thu", "2026-10-15"]);
   const n = P.riyadhClock("2026-10-15T22:30:00Z");      // ١:٣٠ فجر الجمعة ⇒ يوم عمل الخميس
   assert.deepEqual([n.hour, n.bizDow, n.bizDay], [1, "thu", "2026-10-15"]);
+  /* ٣٠/١٠: الـtick بيبعت now() رقم (Date.now) — كان بيرجع null والليلي + المسح وقفوا ٦ أيام */
+  const m = P.riyadhClock(Date.parse("2026-10-15T19:30:00Z"));
+  assert.deepEqual([m.hour, m.bizDow, m.bizDay], [22, "thu", "2026-10-15"]);
   assert.deepEqual([22, 1, 13, 19, 8].map((h) => P.daypartOf(h, CFG)), ["late", "late", "lunch", "dinner", "morning"]);
   assert.equal(P.kilosOf([{ name: "كفتة مشوية بالوزن - كيلو", qty: 2 }, { name: "كباب مشوي بالوزن - نص كيلو", qty: 1 }, { name: "مياه", qty: 3 }]), 2.5);
   assert.equal(P.firstNameOf("عبد الله التجربة"), "عبد الله"); assert.equal(P.firstNameOf("سارة"), "سارة"); assert.equal(P.firstNameOf(""), null);
